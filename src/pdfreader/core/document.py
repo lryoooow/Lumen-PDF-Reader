@@ -19,7 +19,7 @@ from pathlib import Path
 from pdfreader.core.page import Page
 from pdfreader.engines.base import EngineDocument, PdfEngine
 from pdfreader.engines.exceptions import PdfEngineError
-from pdfreader.engines.types import DocumentMeta, PixmapData, SearchResult
+from pdfreader.engines.types import DocumentMeta, PixmapData, Rect, SearchResult
 
 __all__ = ["Document", "DocumentState"]
 
@@ -132,6 +132,24 @@ class Document:
             self._pages[page_num].invalidate_text_cache()
 
     # ------------------------------------------------------------------
+    # 页面尺寸（委托给引擎）
+    # ------------------------------------------------------------------
+    def get_page_bounds(self, page_num: int) -> Rect:
+        """获取指定页的边界框（PDF 点单位）。
+
+        Raises:
+            PdfEngineError: 文档已关闭或页码越界
+        """
+        self._ensure_open()
+        assert self._handle is not None  # _ensure_open 保证
+        return self._engine.page_bounds(self._handle, page_num)
+
+    def get_all_page_bounds(self) -> list[Rect]:
+        """获取所有页的边界框列表（用于视图一次性布局）。"""
+        self._ensure_open()
+        assert self._handle is not None  # _ensure_open 保证
+        return [self._engine.page_bounds(self._handle, i) for i in range(self.page_count)]
+
     # ------------------------------------------------------------------
     # 渲染（委托给引擎）
     # ------------------------------------------------------------------

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from pdfreader.controllers import DocumentController, OpenResult
 from pdfreader.gui.widgets import PdfView
+from pdfreader.workers import RenderWorker
 
 __all__ = ["MainWindow"]
 
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._controller = DocumentController()
+        self._render_worker: RenderWorker | None = None
         self._setup_window()
         self._setup_central_widget()
         self._setup_menu()
@@ -135,6 +137,17 @@ class MainWindow(QMainWindow):
         self._controller.documentClosed.connect(self._on_document_closed)
         self._controller.openFailed.connect(self._on_open_failed)
 
+    def _setup_render_worker(self) -> None:
+        """创建渲染线程并连接信号（在打开文档时按需启动）。"""
+        worker = RenderWorker(self)
+        worker.pageRendered.connect(self._on_page_rendered)
+        worker.documentLoaded.connect(self._on_worker_document_loaded)
+        worker.documentLoadFailed.connect(self._on_worker_load_failed)
+        worker.renderFailed.connect(self._on_render_failed)
+        # view 请求渲染 → 转发给 worker
+        self.pdf_view.renderRequested.connect(worker.request_render)
+        self._render_worker = worker
+
     # ------------------------------------------------------------------
     # 事件处理
     # ------------------------------------------------------------------
@@ -147,28 +160,58 @@ class MainWindow(QMainWindow):
         self._controller.close_document()
 
     def _on_document_opened(self, page_count: int) -> None:
-        """文档成功打开：隐藏占位、渲染首页、更新 UI。"""
+        """文档成功打开：准备视图布局，启动渲染线程加载文档。"""
         self._placeholder.hide()
         self.pdf_view.show()
         title = self._controller.title
         self.setWindowTitle(f"{title} — PDF Reader")
 
-        # 渲染首页
-        try:
-            data = self._controller.render_page(0, zoom=1.5)
-        except Exception as exc:
-            QMessageBox.warning(self, self.tr("渲染失败"), str(exc))
-            return
-        self.pdf_view.show_pixmap_data(data, 0)
+        # 用 controller 取页面尺寸，设置视图布局（占位，无需渲染）
+        page_sizes = self._controller.get_page_sizes()
+        self.pdf_view.setup_document(page_count, page_sizes)
+        self.pdf_view.set_zoom(1.5)
         self.pdf_view.fit_to_width()
+
+        # 启动渲染线程加载文档（Document 在线程内打开，主线程不持有）
+        self._setup_render_worker()
+        assert self._render_worker is not None
+        assert self._controller.document is not None
+        self._render_worker.load_document(self._controller.document.path)
+        self._render_worker.start()
 
         self.close_doc_action.setEnabled(True)
         self.zoom_in_action.setEnabled(True)
         self.zoom_out_action.setEnabled(True)
         self.fit_action.setEnabled(True)
-        self._status.showMessage(self.tr("第 1 / %n 页", "", page_count))
+        self._status.showMessage(f"共 {page_count} 页 · 渲染中...")
+
+    def _on_worker_document_loaded(self, page_count: int) -> None:
+        """渲染线程加载文档成功，触发首屏渲染。"""
+        self.pdf_view._request_visible_pages()
+        self._status.showMessage(f"共 {page_count} 页")
+
+    def _on_worker_load_failed(self, message: str) -> None:
+        QMessageBox.warning(self, self.tr("渲染加载失败"), message)
+
+    def _on_page_rendered(self, page_num: int, zoom: float, data) -> None:  # type: ignore[no-untyped-def]
+        """渲染线程返回结果，转发给视图显示。"""
+        self.pdf_view.on_page_rendered(page_num, zoom, data)
+        # 更新状态栏当前页
+        current = self.pdf_view.current_page_num
+        if current is not None:
+            total = self._controller.page_count
+            self._status.showMessage(f"第 {current + 1} / {total} 页")
+
+    def _on_render_failed(self, page_num: int, message: str) -> None:
+        self._status.showMessage(f"第 {page_num + 1} 页渲染失败：{message}")
 
     def _on_document_closed(self) -> None:
+        # 关闭渲染线程
+        worker = getattr(self, "_render_worker", None)
+        if worker is not None:
+            worker.shutdown()
+            worker.wait(3000)
+            self._render_worker = None
         self.pdf_view.clear()
         self.pdf_view.hide()
         self._placeholder.show()
@@ -194,6 +237,11 @@ class MainWindow(QMainWindow):
     # 关闭事件
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        # 先停渲染线程，再关文档
+        worker = getattr(self, "_render_worker", None)
+        if worker is not None:
+            worker.shutdown()
+            worker.wait(3000)
         if self._controller.has_document:
             self._controller.close_document()
         super().closeEvent(event)

@@ -158,6 +158,13 @@ class PyMuPdfEngine:
     def page_count(self, doc: EngineDocument) -> int:
         return self._require(doc).page_count
 
+    def page_bounds(self, doc: EngineDocument, page_num: int) -> Rect:
+        """获取页面边界框（PDF 点单位）。"""
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        rect = page.rect
+        return Rect(float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1))
+
     # ------------------------------------------------------------------
     # 渲染
     # ------------------------------------------------------------------

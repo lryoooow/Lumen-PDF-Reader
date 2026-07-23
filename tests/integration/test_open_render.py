@@ -74,14 +74,81 @@ class TestRenderRealPdf:
 
 class TestFullPipeline:
     def test_open_render_display(self, controller: DocumentController, qtbot) -> None:  # type: ignore[no-untyped-def]
-        """完整链路：打开 → 渲染 → 显示到 PdfView。"""
+        """完整链路：打开 → 取页面尺寸 → 视图布局 → 渲染 → 填入。"""
         view = PdfView()
         qtbot.addWidget(view)
 
         controller.open_file(SAMPLES / "simple_text.pdf")
-        data = controller.render_page(0, zoom=1.0)
-        view.show_pixmap_data(data, page_num=0)
+        page_sizes = controller.get_page_sizes()
+        view.setup_document(controller.page_count, page_sizes)
 
-        assert view.current_page_num == 0
-        assert view._scene.items() != []  # 场景中有内容
+        # 渲染第 0 页并填入视图
+        data = controller.render_page(0, zoom=1.0)
+        view.set_zoom(1.0)
+        view.on_page_rendered(0, 1.0, data)
+
+        assert view.page_count == 3
+        assert view._rendered_cache.contains(0)
         controller.close_document()
+
+    def test_get_page_sizes(self, controller: DocumentController) -> None:
+        """控制器能返回各页原始尺寸。"""
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        sizes = controller.get_page_sizes()
+        assert len(sizes) == 3
+        # A4 尺寸约 595x842
+        for w, h in sizes:
+            assert w > 0 and h > 0
+        controller.close_document()
+
+
+class TestRenderWorkerWithView:
+    """端到端：渲染线程 + 多页视图协同工作。"""
+
+    def test_worker_renders_to_view(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        from pdfreader.workers import RenderWorker
+
+        view = PdfView()
+        qtbot.addWidget(view)
+        view.resize(400, 800)
+        view.show()
+        qtbot.waitExposed(view)
+
+        worker = RenderWorker()
+        worker.load_document(SAMPLES / "simple_text.pdf")
+        worker.pageRendered.connect(view.on_page_rendered)
+
+        loaded: list[int] = []
+        rendered: list[int] = []
+        loop = QEventLoop()
+
+        def on_loaded(count):  # type: ignore[no-untyped-def]
+            loaded.append(count)
+            page_sizes = [(595, 842)] * count
+            view.setup_document(count, page_sizes)
+            view.set_zoom(1.0)
+            # 请求渲染所有页
+            for i in range(count):
+                worker.request_render(i, 1.0)
+
+        def on_rendered(page_num, zoom, data):  # type: ignore[no-untyped-def]
+            rendered.append(page_num)
+            if len(rendered) >= 3:
+                loop.quit()
+
+        worker.documentLoaded.connect(on_loaded)
+        worker.pageRendered.disconnect(view.on_page_rendered)
+        worker.pageRendered.connect(on_rendered)
+        worker.start()
+        QTimer.singleShot(5000, loop.quit)
+        loop.exec()
+
+        try:
+            assert loaded == [3]
+            assert sorted(rendered) == [0, 1, 2]
+            assert view.page_count == 3
+        finally:
+            worker.shutdown()
+            worker.wait(3000)

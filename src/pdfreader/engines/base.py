@@ -20,6 +20,7 @@ from pdfreader.engines.types import (
     DocumentMeta,
     PageText,
     PixmapData,
+    Rect,
     SearchResult,
 )
 
@@ -70,6 +71,14 @@ class PdfEngine(Protocol):
 
     def page_count(self, doc: EngineDocument) -> int:
         """获取文档总页数。"""
+        ...
+
+    def page_bounds(self, doc: EngineDocument, page_num: int) -> Rect:
+        """获取指定页的边界框（尺寸），返回 PDF 点单位的 Rect。
+
+        Raises:
+            PageIndexError: 页码越界
+        """
         ...
 
     def render_page(self, doc: EngineDocument, page_num: int, zoom: float = 1.0) -> PixmapData:

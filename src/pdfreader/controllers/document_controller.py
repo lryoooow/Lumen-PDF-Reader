@@ -138,3 +138,16 @@ class DocumentController(QObject):
             raise IndexError(f"页码越界：{page_num}，有效范围 0..{self._document.page_count - 1}")
         self._current_page = page_num
         return self._document.render_page(page_num, zoom)
+
+    def get_page_bounds(self):  # type: ignore[no-untyped-def]
+        """获取所有页的边界框列表（Rect，用于视图布局）。"""
+        if self._document is None or self._document.is_closed:
+            return []
+        return self._document.get_all_page_bounds()
+
+    def get_page_sizes(self) -> list[tuple[int, int]]:
+        """获取所有页的原始尺寸 (width, height) @ 72dpi（用于视图布局）。"""
+        if self._document is None or self._document.is_closed:
+            return []
+        bounds = self._document.get_all_page_bounds()
+        return [(int(b.width), int(b.height)) for b in bounds]
