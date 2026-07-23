@@ -19,7 +19,7 @@ from pathlib import Path
 from pdfreader.core.page import Page
 from pdfreader.engines.base import EngineDocument, PdfEngine
 from pdfreader.engines.exceptions import PdfEngineError
-from pdfreader.engines.types import DocumentMeta, SearchResult
+from pdfreader.engines.types import DocumentMeta, PixmapData, SearchResult
 
 __all__ = ["Document", "DocumentState"]
 
@@ -130,6 +130,20 @@ class Document:
             self._pages.clear()
         elif page_num in self._pages:
             self._pages[page_num].invalidate_text_cache()
+
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 渲染（委托给引擎）
+    # ------------------------------------------------------------------
+    def render_page(self, page_num: int, zoom: float = 1.0) -> PixmapData:
+        """渲染指定页为位图（委托给引擎）。
+
+        Raises:
+            PdfEngineError: 文档已关闭或页码越界
+        """
+        self._ensure_open()
+        assert self._handle is not None  # _ensure_open 保证
+        return self._engine.render_page(self._handle, page_num, zoom)
 
     # ------------------------------------------------------------------
     # 搜索 / 文本
