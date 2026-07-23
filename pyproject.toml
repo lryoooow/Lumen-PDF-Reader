@@ -1,0 +1,142 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdfreader"
+version = "0.0.1"
+description = "开源多功能 PDF 阅读器与编辑器（AGPL-3.0）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "PDF Reader Contributors" }]
+keywords = ["pdf", "reader", "editor", "viewer", "pymupdf", "pyside6", "qt"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: MacOS X",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Office Suites",
+    "Typing :: Typed",
+]
+dependencies = [
+    "PySide6>=6.8,<6.10",
+]
+
+[project.urls]
+Documentation = "https://github.com/your-org/pdfreader/blob/main/docs"
+Repository = "https://github.com/your-org/pdfreader"
+Changelog = "https://github.com/your-org/pdfreader/blob/main/CHANGELOG.md"
+
+[project.gui-scripts]
+pdfreader = "pdfreader.main:main"
+
+# ----------------------------------------------------------------------------
+# 依赖组（PEP 735）—— 用 `uv sync` 安装
+# ----------------------------------------------------------------------------
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pytest-qt>=4.4",
+    "pytest-xvfb; sys_platform == 'linux'",
+]
+
+# ----------------------------------------------------------------------------
+# Hatchling 构建配置：src 布局
+# ----------------------------------------------------------------------------
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdfreader"]
+
+# ----------------------------------------------------------------------------
+# Ruff：格式化 + Lint（取代 black + flake8 + isort）
+# ----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+extend-exclude = ["docs", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+    "TID",  # tidy-imports
+    "PTH",  # use pathlib
+]
+ignore = [
+    "E501",  # 行长由 formatter 管，不单独报
+    # 以下规则把中文全角标点（，：（）等）当作"歧义字符"报错，
+    # 对中文文档/注释项目无意义，禁用。
+    "RUF001",  # 字符串中的歧义 Unicode 字符
+    "RUF002",  # docstring 中的歧义 Unicode 字符
+    "RUF003",  # 注释中的歧义 Unicode 字符
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # 测试允许 assert
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ----------------------------------------------------------------------------
+# Mypy：静态类型检查
+# ----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+files = ["src/pdfreader"]
+
+[[tool.mypy.overrides]]
+module = ["PySide6.*", "shiboken6.*"]
+ignore_missing_imports = true
+
+# ----------------------------------------------------------------------------
+# Pytest
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=pdfreader",
+    "--cov-report=term-missing",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:PySide6.*",
+]
+
+[tool.coverage.run]
+source = ["src/pdfreader"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
