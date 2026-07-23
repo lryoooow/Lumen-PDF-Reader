@@ -8,5 +8,6 @@
 from __future__ import annotations
 
 from pdfreader.workers.render_worker import RenderRequest, RenderWorker
+from pdfreader.workers.search_worker import SearchWorker
 
-__all__ = ["RenderRequest", "RenderWorker"]
+__all__ = ["RenderRequest", "RenderWorker", "SearchWorker"]

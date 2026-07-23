@@ -23,8 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from pdfreader.controllers import DocumentController, OpenResult
+from pdfreader.engines.types import SearchResult
+from pdfreader.gui.panels import SearchPanel
 from pdfreader.gui.widgets import PdfView
-from pdfreader.workers import RenderWorker
+from pdfreader.workers import RenderWorker, SearchWorker
 
 __all__ = ["MainWindow"]
 
@@ -38,11 +40,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._controller = DocumentController()
         self._render_worker: RenderWorker | None = None
+        self._search_worker: SearchWorker | None = None
         self._setup_window()
         self._setup_central_widget()
         self._setup_menu()
         self._setup_toolbar()
         self._setup_statusbar()
+        self._setup_search_panel()
         self._connect_signals()
 
     # ------------------------------------------------------------------
@@ -109,6 +113,13 @@ class MainWindow(QMainWindow):
         self.fit_action.setEnabled(False)
         view_menu.addAction(self.fit_action)
 
+        edit_menu = menubar.addMenu(self.tr("编辑(&E)"))
+        self.find_action = QAction(self.tr("查找(&F)..."), self)
+        self.find_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.find_action.triggered.connect(self._on_find)
+        self.find_action.setEnabled(False)
+        edit_menu.addAction(self.find_action)
+
         help_menu = menubar.addMenu(self.tr("帮助(&H)"))
         about_action = QAction(self.tr("关于(&A)"), self)
         about_action.setEnabled(False)
@@ -129,6 +140,13 @@ class MainWindow(QMainWindow):
         self._status.showMessage(self.tr("就绪"))
         self.setStatusBar(self._status)
 
+    def _setup_search_panel(self) -> None:
+        """创建搜索面板（停靠在右侧）。"""
+        self.search_panel = SearchPanel(self.tr("搜索"), self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.search_panel)
+        self.search_panel.searchRequested.connect(self._on_search_requested)
+        self.search_panel.resultClicked.connect(self._on_search_result_clicked)
+
     # ------------------------------------------------------------------
     # 信号连接
     # ------------------------------------------------------------------
@@ -136,6 +154,41 @@ class MainWindow(QMainWindow):
         self._controller.documentOpened.connect(self._on_document_opened)
         self._controller.documentClosed.connect(self._on_document_closed)
         self._controller.openFailed.connect(self._on_open_failed)
+
+    # ------------------------------------------------------------------
+    # 搜索
+    # ------------------------------------------------------------------
+    def _on_find(self) -> None:
+        if not self._controller.has_document:
+            return
+        self.search_panel.focus_input()
+
+    def _on_search_requested(self, query: str) -> None:
+        """启动后台搜索线程。"""
+        if not self._controller.has_document:
+            return
+        # 停止旧搜索
+        if self._search_worker is not None and self._search_worker.isRunning():
+            self._search_worker.shutdown()
+            self._search_worker.wait(2000)
+        # 新建搜索线程（独立打开文档）
+        worker = SearchWorker(self)
+        worker.searchCompleted.connect(self._on_search_completed)
+        worker.searchFailed.connect(self._on_search_failed)
+        assert self._controller.document is not None
+        worker.setup(self._controller.document.path, query)
+        self._search_worker = worker
+        worker.start()
+
+    def _on_search_completed(self, query: str, result: SearchResult) -> None:
+        self.search_panel.show_results(query, result.hits)
+
+    def _on_search_failed(self, message: str) -> None:
+        self.search_panel.show_error(message)
+
+    def _on_search_result_clicked(self, page_num: int) -> None:
+        """点击搜索结果，跳转到对应页。"""
+        self.pdf_view.jump_to_page(page_num)
 
     def _setup_render_worker(self) -> None:
         """创建渲染线程并连接信号（在打开文档时按需启动）。"""
@@ -183,6 +236,7 @@ class MainWindow(QMainWindow):
         self.zoom_in_action.setEnabled(True)
         self.zoom_out_action.setEnabled(True)
         self.fit_action.setEnabled(True)
+        self.find_action.setEnabled(True)
         self._status.showMessage(f"共 {page_count} 页 · 渲染中...")
 
     def _on_worker_document_loaded(self, page_count: int) -> None:
@@ -212,6 +266,14 @@ class MainWindow(QMainWindow):
             worker.shutdown()
             worker.wait(3000)
             self._render_worker = None
+        # 关闭搜索线程
+        sw = getattr(self, "_search_worker", None)
+        if sw is not None:
+            sw.shutdown()
+            sw.wait(2000)
+            self._search_worker = None
+        self.search_panel.clear()
+        self.search_panel.setVisible(False)
         self.pdf_view.clear()
         self.pdf_view.hide()
         self._placeholder.show()
@@ -220,6 +282,7 @@ class MainWindow(QMainWindow):
         self.zoom_in_action.setEnabled(False)
         self.zoom_out_action.setEnabled(False)
         self.fit_action.setEnabled(False)
+        self.find_action.setEnabled(False)
         self._status.showMessage(self.tr("就绪"))
 
     def _on_open_failed(self, result: str, message: str) -> None:

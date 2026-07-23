@@ -102,6 +102,25 @@ class TestFullPipeline:
         controller.close_document()
 
 
+class TestSearchIntegration:
+    """端到端搜索集成测试。"""
+
+    def test_search_via_worker(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        from pdfreader.workers import SearchWorker
+
+        worker = SearchWorker()
+        worker.setup(SAMPLES / "simple_text.pdf", "PyMuPDF")
+        results: list = []
+        worker.searchCompleted.connect(lambda q, r: results.append((q, r)))
+        with qtbot.waitSignal(worker.searchCompleted, timeout=10000):
+            worker.start()
+        worker.wait(3000)
+        query, result = results[0]
+        assert query == "PyMuPDF"
+        assert result.hit_count == 3
+        assert set(result.page_numbers) == {0, 1, 2}
+
+
 class TestRenderWorkerWithView:
     """端到端：渲染线程 + 多页视图协同工作。"""
 

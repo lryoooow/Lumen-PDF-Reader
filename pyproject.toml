@@ -144,6 +144,8 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["src/pdfreader"]
 branch = true
+# 追踪子线程执行（渲染/搜索线程在 QThread 内运行）
+concurrency = ["thread", "multiprocessing"]
 
 [tool.coverage.report]
 show_missing = true
