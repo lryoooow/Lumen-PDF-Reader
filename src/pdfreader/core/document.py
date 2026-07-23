@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from pdfreader.core.page import Page
@@ -171,6 +171,53 @@ class Document:
         self._ensure_open()
         assert self._handle is not None  # _ensure_open 保证
         return self._engine.search(self._handle, query)
+
+    # ------------------------------------------------------------------
+    # 编辑操作（阶段 6）
+    # ------------------------------------------------------------------
+    def delete_page(self, page_num: int) -> None:
+        """删除指定页，并清除该页缓存、更新页数。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.delete_page(self._handle, page_num)
+        # 更新元数据页数（DocumentMeta 是 frozen，用 replace 重建）
+        self.meta = replace(self.meta, page_count=self.meta.page_count - 1)
+        # 页缓存全部失效（页码偏移了）
+        self.invalidate_page_cache()
+        self.mark_modified()
+
+    def rotate_page(self, page_num: int, degrees: int) -> None:
+        """旋转指定页，并使该页渲染缓存失效。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.rotate_page(self._handle, page_num, degrees)
+        self.invalidate_page_cache(page_num)
+        self.mark_modified()
+
+    def merge(self, other_path: Path) -> int:
+        """合并另一个 PDF，返回追加的页数。"""
+        self._ensure_open()
+        assert self._handle is not None
+        added = self._engine.merge(self._handle, other_path)
+        # 更新元数据页数
+        self.meta = replace(self.meta, page_count=self.meta.page_count + added)
+        self.mark_modified()
+        return added
+
+    def add_watermark(self, page_num: int, text: str) -> None:
+        """给指定页添加水印。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.add_text_watermark(self._handle, page_num, text)
+        self.invalidate_page_cache(page_num)
+        self.mark_modified()
+
+    def save(self, path: Path) -> None:
+        """保存文档到指定路径。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.save(self._handle, path)
+        self.mark_saved()
 
     # ------------------------------------------------------------------
     # 修改状态管理（阶段 6 编辑功能将大量使用）

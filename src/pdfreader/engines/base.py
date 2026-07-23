@@ -117,6 +117,52 @@ class PdfEngine(Protocol):
         """遍历所有页的文本（用于全文索引等批量场景）。"""
         ...
 
+    # ------------------------------------------------------------------
+    # 编辑操作（阶段 6）
+    # ------------------------------------------------------------------
+    def delete_page(self, doc: EngineDocument, page_num: int) -> None:
+        """删除指定页。
+
+        Raises:
+            PageIndexError: 页码越界
+        """
+        ...
+
+    def rotate_page(self, doc: EngineDocument, page_num: int, degrees: int) -> None:
+        """旋转指定页（degrees 为 90/180/270，可叠加）。
+
+        Raises:
+            PageIndexError: 页码越界
+        """
+        ...
+
+    def merge(self, doc: EngineDocument, other_path: Path) -> int:
+        """将另一个 PDF 的所有页追加到当前文档末尾。
+
+        Returns:
+            追加的页数
+        """
+        ...
+
+    def add_text_watermark(self, doc: EngineDocument, page_num: int, text: str) -> None:
+        """给指定页添加文字水印。
+
+        Raises:
+            PageIndexError: 页码越界
+        """
+        ...
+
+    def save(self, doc: EngineDocument, path: Path, *, incremental: bool = False) -> None:
+        """保存文档。
+
+        Args:
+            incremental: 增量保存（仅当原文件可写且为同一路径时）
+
+        Raises:
+            FileOpenError: 保存失败
+        """
+        ...
+
     def close(self, doc: EngineDocument) -> None:
         """关闭文档，释放资源。"""
         ...

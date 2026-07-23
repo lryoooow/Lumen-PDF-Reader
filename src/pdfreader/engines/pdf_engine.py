@@ -24,6 +24,7 @@ from pdfreader.engines.exceptions import (
     FileOpenError,
     PageIndexError,
     PasswordRequiredError,
+    PdfEngineError,
     RenderError,
     SearchError,
 )
@@ -280,6 +281,63 @@ class PyMuPdfEngine:
                 )
 
         return SearchResult(query=query, hits=tuple(hits))
+
+    # ------------------------------------------------------------------
+    # 编辑操作
+    # ------------------------------------------------------------------
+    def delete_page(self, doc: EngineDocument, page_num: int) -> None:
+        handle = self._require(doc)
+        handle.get_page(page_num)  # 含边界检查
+        try:
+            handle.native.delete_page(page_num)
+        except Exception as exc:
+            raise PdfEngineError(f"删除第 {page_num} 页失败：{exc}") from exc
+
+    def rotate_page(self, doc: EngineDocument, page_num: int, degrees: int) -> None:
+        if degrees % 90 != 0:
+            raise PdfEngineError(f"旋转角度必须是 90 的倍数，得到：{degrees}")
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            page.set_rotation((int(page.rotation) + degrees) % 360)
+        except Exception as exc:
+            raise PdfEngineError(f"旋转第 {page_num} 页失败：{exc}") from exc
+
+    def merge(self, doc: EngineDocument, other_path: Path) -> int:
+        handle = self._require(doc)
+        if not other_path.exists():
+            raise FileOpenError(f"要合并的文件不存在：{other_path}")
+        try:
+            other = pymupdf.open(other_path)
+            added = int(other.page_count)
+            handle.native.insert_pdf(other)
+            other.close()
+            return added
+        except Exception as exc:
+            raise PdfEngineError(f"合并 {other_path} 失败：{exc}") from exc
+
+    def add_text_watermark(self, doc: EngineDocument, page_num: int, text: str) -> None:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            rect = page.rect
+            # 居中半透明水印
+            fontsize = 40
+            text_w = fontsize * len(text) * 0.6
+            x = (rect.width - text_w) / 2
+            y = rect.height / 2
+            page.insert_text(
+                (x, y), text, fontsize=fontsize, color=(0.85, 0.85, 0.85), overlay=True
+            )
+        except Exception as exc:
+            raise PdfEngineError(f"添加水印失败：{exc}") from exc
+
+    def save(self, doc: EngineDocument, path: Path, *, incremental: bool = False) -> None:
+        handle = self._require(doc)
+        try:
+            handle.native.save(str(path), garbage=4, deflate=True, incremental=incremental)
+        except Exception as exc:
+            raise FileOpenError(f"保存到 {path} 失败：{exc}") from exc
 
     # ------------------------------------------------------------------
     # 内部工具

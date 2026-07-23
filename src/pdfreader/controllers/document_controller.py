@@ -151,3 +151,55 @@ class DocumentController(QObject):
             return []
         bounds = self._document.get_all_page_bounds()
         return [(int(b.width), int(b.height)) for b in bounds]
+
+    # ------------------------------------------------------------------
+    # 编辑操作（阶段 6）
+    # ------------------------------------------------------------------
+    def delete_page(self, page_num: int) -> bool:
+        """删除指定页。成功返回 True。"""
+        if self._document is None or self._document.is_closed:
+            return False
+        try:
+            self._document.delete_page(page_num)
+            return True
+        except Exception:
+            return False
+
+    def rotate_page(self, page_num: int, degrees: int) -> bool:
+        """旋转指定页。成功返回 True。"""
+        if self._document is None or self._document.is_closed:
+            return False
+        try:
+            self._document.rotate_page(page_num, degrees)
+            return True
+        except Exception:
+            return False
+
+    def merge(self, other_path: Path) -> int:
+        """合并另一个 PDF，返回追加页数（失败返回 0）。"""
+        if self._document is None or self._document.is_closed:
+            return 0
+        try:
+            return self._document.merge(other_path)
+        except Exception:
+            return 0
+
+    def add_watermark(self, page_num: int, text: str) -> bool:
+        """给指定页添加水印。成功返回 True。"""
+        if self._document is None or self._document.is_closed:
+            return False
+        try:
+            self._document.add_watermark(page_num, text)
+            return True
+        except Exception:
+            return False
+
+    def save_as(self, path: Path) -> bool:
+        """另存为。成功返回 True。"""
+        if self._document is None or self._document.is_closed:
+            return False
+        try:
+            self._document.save(path)
+            return True
+        except Exception:
+            return False

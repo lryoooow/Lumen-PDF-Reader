@@ -120,6 +120,36 @@ class MainWindow(QMainWindow):
         self.find_action.setEnabled(False)
         edit_menu.addAction(self.find_action)
 
+        edit_menu.addSeparator()
+
+        self.delete_page_action = QAction(self.tr("删除当前页"), self)
+        self.delete_page_action.triggered.connect(self._on_delete_page)
+        self.delete_page_action.setEnabled(False)
+        edit_menu.addAction(self.delete_page_action)
+
+        self.rotate_action = QAction(self.tr("旋转当前页"), self)
+        self.rotate_action.triggered.connect(self._on_rotate_page)
+        self.rotate_action.setEnabled(False)
+        edit_menu.addAction(self.rotate_action)
+
+        self.merge_action = QAction(self.tr("合并 PDF..."), self)
+        self.merge_action.triggered.connect(self._on_merge)
+        self.merge_action.setEnabled(False)
+        edit_menu.addAction(self.merge_action)
+
+        self.watermark_action = QAction(self.tr("添加水印..."), self)
+        self.watermark_action.triggered.connect(self._on_watermark)
+        self.watermark_action.setEnabled(False)
+        edit_menu.addAction(self.watermark_action)
+
+        edit_menu.addSeparator()
+
+        self.save_as_action = QAction(self.tr("另存为..."), self)
+        self.save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        self.save_as_action.triggered.connect(self._on_save_as)
+        self.save_as_action.setEnabled(False)
+        edit_menu.addAction(self.save_as_action)
+
         help_menu = menubar.addMenu(self.tr("帮助(&H)"))
         about_action = QAction(self.tr("关于(&A)"), self)
         about_action.setEnabled(False)
@@ -190,6 +220,71 @@ class MainWindow(QMainWindow):
         """点击搜索结果，跳转到对应页。"""
         self.pdf_view.jump_to_page(page_num)
 
+    # ------------------------------------------------------------------
+    # 编辑操作
+    # ------------------------------------------------------------------
+    def _current_page_for_edit(self) -> int:
+        """获取当前页码用于编辑操作（无则返回 0）。"""
+        return self.pdf_view.current_page_num or 0
+
+    def _on_delete_page(self) -> None:
+        page = self._current_page_for_edit()
+        reply = QMessageBox.question(
+            self,
+            self.tr("删除页"),
+            self.tr("确定删除第 %1 页吗？").replace("%1", str(page + 1)),
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            if self._controller.delete_page(page):
+                self._refresh_after_edit()
+            else:
+                QMessageBox.warning(self, self.tr("失败"), self.tr("删除页失败"))
+
+    def _on_rotate_page(self) -> None:
+        page = self._current_page_for_edit()
+        if self._controller.rotate_page(page, 90):
+            self._refresh_after_edit()
+        else:
+            QMessageBox.warning(self, self.tr("失败"), self.tr("旋转页失败"))
+
+    def _on_merge(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("选择要合并的 PDF"), "", _PDF_FILTER)
+        if path:
+            added = self._controller.merge(Path(path))
+            if added > 0:
+                self._refresh_after_edit()
+                self._status.showMessage(f"已合并 {added} 页")
+            else:
+                QMessageBox.warning(self, self.tr("失败"), self.tr("合并失败"))
+
+    def _on_watermark(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        text, ok = QInputDialog.getText(self, self.tr("添加水印"), self.tr("水印文字："))
+        if ok and text:
+            page = self._current_page_for_edit()
+            if self._controller.add_watermark(page, text):
+                self._refresh_after_edit()
+            else:
+                QMessageBox.warning(self, self.tr("失败"), self.tr("添加水印失败"))
+
+    def _on_save_as(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("另存为"), "", _PDF_FILTER)
+        if path:
+            if self._controller.save_as(Path(path)):
+                self._status.showMessage(f"已保存到 {path}")
+            else:
+                QMessageBox.warning(self, self.tr("失败"), self.tr("保存失败"))
+
+    def _refresh_after_edit(self) -> None:
+        """编辑后刷新视图布局与渲染。"""
+        # 重建视图布局（页数/尺寸可能变了）
+        page_sizes = self._controller.get_page_sizes()
+        self.pdf_view.setup_document(self._controller.page_count, page_sizes)
+        # 标记文档已修改（状态栏提示）
+        if self._controller.document is not None and self._controller.document.is_modified:
+            self._status.showMessage(f"共 {self._controller.page_count} 页 · 未保存")
+
     def _setup_render_worker(self) -> None:
         """创建渲染线程并连接信号（在打开文档时按需启动）。"""
         worker = RenderWorker(self)
@@ -237,7 +332,16 @@ class MainWindow(QMainWindow):
         self.zoom_out_action.setEnabled(True)
         self.fit_action.setEnabled(True)
         self.find_action.setEnabled(True)
+        self._enable_edit_actions(True)
         self._status.showMessage(f"共 {page_count} 页 · 渲染中...")
+
+    def _enable_edit_actions(self, enabled: bool) -> None:
+        """启用/禁用编辑相关动作。"""
+        self.delete_page_action.setEnabled(enabled)
+        self.rotate_action.setEnabled(enabled)
+        self.merge_action.setEnabled(enabled)
+        self.watermark_action.setEnabled(enabled)
+        self.save_as_action.setEnabled(enabled)
 
     def _on_worker_document_loaded(self, page_count: int) -> None:
         """渲染线程加载文档成功，触发首屏渲染。"""
@@ -283,6 +387,7 @@ class MainWindow(QMainWindow):
         self.zoom_out_action.setEnabled(False)
         self.fit_action.setEnabled(False)
         self.find_action.setEnabled(False)
+        self._enable_edit_actions(False)
         self._status.showMessage(self.tr("就绪"))
 
     def _on_open_failed(self, result: str, message: str) -> None:
