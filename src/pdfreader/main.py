@@ -1,23 +1,28 @@
 """应用入口。
 
-负责 QApplication 的创建与配置、主窗口的构建与启动事件循环。
-本模块是整个 GUI 应用的唯一起点，通过 ``python -m pdfreader`` 或
+负责 QApplication 的创建与配置、日志初始化、全局异常处理、
+主窗口的构建与启动事件循环。通过 ``python -m pdfreader`` 或
 ``pdfreader``（GUI 脚本入口）调用。
 """
 
 from __future__ import annotations
 
+import contextlib
 import sys
+import traceback
 from types import TracebackType
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from pdfreader import __version__
 from pdfreader.gui.main_window import MainWindow
+from pdfreader.utils.logger import setup_logging
 
 __all__ = ["create_application", "global_exception_handler", "main"]
+
+_logger = setup_logging()
 
 
 def create_application(argv: list[str]) -> QApplication:
@@ -42,20 +47,32 @@ def global_exception_handler(
 ) -> None:
     """全局未捕获异常钩子。
 
-    避免崩溃时静默退出：将异常打印到 stderr，保证可排查。
-    后续阶段会替换为友好的错误对话框 + 日志落盘。
+    记录到日志文件,并弹出友好错误对话框(而非静默崩溃)。
     """
-    sys.__excepthook__(exc_type, exc_value, exc_tb)
+    # 记录完整堆栈到日志
+    _logger.critical("未捕获异常", exc_info=(exc_type, exc_value, exc_tb))
+    # 同时输出到 stderr(便于命令行排查)
+    traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    # 弹出友好对话框(QApplication 可能已存在)
+    app = QApplication.instance()
+    if app is not None:
+        "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        msg = f"{exc_type.__name__}: {exc_value}\n\n详情已记录到日志文件。"
+        with contextlib.suppress(Exception):
+            QMessageBox.critical(None, "程序出错", msg)
 
 
 def main() -> int:
     """启动 PDF Reader 应用，返回退出码。"""
+    _logger.info("PDF Reader %s 启动", __version__)
     sys.excepthook = global_exception_handler
     app = create_application(sys.argv)
 
     window: QMainWindow = MainWindow()
     window.show()
 
+    _logger.info("进入事件循环")
     return app.exec()
 
 
