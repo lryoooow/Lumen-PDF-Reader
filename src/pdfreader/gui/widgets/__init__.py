@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pdfreader.gui.widgets.annotation_toolbar import AnnotationToolbar
 from pdfreader.gui.widgets.pdf_view import PdfView
 
-__all__ = ["PdfView"]
+__all__ = ["AnnotationToolbar", "PdfView"]

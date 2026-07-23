@@ -29,9 +29,12 @@ from pdfreader.engines.exceptions import (
     SearchError,
 )
 from pdfreader.engines.types import (
+    Annotation,
     DocumentMeta,
+    InkStroke,
     PageText,
     PixmapData,
+    Point,
     Rect,
     SearchHit,
     SearchResult,
@@ -338,6 +341,69 @@ class PyMuPdfEngine:
             handle.native.save(str(path), garbage=4, deflate=True, incremental=incremental)
         except Exception as exc:
             raise FileOpenError(f"保存到 {path} 失败：{exc}") from exc
+
+    # ------------------------------------------------------------------
+    # 批注操作
+    # ------------------------------------------------------------------
+    def add_highlight(self, doc: EngineDocument, page_num: int, rect: Rect) -> None:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            page.add_highlight_annot(pymupdf.Rect(rect.x0, rect.y0, rect.x1, rect.y1))
+        except Exception as exc:
+            raise PdfEngineError(f"添加高亮失败：{exc}") from exc
+
+    def add_ink(self, doc: EngineDocument, page_num: int, strokes: tuple[InkStroke, ...]) -> None:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            # PyMuPDF ink 格式: list[list[(x, y)]]
+            lines = [[(p.x, p.y) for p in stroke.points] for stroke in strokes]
+            page.add_ink_annot(lines)
+        except Exception as exc:
+            raise PdfEngineError(f"添加手写失败：{exc}") from exc
+
+    def add_text_annot(self, doc: EngineDocument, page_num: int, point: Point, text: str) -> None:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            page.add_text_annot(pymupdf.Point(point.x, point.y), text)
+        except Exception as exc:
+            raise PdfEngineError(f"添加便签失败：{exc}") from exc
+
+    def list_annotations(self, doc: EngineDocument, page_num: int) -> list[Annotation]:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        result: list[Annotation] = []
+        try:
+            for annot in page.annots():
+                info = annot.info or {}
+                a_type = int(annot.type[0]) if annot.type else 0
+                r = annot.rect
+                result.append(
+                    Annotation(
+                        page_num=page_num,
+                        annot_type=a_type,
+                        rect=Rect(float(r.x0), float(r.y0), float(r.x1), float(r.y1)),
+                        content=str(info.get("content", "")),
+                        title=str(info.get("title", "")),
+                    )
+                )
+        except Exception as exc:
+            raise PdfEngineError(f"列举批注失败：{exc}") from exc
+        return result
+
+    def delete_annotation(self, doc: EngineDocument, page_num: int, index: int) -> bool:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            annots = list(page.annots())
+            if 0 <= index < len(annots):
+                page.delete_annot(annots[index])
+                return True
+            return False
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # 内部工具

@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
+    QGraphicsView,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -22,10 +23,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pdfreader.controllers import DocumentController, OpenResult
+from pdfreader.controllers import (
+    AnnotationController,
+    AnnotationMode,
+    DocumentController,
+    OpenResult,
+)
 from pdfreader.engines.types import SearchResult
 from pdfreader.gui.panels import SearchPanel
-from pdfreader.gui.widgets import PdfView
+from pdfreader.gui.widgets import AnnotationToolbar, PdfView
 from pdfreader.workers import RenderWorker, SearchWorker
 
 __all__ = ["MainWindow"]
@@ -39,6 +45,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._controller = DocumentController()
+        self._annotation_controller = AnnotationController()
         self._render_worker: RenderWorker | None = None
         self._search_worker: SearchWorker | None = None
         self._setup_window()
@@ -47,6 +54,7 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
         self._setup_search_panel()
+        self._setup_annotation()
         self._connect_signals()
 
     # ------------------------------------------------------------------
@@ -177,6 +185,21 @@ class MainWindow(QMainWindow):
         self.search_panel.searchRequested.connect(self._on_search_requested)
         self.search_panel.resultClicked.connect(self._on_search_result_clicked)
 
+    def _setup_annotation(self) -> None:
+        """创建批注工具栏与控制器连接。"""
+        self.annotation_toolbar = AnnotationToolbar(self.tr("批注"), self)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.annotation_toolbar)
+        self.annotation_toolbar.setVisible(False)
+        # 视图注入批注控制器
+        self.pdf_view.set_annotation_controller(self._annotation_controller)
+        # 工具栏 → 控制器模式切换
+        self.annotation_toolbar.modeRequested.connect(self._annotation_controller.set_mode)
+        # 控制器 → 创建批注请求 → 委托文档
+        self._annotation_controller.highlightRequested.connect(self._on_annot_highlight)
+        self._annotation_controller.inkRequested.connect(self._on_annot_ink)
+        self._annotation_controller.textRequested.connect(self._on_annot_text)
+        self._annotation_controller.modeChanged.connect(self._on_annot_mode_changed)
+
     # ------------------------------------------------------------------
     # 信号连接
     # ------------------------------------------------------------------
@@ -285,6 +308,52 @@ class MainWindow(QMainWindow):
         if self._controller.document is not None and self._controller.document.is_modified:
             self._status.showMessage(f"共 {self._controller.page_count} 页 · 未保存")
 
+    # ------------------------------------------------------------------
+    # 批注操作
+    # ------------------------------------------------------------------
+    def _on_annot_mode_changed(self, mode: str) -> None:
+        names = {
+            AnnotationMode.NONE: "浏览",
+            AnnotationMode.HIGHLIGHT: "高亮",
+            AnnotationMode.INK: "手写",
+            AnnotationMode.TEXT: "便签",
+        }
+        # 批注模式下用等待箭头光标，浏览模式恢复拖拽
+        from PySide6.QtGui import QCursor
+
+        if mode == AnnotationMode.NONE:
+            self.pdf_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.pdf_view.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        else:
+            self.pdf_view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self._status.showMessage(f"批注模式：{names.get(mode, mode)}")
+
+    def _on_annot_highlight(self, page_num: int, rect) -> None:  # type: ignore[no-untyped-def]
+        if self._controller.document is not None:
+            self._controller.document.add_highlight(page_num, rect)
+            self._refresh_page(page_num)
+
+    def _on_annot_ink(self, page_num: int, stroke) -> None:  # type: ignore[no-untyped-def]
+        if self._controller.document is not None:
+            self._controller.document.add_ink(page_num, (stroke,))
+            self._refresh_page(page_num)
+
+    def _on_annot_text(self, page_num: int, point) -> None:  # type: ignore[no-untyped-def]
+        if self._controller.document is None:
+            return
+        from PySide6.QtWidgets import QInputDialog
+
+        text, ok = QInputDialog.getText(self, self.tr("便签"), self.tr("输入便签内容："))
+        if ok and text:
+            self._controller.document.add_text_annot(page_num, point, text)
+            self._refresh_page(page_num)
+
+    def _refresh_page(self, page_num: int) -> None:
+        """批注后重新渲染该页（清除缓存并请求重渲染）。"""
+        self.pdf_view._rendered_cache.remove(page_num)
+        if self._render_worker is not None:
+            self._render_worker.request_render(page_num, self.pdf_view.zoom)
+
     def _setup_render_worker(self) -> None:
         """创建渲染线程并连接信号（在打开文档时按需启动）。"""
         worker = RenderWorker(self)
@@ -333,6 +402,7 @@ class MainWindow(QMainWindow):
         self.fit_action.setEnabled(True)
         self.find_action.setEnabled(True)
         self._enable_edit_actions(True)
+        self.annotation_toolbar.setVisible(True)
         self._status.showMessage(f"共 {page_count} 页 · 渲染中...")
 
     def _enable_edit_actions(self, enabled: bool) -> None:
@@ -378,6 +448,10 @@ class MainWindow(QMainWindow):
             self._search_worker = None
         self.search_panel.clear()
         self.search_panel.setVisible(False)
+        # 重置批注模式并隐藏工具栏
+        self._annotation_controller.set_mode(AnnotationMode.NONE)
+        self.annotation_toolbar.setVisible(False)
+        self.annotation_toolbar.reset_to_select()
         self.pdf_view.clear()
         self.pdf_view.hide()
         self._placeholder.show()

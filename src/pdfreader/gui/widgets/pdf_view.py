@@ -15,8 +15,10 @@ PyMuPDF 非线程安全：Document 仅存在于 RenderWorker 线程内，
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPixmap
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
 
 from pdfreader.engines.types import PixmapData
@@ -24,6 +26,9 @@ from pdfreader.utils.cache import LRUCache
 from pdfreader.utils.qt_bridge import pixmap_to_qpixmap
 
 __all__ = ["PAGE_GAP", "PdfView"]
+
+if TYPE_CHECKING:
+    from pdfreader.controllers.annotation_controller import AnnotationController
 
 # 页与页之间的垂直间距（像素）
 PAGE_GAP = 12
@@ -66,6 +71,70 @@ class PdfView(QGraphicsView):
         self._rendered_cache: LRUCache = LRUCache(capacity=cache_size)
         self._current_page: int | None = None
         self._placeholder_pixmap: QPixmap | None = None
+        # 批注支持（阶段 7）
+        self._annotation_controller: AnnotationController | None = None
+
+    def set_annotation_controller(self, controller: AnnotationController) -> None:
+        """注入批注控制器，使视图能在批注模式下转发鼠标事件。"""
+        self._annotation_controller = controller
+
+    # ------------------------------------------------------------------
+    # 鼠标事件（批注模式）
+    # ------------------------------------------------------------------
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._annotation_controller and self._annotation_controller.is_active:
+            page_num, pdf_point = self._event_to_pdf(event)
+            if page_num is not None and pdf_point is not None:
+                self._annotation_controller.on_press(page_num, pdf_point)
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._annotation_controller
+            and self._annotation_controller.is_active
+            and self._annotation_controller.mode != "none"
+        ):
+            page_num, pdf_point = self._event_to_pdf(event)
+            if page_num is not None and pdf_point is not None:
+                self._annotation_controller.on_move(page_num, pdf_point)
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._annotation_controller and self._annotation_controller.is_active:
+            page_num, pdf_point = self._event_to_pdf(event)
+            if page_num is not None and pdf_point is not None:
+                self._annotation_controller.on_release(page_num, pdf_point)
+                return
+        super().mouseReleaseEvent(event)
+
+    def _event_to_pdf(self, event: QMouseEvent) -> tuple[int | None, QPointF | None]:
+        """将鼠标事件转换为 (页码, PDF点坐标 QPointF)。
+
+        坐标换算：视口像素 → 场景坐标 → PDF 点（÷zoom）。
+        """
+        scene_pt = self.mapToScene(event.position().toPoint())
+        scene_x = scene_pt.x()
+        scene_y = scene_pt.y()
+        # 找到该坐标所在的页
+        page_num = self._page_at_y(scene_y)
+        if page_num is None:
+            return None, None
+        # PDF 点坐标 = (场景坐标 - 页偏移) ÷ zoom
+        page_y = self._page_y_positions[page_num]
+        pdf_x = scene_x / self._zoom
+        pdf_y = (scene_y - page_y) / self._zoom
+        return page_num, QPointF(pdf_x, pdf_y)
+
+    def _page_at_y(self, scene_y: float) -> int | None:
+        """返回场景 y 坐标所在的页码。"""
+        for i in range(self._page_count):
+            y = self._page_y_positions[i]
+            _, h = self._scaled_size(i)
+            if y <= scene_y <= y + h:
+                return i
+        return None
 
     # ------------------------------------------------------------------
     # 属性

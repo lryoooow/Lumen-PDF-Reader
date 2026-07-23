@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
+from pdfreader.controllers.annotation_controller import (
+    AnnotationController,
+    AnnotationMode,
+)
 from pdfreader.controllers.document_controller import DocumentController, OpenResult
 
-__all__ = ["DocumentController", "OpenResult"]
+__all__ = ["AnnotationController", "AnnotationMode", "DocumentController", "OpenResult"]

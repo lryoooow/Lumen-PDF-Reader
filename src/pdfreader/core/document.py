@@ -19,7 +19,15 @@ from pathlib import Path
 from pdfreader.core.page import Page
 from pdfreader.engines.base import EngineDocument, PdfEngine
 from pdfreader.engines.exceptions import PdfEngineError
-from pdfreader.engines.types import DocumentMeta, PixmapData, Rect, SearchResult
+from pdfreader.engines.types import (
+    Annotation,
+    DocumentMeta,
+    InkStroke,
+    PixmapData,
+    Point,
+    Rect,
+    SearchResult,
+)
 
 __all__ = ["Document", "DocumentState"]
 
@@ -218,6 +226,49 @@ class Document:
         assert self._handle is not None
         self._engine.save(self._handle, path)
         self.mark_saved()
+
+    # ------------------------------------------------------------------
+    # 批注操作（阶段 7）
+    # ------------------------------------------------------------------
+    def add_highlight(self, page_num: int, rect: Rect) -> None:
+        """添加高亮批注。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.add_highlight(self._handle, page_num, rect)
+        self.invalidate_page_cache(page_num)
+        self.mark_modified()
+
+    def add_ink(self, page_num: int, strokes: tuple[InkStroke, ...]) -> None:
+        """添加手写笔迹批注。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.add_ink(self._handle, page_num, strokes)
+        self.invalidate_page_cache(page_num)
+        self.mark_modified()
+
+    def add_text_annot(self, page_num: int, point: Point, text: str) -> None:
+        """添加文本便签批注。"""
+        self._ensure_open()
+        assert self._handle is not None
+        self._engine.add_text_annot(self._handle, page_num, point, text)
+        self.invalidate_page_cache(page_num)
+        self.mark_modified()
+
+    def list_annotations(self, page_num: int) -> list[Annotation]:
+        """列出指定页的所有批注。"""
+        self._ensure_open()
+        assert self._handle is not None
+        return self._engine.list_annotations(self._handle, page_num)
+
+    def delete_annotation(self, page_num: int, index: int) -> bool:
+        """删除指定页的第 index 个批注。"""
+        self._ensure_open()
+        assert self._handle is not None
+        ok = self._engine.delete_annotation(self._handle, page_num, index)
+        if ok:
+            self.invalidate_page_cache(page_num)
+            self.mark_modified()
+        return ok
 
     # ------------------------------------------------------------------
     # 修改状态管理（阶段 6 编辑功能将大量使用）

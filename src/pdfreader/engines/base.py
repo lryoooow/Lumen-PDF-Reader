@@ -17,9 +17,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from pdfreader.engines.types import (
+    Annotation,
     DocumentMeta,
+    InkStroke,
     PageText,
     PixmapData,
+    Point,
     Rect,
     SearchResult,
 )
@@ -165,4 +168,27 @@ class PdfEngine(Protocol):
 
     def close(self, doc: EngineDocument) -> None:
         """关闭文档，释放资源。"""
+        ...
+
+    # ------------------------------------------------------------------
+    # 批注操作（阶段 7）
+    # ------------------------------------------------------------------
+    def add_highlight(self, doc: EngineDocument, page_num: int, rect: Rect) -> None:
+        """给指定页添加高亮批注。"""
+        ...
+
+    def add_ink(self, doc: EngineDocument, page_num: int, strokes: tuple[InkStroke, ...]) -> None:
+        """给指定页添加手写笔迹批注。"""
+        ...
+
+    def add_text_annot(self, doc: EngineDocument, page_num: int, point: Point, text: str) -> None:
+        """给指定页添加文本便签批注。"""
+        ...
+
+    def list_annotations(self, doc: EngineDocument, page_num: int) -> list[Annotation]:
+        """列出指定页的所有批注。"""
+        ...
+
+    def delete_annotation(self, doc: EngineDocument, page_num: int, index: int) -> bool:
+        """删除指定页的第 index 个批注。返回是否成功。"""
         ...

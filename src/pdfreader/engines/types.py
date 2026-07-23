@@ -15,7 +15,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 __all__ = [
+    "Annotation",
+    "AnnotationType",
     "DocumentMeta",
+    "InkStroke",
     "PageText",
     "PixmapData",
     "Point",
@@ -138,3 +141,73 @@ class PageText:
 
     def __iter__(self) -> Iterator[TextSpan]:
         return iter(self.spans)
+
+
+# ---------------------------------------------------------------------------
+# 批注（阶段 7）
+# ---------------------------------------------------------------------------
+class AnnotationType:
+    """批注类型常量（对应 PyMuPDF 的 annot.type[0]）。"""
+
+    TEXT = 0  # 文本便签
+    HIGHLIGHT = 8  # 高亮
+    UNDERLINE = 9  # 下划线
+    STRIKEOUT = 11  # 删除线
+    SQUIGGLY = 12  # 波浪线
+    INK = 15  # 手写
+    SQUARE = 14  # 矩形框
+    CIRCLE = 13  # 圆形
+
+
+@dataclass(frozen=True, slots=True)
+class InkStroke:
+    """手写笔迹的一条线（点序列）。"""
+
+    points: tuple[Point, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Annotation:
+    """批注的引擎无关表示。
+
+    Attributes:
+        page_num: 所在页码（0-based）
+        annot_type: AnnotationType 常量
+        rect: 批注边界框（PDF 点单位）
+        content: 文本内容（便签内容等）
+        title: 作者
+        strokes: 手写笔迹（仅 INK 类型有意义）
+    """
+
+    page_num: int
+    annot_type: int
+    rect: Rect
+    content: str = ""
+    title: str = ""
+    strokes: tuple[InkStroke, ...] = field(default_factory=tuple)
+
+    @property
+    def is_highlight(self) -> bool:
+        return self.annot_type == AnnotationType.HIGHLIGHT
+
+    @property
+    def is_ink(self) -> bool:
+        return self.annot_type == AnnotationType.INK
+
+    @property
+    def is_text(self) -> bool:
+        return self.annot_type == AnnotationType.TEXT
+
+    @property
+    def type_name(self) -> str:
+        names = {
+            AnnotationType.TEXT: "便签",
+            AnnotationType.HIGHLIGHT: "高亮",
+            AnnotationType.UNDERLINE: "下划线",
+            AnnotationType.STRIKEOUT: "删除线",
+            AnnotationType.SQUIGGLY: "波浪线",
+            AnnotationType.INK: "手写",
+            AnnotationType.SQUARE: "矩形",
+            AnnotationType.CIRCLE: "圆形",
+        }
+        return names.get(self.annot_type, f"类型{self.annot_type}")
