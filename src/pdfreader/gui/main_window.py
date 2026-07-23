@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -32,7 +33,7 @@ from pdfreader.controllers import (
 from pdfreader.engines.types import SearchResult
 from pdfreader.gui.panels import SearchPanel
 from pdfreader.gui.widgets import AnnotationToolbar, PdfView
-from pdfreader.workers import RenderWorker, SearchWorker
+from pdfreader.workers import OcrWorker, RenderWorker, SearchWorker
 
 __all__ = ["MainWindow"]
 
@@ -48,6 +49,8 @@ class MainWindow(QMainWindow):
         self._annotation_controller = AnnotationController()
         self._render_worker: RenderWorker | None = None
         self._search_worker: SearchWorker | None = None
+        self._ocr_worker: OcrWorker | None = None
+        self._ocr_results: dict[int, str] = {}  # page_num -> 识别文本
         self._setup_window()
         self._setup_central_widget()
         self._setup_menu()
@@ -157,6 +160,17 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self._on_save_as)
         self.save_as_action.setEnabled(False)
         edit_menu.addAction(self.save_as_action)
+
+        tools_menu = menubar.addMenu(self.tr("工具(&T)"))
+        self.ocr_page_action = QAction(self.tr("OCR 识别当前页"), self)
+        self.ocr_page_action.triggered.connect(self._on_ocr_current_page)
+        self.ocr_page_action.setEnabled(False)
+        tools_menu.addAction(self.ocr_page_action)
+
+        self.ocr_all_action = QAction(self.tr("OCR 识别全部页"), self)
+        self.ocr_all_action.triggered.connect(self._on_ocr_all_pages)
+        self.ocr_all_action.setEnabled(False)
+        tools_menu.addAction(self.ocr_all_action)
 
         help_menu = menubar.addMenu(self.tr("帮助(&H)"))
         about_action = QAction(self.tr("关于(&A)"), self)
@@ -354,6 +368,65 @@ class MainWindow(QMainWindow):
         if self._render_worker is not None:
             self._render_worker.request_render(page_num, self.pdf_view.zoom)
 
+    # ------------------------------------------------------------------
+    # OCR 操作
+    # ------------------------------------------------------------------
+    def _on_ocr_current_page(self) -> None:
+        page = self.pdf_view.current_page_num or 0
+        self._start_ocr([page])
+
+    def _on_ocr_all_pages(self) -> None:
+        self._start_ocr(None)
+
+    def _start_ocr(self, page_nums: list[int] | None) -> None:
+        """启动 OCR 线程。page_nums=None 表示全部页。"""
+        if not self._controller.has_document:
+            return
+        from pdfreader.workers import OcrWorker
+
+        # 显示进度对话框
+        self._ocr_progress = QProgressDialog(
+            self.tr("OCR 识别中..."), self.tr("取消"), 0, 100, self
+        )
+        self._ocr_progress.setWindowTitle(self.tr("OCR"))
+        self._ocr_progress.setMinimumDuration(0)
+        self._ocr_progress.show()
+
+        worker = OcrWorker(self)
+        worker.pageOcrCompleted.connect(self._on_ocr_page_done)
+        worker.progress.connect(self._on_ocr_progress)
+        worker.ocrCompleted.connect(self._on_ocr_all_done)
+        worker.ocrFailed.connect(self._on_ocr_failed)
+        assert self._controller.document is not None
+        worker.setup(self._controller.document.path, page_nums=page_nums)
+        self._ocr_worker = worker
+        self._ocr_progress.canceled.connect(worker.shutdown)
+        worker.start()
+
+    def _on_ocr_page_done(self, result) -> None:  # type: ignore[no-untyped-def]
+        self._ocr_results[result.page_num] = result.text
+
+    def _on_ocr_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            self._ocr_progress.setValue(int(done * 100 / total))
+
+    def _on_ocr_all_done(self, count: int) -> None:
+        self._ocr_progress.close()
+        # 显示 OCR 结果(把识别文本拼接到消息)
+        total_text = "\n".join(self._ocr_results.values())
+        preview = total_text[:500] + ("..." if len(total_text) > 500 else "")
+        QMessageBox.information(
+            self,
+            self.tr("OCR 完成"),
+            self.tr("已识别 %1 页。\n\n识别结果：\n%2")
+            .replace("%1", str(count))
+            .replace("%2", preview or "(无文本)"),
+        )
+
+    def _on_ocr_failed(self, message: str) -> None:
+        self._ocr_progress.close()
+        QMessageBox.warning(self, self.tr("OCR 失败"), message)
+
     def _setup_render_worker(self) -> None:
         """创建渲染线程并连接信号（在打开文档时按需启动）。"""
         worker = RenderWorker(self)
@@ -412,6 +485,8 @@ class MainWindow(QMainWindow):
         self.merge_action.setEnabled(enabled)
         self.watermark_action.setEnabled(enabled)
         self.save_as_action.setEnabled(enabled)
+        self.ocr_page_action.setEnabled(enabled)
+        self.ocr_all_action.setEnabled(enabled)
 
     def _on_worker_document_loaded(self, page_count: int) -> None:
         """渲染线程加载文档成功，触发首屏渲染。"""
@@ -448,6 +523,13 @@ class MainWindow(QMainWindow):
             self._search_worker = None
         self.search_panel.clear()
         self.search_panel.setVisible(False)
+        # 关闭 OCR 线程并清空结果
+        ow = getattr(self, "_ocr_worker", None)
+        if ow is not None:
+            ow.shutdown()
+            ow.wait(2000)
+            self._ocr_worker = None
+        self._ocr_results.clear()
         # 重置批注模式并隐藏工具栏
         self._annotation_controller.set_mode(AnnotationMode.NONE)
         self.annotation_toolbar.setVisible(False)

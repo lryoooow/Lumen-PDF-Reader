@@ -24,9 +24,9 @@ def pixmap_to_qimage(data: PixmapData):  # type: ignore[no-untyped-def]
     from PySide6.QtGui import QImage
 
     if data.n == 3:
-        fmt = QImage.Format_RGB888  # type: ignore[attr-defined]
+        fmt = QImage.Format_RGB888
     elif data.n == 4:
-        fmt = QImage.Format_RGBA8888  # type: ignore[attr-defined]
+        fmt = QImage.Format_RGBA8888
     else:
         raise ValueError(f"不支持的像素格式：每像素 {data.n} 字节（仅支持 3=RGB / 4=RGBA）")
 

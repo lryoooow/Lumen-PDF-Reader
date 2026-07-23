@@ -2,6 +2,10 @@
 
 纯 Python 实现，通过引擎层访问 PDF 能力。
 **铁律**：不直接 ``import pymupdf``。
-
-阶段 8/9 实现具体服务。
 """
+
+from __future__ import annotations
+
+from pdfreader.services.ocr import OcrError, OcrResult, OcrService
+
+__all__ = ["OcrError", "OcrResult", "OcrService"]

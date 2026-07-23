@@ -32,6 +32,7 @@ classifiers = [
 dependencies = [
     "PySide6>=6.8,<6.10",
     "pymupdf>=1.24,<1.30",
+    "rapidocr-onnxruntime>=1.4,<1.5",
 ]
 
 [project.urls]
@@ -110,9 +111,12 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 files = ["src/pdfreader"]
+# 不深入检查第三方库的内部存根（避免 numpy 2.x 存根的 3.12+ 语法报错）
+follow_imports = "skip"
+exclude = ["\\.venv/"]
 
 [[tool.mypy.overrides]]
-module = ["PySide6.*", "shiboken6.*", "pymupdf.*"]
+module = ["PySide6.*", "shiboken6.*", "pymupdf.*", "rapidocr_onnxruntime.*"]
 ignore_missing_imports = true
 
 # PyMuPDF 是动态类型库（无类型存根），在 PyMuPdfEngine 内部调用其 API
