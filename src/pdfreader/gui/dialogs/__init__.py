@@ -1,4 +1,7 @@
-"""对话框（设置、关于、导出、进度等）。
+"""对话框（设置、关于、导出、进度等）。"""
 
-后续阶段填充。
-"""
+from __future__ import annotations
+
+from pdfreader.gui.dialogs.export_dialog import ExportDialog
+
+__all__ = ["ExportDialog"]

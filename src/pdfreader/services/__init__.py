@@ -6,6 +6,22 @@
 
 from __future__ import annotations
 
+from pdfreader.services.converter import (
+    FORMATS,
+    ConvertError,
+    ConvertFormat,
+    ConvertResult,
+    ConvertService,
+)
 from pdfreader.services.ocr import OcrError, OcrResult, OcrService
 
-__all__ = ["OcrError", "OcrResult", "OcrService"]
+__all__ = [
+    "FORMATS",
+    "ConvertError",
+    "ConvertFormat",
+    "ConvertResult",
+    "ConvertService",
+    "OcrError",
+    "OcrResult",
+    "OcrService",
+]

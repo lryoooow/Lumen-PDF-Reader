@@ -33,6 +33,9 @@ dependencies = [
     "PySide6>=6.8,<6.10",
     "pymupdf>=1.24,<1.30",
     "rapidocr-onnxruntime>=1.4,<1.5",
+    "pdf2docx>=0.5,<0.6",
+    "pdfplumber>=0.11,<0.12",
+    "openpyxl>=3.1,<4.0",
 ]
 
 [project.urls]
@@ -116,7 +119,15 @@ follow_imports = "skip"
 exclude = ["\\.venv/"]
 
 [[tool.mypy.overrides]]
-module = ["PySide6.*", "shiboken6.*", "pymupdf.*", "rapidocr_onnxruntime.*"]
+module = [
+    "PySide6.*",
+    "shiboken6.*",
+    "pymupdf.*",
+    "rapidocr_onnxruntime.*",
+    "pdf2docx.*",
+    "pdfplumber.*",
+    "openpyxl.*",
+]
 ignore_missing_imports = true
 
 # PyMuPDF 是动态类型库（无类型存根），在 PyMuPdfEngine 内部调用其 API

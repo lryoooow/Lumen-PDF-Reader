@@ -172,6 +172,13 @@ class MainWindow(QMainWindow):
         self.ocr_all_action.setEnabled(False)
         tools_menu.addAction(self.ocr_all_action)
 
+        tools_menu.addSeparator()
+
+        self.export_action = QAction(self.tr("导出 / 转换..."), self)
+        self.export_action.triggered.connect(self._on_export)
+        self.export_action.setEnabled(False)
+        tools_menu.addAction(self.export_action)
+
         help_menu = menubar.addMenu(self.tr("帮助(&H)"))
         about_action = QAction(self.tr("关于(&A)"), self)
         about_action.setEnabled(False)
@@ -427,6 +434,17 @@ class MainWindow(QMainWindow):
         self._ocr_progress.close()
         QMessageBox.warning(self, self.tr("OCR 失败"), message)
 
+    # ------------------------------------------------------------------
+    # 导出 / 转换
+    # ------------------------------------------------------------------
+    def _on_export(self) -> None:
+        if self._controller.document is None:
+            return
+        from pdfreader.gui.dialogs import ExportDialog
+
+        dialog = ExportDialog(self._controller.document.path, self)
+        dialog.exec()
+
     def _setup_render_worker(self) -> None:
         """创建渲染线程并连接信号（在打开文档时按需启动）。"""
         worker = RenderWorker(self)
@@ -487,6 +505,7 @@ class MainWindow(QMainWindow):
         self.save_as_action.setEnabled(enabled)
         self.ocr_page_action.setEnabled(enabled)
         self.ocr_all_action.setEnabled(enabled)
+        self.export_action.setEnabled(enabled)
 
     def _on_worker_document_loaded(self, page_count: int) -> None:
         """渲染线程加载文档成功，触发首屏渲染。"""
