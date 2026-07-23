@@ -31,6 +31,7 @@ classifiers = [
 ]
 dependencies = [
     "PySide6>=6.8,<6.10",
+    "pymupdf>=1.24,<1.30",
 ]
 
 [project.urls]
@@ -111,8 +112,15 @@ warn_unused_configs = true
 files = ["src/pdfreader"]
 
 [[tool.mypy.overrides]]
-module = ["PySide6.*", "shiboken6.*"]
+module = ["PySide6.*", "shiboken6.*", "pymupdf.*"]
 ignore_missing_imports = true
+
+# PyMuPDF 是动态类型库（无类型存根），在 PyMuPdfEngine 内部调用其 API
+# 会触发 no-untyped-call。引擎适配层的职责本就是桥接动态类型库，
+# 因此在此模块内放宽该规则；其余模块仍保持 strict。
+[[tool.mypy.overrides]]
+module = "pdfreader.engines.pdf_engine"
+disable_error_code = ["no-untyped-call"]
 
 # ----------------------------------------------------------------------------
 # Pytest
