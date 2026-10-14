@@ -1,16 +1,24 @@
 """用户设置持久化。
 
-将用户偏好(最近文件、缩放、窗口状态等)保存为 JSON,跨会话恢复。
-位置:用户配置目录 ~/.pdfreader/settings.json
+将用户偏好（最近文件、阅读位置、窗口状态、阅读模式等）保存为 JSON，跨会话恢复。
+位置：用户配置目录 ~/.pdfreader/settings.json
+
+读取时逐字段校验类型：设置文件被手工改坏 / 来自旧版本时，坏字段回退默认值，
+而不是把错误类型带进程序（例如 ``recent_files: null`` 会在启动时崩溃）。
+写入先写临时文件再原子替换，避免写到一半崩溃留下半截 JSON。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-__all__ = ["Settings", "SettingsStore", "default_settings_path"]
+__all__ = ["ReadingPosition", "Settings", "SettingsStore", "default_settings_path"]
+
+# 记住阅读位置的文件数上限（超出按最近使用淘汰）
+MAX_READING_POSITIONS = 200
 
 
 def default_settings_path() -> Path:
@@ -18,30 +26,83 @@ def default_settings_path() -> Path:
     return Path.home() / ".pdfreader" / "settings.json"
 
 
+@dataclass(frozen=True)
+class ReadingPosition:
+    """某个文件上次的阅读位置。"""
+
+    page: int
+    offset: float = 0.0  # 视口顶边在页内的相对位置 0..1
+    zoom: float = 0.0  # 0 表示沿用默认（适应宽度）
+
+
 @dataclass
 class Settings:
-    """用户设置。
-
-    Attributes:
-        recent_files: 最近打开的文件路径列表
-        default_zoom: 默认缩放系数
-        window_width / window_height: 上次窗口尺寸
-        window_maximized: 是否最大化
-    """
+    """用户设置。"""
 
     recent_files: list[str] = field(default_factory=list)
-    default_zoom: float = 1.5
     window_width: int = 1024
     window_height: int = 768
     window_maximized: bool = False
+    theme: str = "light"  # "light" | "dark" | "system"（跟随系统）
+    reading_mode: str = "normal"  # "normal" | "night" | "sepia"
+    highlight_color: str = "#F5D64E"  # 高亮颜色（十六进制）
+    sidebar_visible: bool = True
+    # 文件路径 → [页, 页内偏移, 缩放]，插入顺序即最近使用顺序
+    reading_positions: dict[str, list[float]] = field(default_factory=dict)
 
     def add_recent_file(self, path: str | Path, *, max_count: int = 10) -> None:
-        """添加最近文件(去重、置顶、限制数量)。"""
+        """添加最近文件（去重、置顶、限制数量）。"""
         p = str(path)
         if p in self.recent_files:
             self.recent_files.remove(p)
         self.recent_files.insert(0, p)
         self.recent_files = self.recent_files[:max_count]
+
+    def remove_recent_file(self, path: str | Path) -> None:
+        """从最近文件中移除（文件已被删除 / 移动时）。"""
+        p = str(path)
+        if p in self.recent_files:
+            self.recent_files.remove(p)
+
+    def remember_position(self, path: str | Path, position: ReadingPosition) -> None:
+        key = str(path)
+        self.reading_positions.pop(key, None)
+        self.reading_positions[key] = [position.page, position.offset, position.zoom]
+        while len(self.reading_positions) > MAX_READING_POSITIONS:
+            self.reading_positions.pop(next(iter(self.reading_positions)))
+
+    def position_for(self, path: str | Path) -> ReadingPosition | None:
+        raw = self.reading_positions.get(str(path))
+        if not isinstance(raw, list) or len(raw) < 2:
+            return None
+        try:
+            zoom = float(raw[2]) if len(raw) > 2 else 0.0
+            return ReadingPosition(int(raw[0]), float(raw[1]), zoom)
+        except (TypeError, ValueError):
+            return None
+
+
+def _coerce(name: str, value: object, default: object) -> object:
+    """把 JSON 里的值校正为字段默认值的类型；不合法时返回默认值。"""
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    if isinstance(default, int):
+        return value if isinstance(value, int) and not isinstance(value, bool) else default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else default
+    if isinstance(default, list):
+        if isinstance(value, list):
+            return [str(v) for v in value if isinstance(v, str)]
+        return default
+    if isinstance(default, dict):
+        if isinstance(value, dict):
+            return {
+                str(k): list(v)
+                for k, v in value.items()
+                if isinstance(v, list) and all(isinstance(x, (int, float)) for x in v)
+            }
+        return default
+    return default
 
 
 class SettingsStore:
@@ -55,18 +116,31 @@ class SettingsStore:
         return self._path
 
     def load(self) -> Settings:
-        """加载设置;文件不存在或损坏时返回默认值。"""
-        if not self._path.exists():
-            return Settings()
+        """加载设置；文件不存在、损坏或字段类型不对时对应部分回退默认值。"""
+        defaults = Settings()
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            return Settings(**{k: v for k, v in data.items() if k in Settings.__dataclass_fields__})
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return Settings()
+        except FileNotFoundError:
+            return defaults
+        except (OSError, ValueError):
+            return defaults
+        if not isinstance(data, dict):
+            return defaults
+        values = {
+            f.name: _coerce(f.name, data[f.name], getattr(defaults, f.name))
+            for f in fields(Settings)
+            if f.name in data
+        }
+        return Settings(**values)  # type: ignore[arg-type]
 
     def save(self, settings: Settings) -> None:
-        """保存设置(自动创建目录)。"""
+        """保存设置（自动创建目录；先写临时文件再原子替换）。"""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = self._path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            tmp.replace(self._path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise

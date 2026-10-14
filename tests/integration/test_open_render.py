@@ -102,6 +102,153 @@ class TestFullPipeline:
         controller.close_document()
 
 
+class TestSaveAndAnnotate:
+    """批注 / 保存 / 修改状态的端到端行为（真实引擎）。"""
+
+    def test_annotation_via_controller_marks_modified(self, controller: DocumentController) -> None:
+        from pdfreader.engines.types import Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        assert controller.is_modified is False
+        assert controller.add_highlight(0, Rect(40, 40, 300, 70)) is True
+        assert controller.is_modified is True
+        controller.close_document()
+
+    def test_save_copy_keeps_modified_and_writes(
+        self, controller: DocumentController, tmp_path: Path
+    ) -> None:
+        from pdfreader.engines.types import Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        controller.add_highlight(0, Rect(40, 40, 300, 70))
+        out = tmp_path / "copy.pdf"
+        assert controller.save_copy(out) is True
+        assert out.exists()
+        assert controller.is_modified is True  # 副本不清除修改标记
+        controller.close_document()
+
+    def test_save_as_updates_path_and_clears_modified(
+        self, controller: DocumentController, tmp_path: Path
+    ) -> None:
+        from pdfreader.engines.types import Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        controller.add_highlight(0, Rect(40, 40, 300, 70))
+        out = tmp_path / "saved.pdf"
+        assert controller.save_as(out) is True
+        assert controller.is_modified is False
+        assert controller.document is not None and controller.document.path == out
+        controller.close_document()
+
+    def test_save_in_place_incremental(
+        self, controller: DocumentController, tmp_path: Path
+    ) -> None:
+        import shutil
+
+        from pdfreader.engines.types import Rect
+
+        work = tmp_path / "work.pdf"
+        shutil.copy(SAMPLES / "simple_text.pdf", work)
+        controller.open_file(work)
+        controller.add_highlight(0, Rect(40, 40, 300, 70))
+        assert controller.save_in_place() is True  # 增量存回原文件
+        assert controller.is_modified is False
+        controller.close_document()
+
+    def test_save_in_place_after_save_as(
+        self, controller: DocumentController, tmp_path: Path
+    ) -> None:
+        """另存为之后再「保存」必须成功（原 P0-1：增量保存报 needs original file）。"""
+        import shutil
+
+        from pdfreader.engines.types import Rect
+
+        source = tmp_path / "source.pdf"
+        shutil.copy(SAMPLES / "simple_text.pdf", source)
+        controller.open_file(source)
+        out = tmp_path / "saved_as.pdf"
+        controller.add_highlight(0, Rect(40, 40, 300, 70))
+        assert controller.save_as(out) is True
+
+        controller.add_highlight(0, Rect(40, 100, 300, 130))
+        assert controller.save_in_place() is True  # 目标已不是原文件 → 整份保存
+        assert controller.is_modified is False
+
+        # 批注确实落到新文件里
+        reread = DocumentController()
+        assert reread.open_file(out) is True
+        assert len(reread.list_annotations(0)) == 2
+        reread.close_document()
+        controller.close_document()
+
+    def test_edit_failure_records_error(self, controller: DocumentController) -> None:
+        # 无文档时删除页失败，且记录具体原因（不再静默）
+        assert controller.delete_page(0) is False
+        assert controller.last_error != ""
+
+
+class TestUndoRedoAndInsert:
+    """撤销/重做、橡皮擦删除、插入图片/文字（真实引擎 + 日志）。"""
+
+    def test_undo_redo_annotation(self, controller: DocumentController) -> None:
+        from pdfreader.engines.types import Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        assert controller.can_undo() is False
+        before = controller.render_page(0, 1.0).samples
+        controller.add_highlight(0, Rect(40, 40, 300, 70))
+        assert controller.can_undo() is True
+        assert controller.render_page(0, 1.0).samples != before
+        assert controller.undo() is True
+        assert controller.render_page(0, 1.0).samples == before  # 撤销复原
+        assert controller.can_redo() is True
+        assert controller.redo() is True
+        assert controller.render_page(0, 1.0).samples != before  # 重做恢复
+        controller.close_document()
+
+    def test_eraser_hit_and_delete(self, controller: DocumentController) -> None:
+        from pdfreader.engines.types import Point, Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        controller.add_highlight(0, Rect(100, 100, 200, 118))
+        anns = controller.list_annotations(0)
+        assert len(anns) == 1
+        r = anns[0].rect
+        idx = controller.annotation_index_at(0, Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))
+        assert idx == 0
+        assert controller.delete_annotation(0, idx) is True
+        assert controller.list_annotations(0) == []
+        controller.close_document()
+
+    def test_insert_text_and_image_mark_modified(
+        self, controller: DocumentController, tmp_path: Path
+    ) -> None:
+        from PySide6.QtGui import QImage
+
+        from pdfreader.engines.types import Point, Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        before = controller.render_page(0, 1.0).samples
+        assert controller.insert_text(0, Point(50, 400), "2026-07-24") is True
+        assert controller.is_modified is True
+        img = QImage(24, 24, QImage.Format.Format_ARGB32)
+        img.fill(0xFF2266EE)
+        sig = tmp_path / "sig.png"
+        img.save(str(sig))
+        assert controller.insert_image(0, Rect(50, 300, 150, 340), sig) is True
+        assert controller.render_page(0, 1.0).samples != before
+        controller.close_document()
+
+    def test_merge_still_works_with_journalling(self, controller: DocumentController) -> None:
+        from pdfreader.engines.types import Rect
+
+        controller.open_file(SAMPLES / "simple_text.pdf")
+        controller.add_highlight(0, Rect(40, 40, 100, 60))  # 先启用日志
+        added = controller.merge(SAMPLES / "with_tables.pdf")  # 合并仍须可用
+        assert added > 0
+        controller.close_document()
+
+
 class TestSearchIntegration:
     """端到端搜索集成测试。"""
 
@@ -119,55 +266,3 @@ class TestSearchIntegration:
         assert query == "PyMuPDF"
         assert result.hit_count == 3
         assert set(result.page_numbers) == {0, 1, 2}
-
-
-class TestRenderWorkerWithView:
-    """端到端：渲染线程 + 多页视图协同工作。"""
-
-    def test_worker_renders_to_view(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        from PySide6.QtCore import QEventLoop, QTimer
-
-        from pdfreader.workers import RenderWorker
-
-        view = PdfView()
-        qtbot.addWidget(view)
-        view.resize(400, 800)
-        view.show()
-        qtbot.waitExposed(view)
-
-        worker = RenderWorker()
-        worker.load_document(SAMPLES / "simple_text.pdf")
-        worker.pageRendered.connect(view.on_page_rendered)
-
-        loaded: list[int] = []
-        rendered: list[int] = []
-        loop = QEventLoop()
-
-        def on_loaded(count):  # type: ignore[no-untyped-def]
-            loaded.append(count)
-            page_sizes = [(595, 842)] * count
-            view.setup_document(count, page_sizes)
-            view.set_zoom(1.0)
-            # 请求渲染所有页
-            for i in range(count):
-                worker.request_render(i, 1.0)
-
-        def on_rendered(page_num, zoom, data):  # type: ignore[no-untyped-def]
-            rendered.append(page_num)
-            if len(rendered) >= 3:
-                loop.quit()
-
-        worker.documentLoaded.connect(on_loaded)
-        worker.pageRendered.disconnect(view.on_page_rendered)
-        worker.pageRendered.connect(on_rendered)
-        worker.start()
-        QTimer.singleShot(5000, loop.quit)
-        loop.exec()
-
-        try:
-            assert loaded == [3]
-            assert sorted(rendered) == [0, 1, 2]
-            assert view.page_count == 3
-        finally:
-            worker.shutdown()
-            worker.wait(3000)

@@ -15,10 +15,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 __all__ = [
+    "MARKUP_TYPES",
     "Annotation",
     "AnnotationType",
     "DocumentMeta",
     "InkStroke",
+    "LinkInfo",
     "PageText",
     "PixmapData",
     "Point",
@@ -26,6 +28,8 @@ __all__ = [
     "SearchHit",
     "SearchResult",
     "TextSpan",
+    "TocEntry",
+    "WordBox",
 ]
 
 
@@ -132,6 +136,21 @@ class TextSpan:
 
 
 @dataclass(frozen=True, slots=True)
+class WordBox:
+    """单个词及其在页面上的位置（用于拖拽选择文本）。
+
+    ``block`` / ``line`` / ``word_no`` 保留阅读顺序信息，
+    便于把所选词序列重建为带换行的可读文本。
+    """
+
+    rect: Rect
+    text: str
+    block: int
+    line: int
+    word_no: int
+
+
+@dataclass(frozen=True, slots=True)
 class PageText:
     """一页的文本提取结果。"""
 
@@ -147,16 +166,29 @@ class PageText:
 # 批注（阶段 7）
 # ---------------------------------------------------------------------------
 class AnnotationType:
-    """批注类型常量（对应 PyMuPDF 的 annot.type[0]）。"""
+    """批注类型常量（与 PyMuPDF 的 ``PDF_ANNOT_*`` / ``annot.type[0]`` 一一对应）。"""
 
     TEXT = 0  # 文本便签
+    FREE_TEXT = 2  # 文本框
+    SQUARE = 4  # 矩形框
+    CIRCLE = 5  # 圆形
     HIGHLIGHT = 8  # 高亮
     UNDERLINE = 9  # 下划线
+    SQUIGGLY = 10  # 波浪线
     STRIKEOUT = 11  # 删除线
-    SQUIGGLY = 12  # 波浪线
+    STAMP = 13  # 图章
     INK = 15  # 手写
-    SQUARE = 14  # 矩形框
-    CIRCLE = 13  # 圆形
+
+
+# 文字标记类批注（高亮 / 下划线 / 删除线 / 波浪线）：都覆盖一段文字，可提取被标记的原文
+MARKUP_TYPES = frozenset(
+    {
+        AnnotationType.HIGHLIGHT,
+        AnnotationType.UNDERLINE,
+        AnnotationType.STRIKEOUT,
+        AnnotationType.SQUIGGLY,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +209,9 @@ class Annotation:
         content: 文本内容（便签内容等）
         title: 作者
         strokes: 手写笔迹（仅 INK 类型有意义）
+        index: 在该页批注列表中的序号（删除 / 编辑笔记时用）
+        color: 批注颜色 (r, g, b)，0..1；未设置时为 None
+        marked_text: 文字标记类批注覆盖的原文（高亮 / 下划线等），其他类型为空
     """
 
     page_num: int
@@ -185,6 +220,14 @@ class Annotation:
     content: str = ""
     title: str = ""
     strokes: tuple[InkStroke, ...] = field(default_factory=tuple)
+    index: int = -1
+    color: tuple[float, float, float] | None = None
+    marked_text: str = ""
+
+    @property
+    def is_markup(self) -> bool:
+        """是否为文字标记类批注（高亮 / 下划线 / 删除线 / 波浪线）。"""
+        return self.annot_type in MARKUP_TYPES
 
     @property
     def is_highlight(self) -> bool:
@@ -209,5 +252,49 @@ class Annotation:
             AnnotationType.INK: "手写",
             AnnotationType.SQUARE: "矩形",
             AnnotationType.CIRCLE: "圆形",
+            AnnotationType.FREE_TEXT: "文本框",
+            AnnotationType.STAMP: "图章",
         }
         return names.get(self.annot_type, f"类型{self.annot_type}")
+
+
+# ---------------------------------------------------------------------------
+# 目录与链接（科研阅读：大纲导航、参考文献 / 图表交叉引用跳转）
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class TocEntry:
+    """目录（书签 / 大纲）的一项。
+
+    Attributes:
+        level: 层级（1 = 顶级）
+        title: 标题
+        page_num: 目标页码（0-based）；目标无效时为 -1
+        y: 目标在页内的纵坐标（可见帧，PDF 点）；未知时为 None（跳到页首）
+    """
+
+    level: int
+    title: str
+    page_num: int
+    y: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkInfo:
+    """页面上的一个可点击链接。
+
+    ``rect`` 为可见帧坐标。内部跳转时 ``page_num`` ≥ 0（``y`` 为目标纵坐标，可能未知）；
+    外部链接时 ``uri`` 非空。
+    """
+
+    rect: Rect
+    page_num: int = -1
+    y: float | None = None
+    uri: str = ""
+
+    @property
+    def is_internal(self) -> bool:
+        return self.page_num >= 0
+
+    @property
+    def is_external(self) -> bool:
+        return bool(self.uri)

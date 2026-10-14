@@ -26,13 +26,13 @@ def test_show_results(qtbot) -> None:  # type: ignore[no-untyped-def]
 def test_result_clicked_signal(qtbot) -> None:  # type: ignore[no-untyped-def]
     panel = SearchPanel()
     qtbot.addWidget(panel)
-    received: list[int] = []
-    panel.resultClicked.connect(received.append)
+    received: list[tuple] = []
+    panel.resultClicked.connect(lambda page, rect: received.append((page, rect)))
     hits = (SearchHit(page_num=5, rect=Rect(0, 0, 1, 1)),)
     panel.show_results("x", hits)
     # 点击第一项
     panel._result_list.itemClicked.emit(panel._result_list.item(0))
-    assert received == [5]
+    assert received == [(5, Rect(0, 0, 1, 1))]  # 同时带上命中矩形（供视图高亮）
 
 
 def test_search_requested_signal(qtbot) -> None:  # type: ignore[no-untyped-def]

@@ -1,137 +1,57 @@
-# PDF Reader
+# Lumen · PDF 文献阅读器
 
-> 开源多功能 PDF 阅读器与编辑器 · AGPL-3.0
-> 当前版本：**0.0.1**（开发中，阶段 0：工程基础设施）
+> 专注阅读，安静思考 —— 开源的 PDF 文献阅读与批注工具 · AGPL-3.0
+> 当前版本：**Lumen 0.0.1**（版本号见 `pyproject.toml`，变更见 [CHANGELOG](CHANGELOG.md)）
 
-一个用 Python + PySide6 + PyMuPDF 打造的跨平台 PDF 阅读与编辑软件。
+用 Python + PySide6 + PyMuPDF 打造的桌面 PDF 阅读器，面向论文 / 文献阅读场景。
 
-## ✨ 设计目标
+![Lumen 阅读界面](docs/images/reading-annotations.png)
 
-- **阅读**：流畅渲染、连续滚动、缩放、全文搜索、文本选择复制
-- **编辑**：增删页、合并/拆分、旋转、水印
-- **批注**：高亮、手写、便签、框选
-- **OCR**：中文识别（基于 RapidOCR）
-- **转换**：PDF ↔ Word / Excel / 图片 / TXT
+## 功能
 
-## 🛡️ 许可证
+- **阅读**：连续滚动、缩放 10%–800%（高分屏清晰）、跳页对齐页首、记住每个文件的阅读位置、夜间 / 护眼模式
+- **科研导航**：目录、缩略图、参考文献 / 图表链接跳转（先弹预览卡）、后退 / 前进
+- **搜索与复制**：边输边搜（F3 前后跳转）、中文精确到字的选择、去换行复制（便于翻译）
+- **批注与笔记**：五色高亮、下划线 / 删除线 / 波浪线、手写、便签、签名、时间戳；批注面板编辑笔记，一键导出 Markdown
+- **编辑**：删页、旋转、合并、半透明水印、撤销 / 重做
+- **加密文档**：输入密码打开；搜索 / OCR / 导出自动使用密码；另存为保留加密与权限
+- **OCR 与转换**：中文 OCR（RapidOCR）；PDF → 图片 / TXT / Word / Excel
 
-本项目采用 **GNU Affero General Public License v3.0 (AGPL-3.0-or-later)**。
+完整说明见 [docs/01_功能说明](docs/01_功能说明.md)。
 
-AGPL 的"网络条款"意味着：任何通过网络向终端用户提供本软件功能的服务，也必须向所有用户提供完整源代码。这使得本项目对商业闭源使用形成天然限制，符合"开源共享、避免被直接拿去商用"的初衷。
+## 安装（Windows）
 
-## 🧱 技术栈
+运行 `PDFReader-Setup-<版本>.exe` 安装向导即可，无需 Python。安装后可在 PDF 文件右键「打开方式」中选择本程序。
+设置与日志保存在 `%USERPROFILE%\.pdfreader\`，卸载时保留。
 
-| 层 | 技术 | 说明 |
-|---|---|---|
-| GUI 框架 | [PySide6](https://www.qt.io/) (Qt6) | 跨平台桌面 GUI |
-| PDF 引擎 | [PyMuPDF](https://github.com/pymupdf/PyMuPDF) | 渲染/编辑/提取/批注（AGPL，天然兼容） |
-| OCR | [RapidOCR](https://github.com/RapidAI/RapidOCR) | 中文识别（Apache-2.0） |
-| 包管理 | [uv](https://github.com/astral-sh/uv) | 极速依赖管理 |
-| 代码质量 | ruff / mypy / pytest / pre-commit | 格式化 + 类型 + 测试 |
-
-## 📐 架构
-
-采用分层架构，核心是**引擎适配层隔离第三方依赖**：
-
-```
-GUI 表现层 (gui/)         PySide6 控件
-控制器层 (controllers/)    协调 GUI ↔ 业务
-业务核心层 (core/)         纯 Python 模型（不依赖 Qt/pymupdf）
-服务层 (services/)         OCR、格式转换
-引擎适配层 (engines/)      唯一 import pymupdf 的地方 ★
-后台线程 (workers/)        渲染/OCR 线程（隔离非线程安全操作）
-```
-
-**三条铁律**：
-1. `core/` 和 `services/` 绝不 import PySide6 或 pymupdf
-2. 只有 `engines/` 知道 PyMuPDF 的存在
-3. 只有 `workers/` 在子线程跑 PyMuPDF（非线程安全）
-
-详见 [docs/02_项目结构.md](docs/02_项目结构.md)。
-
-## 🚀 开发路线
-
-| 阶段 | 状态 | 交付 |
-|---|---|---|
-| 0 工程基础设施 | ✅ | 空窗口 + 工具链就绪 |
-| 1 引擎适配层 | ✅ | PyMuPDF 封装 + 测试 |
-| 2 核心模型层 | ✅ | Document/Page 模型 |
-| 3 最小 GUI | ✅ | 打开 + 单页渲染 🎯 |
-| 4 连续滚动+缩放 | ✅ | 流畅浏览（难点） |
-| 5 搜索+复制 | ✅ | 全文搜索/选择 |
-| 6 编辑功能 | ✅ | 增删页/合并/水印 |
-| 7 注释批注 | ✅ | 高亮/手写/便签 🎯 |
-| 8 OCR | ✅ | 中文识别 |
-| 9 格式转换 | ✅ | PDF↔Word/Excel |
-| 10 发布 v0.0.1 | ✅ | 打包+文档 🎯 |
-
-完整计划见 [docs/03_开发计划.md](docs/03_开发计划.md)。
-
-## 📦 下载与安装
-
-### Windows 用户
-
-从 [Releases](https://github.com/your-org/pdfreader/releases) 下载 `PDFReader.exe`（约 177 MB），双击即可运行，**无需安装 Python 或任何依赖**。
-
-首次启动会从内置模型加载 OCR（约 1-2 秒），日志与设置存于 `%USERPROFILE%\.pdfreader\`。
-
-### 从源码构建
+## 开发
 
 ```bash
-uv run python scripts/build_windows.py
-# 产物: dist/PDFReader.exe
+uv sync          # 安装依赖（Python ≥ 3.10，开发用 3.13）
+make run         # 启动
+make check       # 提交前检查：ruff → 格式 → mypy → pytest
+make installer   # 打包并生成安装程序（需要 NSIS）
 ```
 
-## 🔧 开发
+分层架构（`gui → controllers → core → engines`，只有 `engines/` 接触 PyMuPDF）与开发约定见文档。
 
-### 环境要求
+## 文档
 
-- Python ≥ 3.10（推荐 3.12/3.13）
-- [uv](https://docs.astral.sh/uv/) 包管理器
+| 文档 | 内容 |
+| --- | --- |
+| [文档导航](docs/README.md) | 全部文档索引 |
+| [01 功能说明](docs/01_功能说明.md) | 功能入口、快捷键、设置、路线图 |
+| [02 架构设计](docs/02_架构设计.md) | 分层、铁律、关键机制、不可破坏的约定 |
+| [03 项目结构](docs/03_项目结构.md) | 目录与文件职责 |
+| [04 界面与交互规范](docs/04_界面与交互规范.md) | Lumen 设计令牌、动效、控件接口 |
+| [05 开发与测试](docs/05_开发与测试.md) | 环境、命令、质量门禁、测试约定 |
+| [06 打包与发布](docs/06_打包与发布.md) | PyInstaller、NSIS、发布清单 |
 
-### 快速开始
+协作约束见 [AGENTS.md](AGENTS.md)；分析记录与问题复现脚本见 [memory/](memory/README.md)。
 
-```bash
-# 安装依赖
-uv sync
+## 许可证
 
-# 安装 git pre-commit hooks
-make install
+GNU Affero General Public License v3.0（AGPL-3.0-or-later），见 [LICENSE](LICENSE)。
+通过网络向用户提供本软件功能的服务，也须向用户提供完整源代码。
 
-# 启动应用
-make run
-
-# 运行测试
-make test
-
-# 全套检查（lint + 类型 + 测试）
-make check
-```
-
-### 常用命令
-
-| 命令 | 作用 |
-|---|---|
-| `make run` | 启动应用 |
-| `make test` | 运行测试（含覆盖率） |
-| `make lint` | 代码检查 |
-| `make format` | 格式化代码 |
-| `make typecheck` | 类型检查 |
-| `make check` | 全套检查 |
-| `make clean` | 清理产物 |
-
-## 📁 文档
-
-- [技术调研报告](docs/00_技术调研报告.md)
-- [最终技术选型方案](docs/01_最终技术选型方案.md)
-- [项目结构](docs/02_项目结构.md)
-- [开发计划](docs/03_开发计划.md)
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request。贡献者请遵守 AGPL-3.0 许可证。
-
-## 📜 许可证
-
-Copyright © 2026 PDF Reader Contributors.
-Licensed under the [GNU AGPL-3.0-or-later](LICENSE).
+Copyright © 2026 Lumen Contributors.

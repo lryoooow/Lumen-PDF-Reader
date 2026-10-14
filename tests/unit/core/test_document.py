@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 
-from pdfreader.core import Document, DocumentState, OutlineItem, Page, empty_outline
+from pdfreader.core import Document, Page
 from pdfreader.engines.base import EngineDocument, PdfEngine
 from pdfreader.engines.exceptions import PageIndexError
 from pdfreader.engines.types import (
@@ -55,6 +55,9 @@ class FakeEngine:
         self.opened_paths: list[Path] = []
         self.render_calls: list[int] = []
         self.search_calls: list[str] = []
+        self.cancel_callbacks: list = []
+        self._history_position = 0
+        self._history_steps = 0
 
     def open(self, path: Path, password: str | None = None) -> FakeDoc:  # type: ignore[override]
         self.opened_paths.append(path)
@@ -96,8 +99,9 @@ class FakeEngine:
             spans=(),
         )
 
-    def search(self, doc: EngineDocument, query: str) -> SearchResult:  # type: ignore[override]
+    def search(self, doc: EngineDocument, query: str, *, cancel=None) -> SearchResult:  # type: ignore[override,no-untyped-def]
         self.search_calls.append(query)
+        self.cancel_callbacks.append(cancel)
         if not query:
             return SearchResult(query=query, hits=())
         hits = tuple(
@@ -109,6 +113,40 @@ class FakeEngine:
     def iter_pages_text(self, doc: EngineDocument):  # type: ignore[override]
         for i in range(self._page_count):
             yield self.extract_text(doc, i)
+
+    # --- 撤销历史（模拟 PyMuPDF journal）-------------------------------
+    def record_step(self) -> None:
+        """测试辅助：模拟"做了一步可撤销的编辑"。"""
+        self._history_position += 1
+        self._history_steps = max(self._history_steps, self._history_position)
+
+    def undo(self, doc: EngineDocument) -> bool:  # type: ignore[override]
+        if self._history_position == 0:
+            return False
+        self._history_position -= 1
+        return True
+
+    def redo(self, doc: EngineDocument) -> bool:  # type: ignore[override]
+        if self._history_position >= self._history_steps:
+            return False
+        self._history_position += 1
+        return True
+
+    def can_undo(self, doc: EngineDocument) -> bool:  # type: ignore[override]
+        return self._history_position > 0
+
+    def can_redo(self, doc: EngineDocument) -> bool:  # type: ignore[override]
+        return self._history_position < self._history_steps
+
+    def history_position(self, doc: EngineDocument) -> int:  # type: ignore[override]
+        return self._history_position
+
+    def merge(self, doc: EngineDocument, other_path: Path) -> int:  # type: ignore[override]
+        """合并会重建底层文档：历史位置清零（与真实引擎一致）。"""
+        self._history_position = 0
+        self._history_steps = 0
+        self._page_count += 1
+        return 1
 
 
 @pytest.fixture
@@ -226,6 +264,15 @@ class TestSearch:
         result = document.search("")
         assert result.hit_count == 0
 
+    def test_search_passes_cancel_callback(
+        self, document: Document, fake_engine: FakeEngine
+    ) -> None:
+        """取消回调要透传给引擎（后台线程用它中途放弃大文档搜索）。"""
+        flag = {"stop": False}
+        document.search("HELLO", cancel=lambda: flag["stop"])
+        assert fake_engine.cancel_callbacks[-1] is not None
+        assert fake_engine.cancel_callbacks[-1]() is False
+
 
 # ----------------------------------------------------------------------
 # 修改状态
@@ -246,6 +293,61 @@ class TestModification:
         page.is_dirty = True
         document.mark_saved()
         assert page.is_dirty is False
+
+
+class TestDirtyFlagAfterHistoryMove:
+    """R2-P2-2：撤销回到"已保存状态"后不该再算脏（否则关闭时白弹保存框）。"""
+
+    def test_undo_back_to_opened_state_is_clean(
+        self, document: Document, fake_engine: FakeEngine
+    ) -> None:
+        fake_engine.record_step()
+        document.mark_modified()
+        assert document.is_modified is True
+
+        assert document.undo() is True
+
+        assert document.is_modified is False, "内容已与磁盘一致，不该还标脏"
+
+    def test_undo_after_save_clean_only_at_saved_step(
+        self, document: Document, fake_engine: FakeEngine
+    ) -> None:
+        fake_engine.record_step()
+        document.mark_modified()
+        document.mark_saved()  # 保存点 = 历史位置 1
+        assert document.is_modified is False
+
+        fake_engine.record_step()
+        document.mark_modified()  # 再改一步 → 位置 2
+        assert document.is_modified is True
+
+        assert document.undo() is True
+        assert document.is_modified is False, "撤回到保存点应恢复干净状态"
+
+        assert document.undo() is True
+        assert document.is_modified is True, "再撤一步就与磁盘不同了，必须仍算脏"
+
+    def test_redo_marks_dirty_again(self, document: Document, fake_engine: FakeEngine) -> None:
+        fake_engine.record_step()
+        document.mark_modified()
+        document.undo()
+        assert document.is_modified is False
+
+        assert document.redo() is True
+
+        assert document.is_modified is True
+
+    def test_merge_disables_history_comparison(
+        self, document: Document, fake_engine: FakeEngine, tmp_path: Path
+    ) -> None:
+        """合并重建底层文档后历史不可比：即使历史位置回到 0 也必须仍算脏。"""
+        document.merge(tmp_path / "other.pdf")
+        assert document.is_modified is True
+
+        # 合并后历史被清零，撤销回到 0 也只说明"历史不可比"，不能当成"已保存"
+        fake_engine.record_step()
+        assert document.undo() is True
+        assert document.is_modified is True
 
 
 # ----------------------------------------------------------------------
@@ -310,42 +412,3 @@ class TestPageModel:
         # 再次访问应重新提取
         pt = page.text
         assert pt.full_text.startswith("Page 0")
-
-
-# ----------------------------------------------------------------------
-# Outline 模型
-# ----------------------------------------------------------------------
-class TestOutline:
-    def test_outline_item_defaults(self) -> None:
-        item = OutlineItem(title="Chapter 1")
-        assert item.page_num is None
-        assert item.level == 0
-        assert item.children == []
-
-    def test_add_child_sets_level(self) -> None:
-        root = OutlineItem(title="Root", level=0)
-        child = root.add_child(OutlineItem(title="Child"))
-        assert child in root.children
-        assert child.level == 1
-
-    def test_walk_depth_first(self) -> None:
-        root = OutlineItem(title="A")
-        b = root.add_child(OutlineItem(title="B"))
-        b.add_child(OutlineItem(title="C"))
-        titles = [item.title for item in root.walk()]
-        assert titles == ["A", "B", "C"]
-
-    def test_empty_outline(self) -> None:
-        outline = empty_outline()
-        assert outline.title == "(无大纲)"
-
-
-# ----------------------------------------------------------------------
-# DocumentState 常量
-# ----------------------------------------------------------------------
-class TestDocumentState:
-    def test_state_constants(self) -> None:
-        assert DocumentState.READY == "ready"
-        assert DocumentState.MODIFIED == "modified"
-        assert DocumentState.CLOSED == "closed"
-        assert DocumentState.ERROR == "error"

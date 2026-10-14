@@ -15,6 +15,7 @@ from pdfreader.engines import (
     PdfEngineError,
     PyMuPdfEngine,
 )
+from pdfreader.engines.types import Point
 
 SAMPLES = Path(__file__).resolve().parents[2] / "fixtures" / "samples"
 SIMPLE = SAMPLES / "simple_text.pdf"
@@ -105,8 +106,33 @@ class TestWatermark:
             engine.add_text_watermark(doc, 999, "X")
         engine.close(doc)
 
+    def test_add_watermark_chinese(self, engine: PyMuPdfEngine, tmp_pdf: Path) -> None:
+        """中文水印需要新建 CJK 字体资源——journal 开启时这里曾必然抛错。"""
+        doc = engine.open(tmp_pdf)
+        engine.add_text_watermark(doc, 0, "机密")
+        assert "机密" in engine.extract_text(doc, 0).full_text
+        engine.close(doc)
+
 
 class TestSave:
+    def test_insert_text_chinese(self, engine: PyMuPdfEngine, tmp_pdf: Path) -> None:
+        """中文文字必须用 CJK 字体落盘，并能被回读（base-14 helv 只有方框）。"""
+        doc = engine.open(tmp_pdf)
+        engine.insert_text(doc, 0, Point(60, 400), "测试文字")
+        assert "测试文字" in engine.extract_text(doc, 0).full_text
+        out = tmp_pdf.with_name("cjk.pdf")
+        engine.save(doc, out)
+        engine.close(doc)
+        doc2 = engine.open(out)
+        assert "测试文字" in engine.extract_text(doc2, 0).full_text
+        engine.close(doc2)
+
+    def test_insert_text_ascii(self, engine: PyMuPdfEngine, tmp_pdf: Path) -> None:
+        doc = engine.open(tmp_pdf)
+        engine.insert_text(doc, 0, Point(60, 400), "2026-07-24")
+        assert "2026-07-24" in engine.extract_text(doc, 0).full_text
+        engine.close(doc)
+
     def test_save_and_reload(self, engine: PyMuPdfEngine, tmp_pdf: Path) -> None:
         doc = engine.open(tmp_pdf)
         engine.delete_page(doc, 0)

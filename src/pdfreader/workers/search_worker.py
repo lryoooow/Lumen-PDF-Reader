@@ -37,6 +37,7 @@ class SearchWorker(QThread):
         self._path: Path | None = None
         self._password: str | None = None
         self._query: str = ""
+        self._cancelled = False
 
     def setup(self, path: Path, query: str, password: str | None = None) -> None:
         """配置搜索任务（主线程调用）。"""
@@ -45,9 +46,8 @@ class SearchWorker(QThread):
         self._password = password
 
     def shutdown(self) -> None:
-        """标记线程应退出（配合 wait()）。"""
-        # 搜索线程不维护可中断的运行循环，此方法仅为接口一致性
-        pass
+        """请求取消搜索：``run()`` 会在下一个页边界停止，且不再发出任何结果。"""
+        self._cancelled = True
 
     def run(self) -> None:
         """线程入口：打开文档 → 搜索 → 发送结果。"""
@@ -55,6 +55,8 @@ class SearchWorker(QThread):
         if path is None:
             self.searchFailed.emit("未指定文档路径")
             return
+        if self._cancelled:
+            return  # 启动前就已被取消
 
         try:
             doc = self._engine.open(path, password=self._password)
@@ -66,7 +68,9 @@ class SearchWorker(QThread):
             return
 
         try:
-            result = self._engine.search(doc, self._query)
+            result = self._engine.search(doc, self._query, cancel=lambda: self._cancelled)
+            if self._cancelled:
+                return  # 已被取消：结果作废，不发给界面
             self.searchCompleted.emit(self._query, result)
         except PdfEngineError as exc:
             self.searchFailed.emit(str(exc))

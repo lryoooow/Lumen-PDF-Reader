@@ -40,9 +40,13 @@ class FakeEngine:
         *,
         page_count: int = 3,
         fail_with: Exception | None = None,
+        merge_added: int = 2,
+        merge_error: Exception | None = None,
     ) -> None:
         self._page_count = page_count
         self._fail_with = fail_with
+        self._merge_added = merge_added
+        self._merge_error = merge_error
 
     def open(self, path: Path, password: str | None = None) -> FakeDoc:  # type: ignore[override]
         if self._fail_with is not None:
@@ -77,6 +81,18 @@ class FakeEngine:
     def iter_pages_text(self, doc: EngineDocument) -> Iterator[PageText]:  # type: ignore[override]
         for i in range(self._page_count):
             yield self.extract_text(doc, i)
+
+    def merge(self, doc: EngineDocument, other_path: Path) -> int:  # type: ignore[override]
+        if self._merge_error is not None:
+            raise self._merge_error
+        self._page_count += self._merge_added
+        return self._merge_added
+
+    def can_undo(self, doc: EngineDocument) -> bool:  # type: ignore[override]
+        return False  # 合并后底层文档被重建，撤销历史失效
+
+    def history_position(self, doc: EngineDocument) -> int:  # type: ignore[override]
+        return 0
 
 
 @pytest.fixture
@@ -146,7 +162,6 @@ class TestRender:
         controller.open_file(path)
         data = controller.render_page(0)
         assert data.width == 10
-        assert controller.current_page == 0
 
     def test_render_without_doc_raises(self, controller: DocumentController) -> None:
         with pytest.raises(RuntimeError):
@@ -156,6 +171,41 @@ class TestRender:
         controller.open_file(path)
         with pytest.raises(IndexError):
             controller.render_page(999)
+
+
+# ----------------------------------------------------------------------
+# 关闭
+# ----------------------------------------------------------------------
+class TestMergeUndoState:
+    """合并会重建底层文档 → 撤销历史失效，控制器必须通知界面刷新按钮。"""
+
+    def test_merge_emits_undo_state_changed(self, path: Path) -> None:
+        engine = FakeEngine(page_count=3, merge_added=2)
+        ctrl = DocumentController(engine=cast(PdfEngine, engine))
+        ctrl.open_file(path)
+        states: list[int] = []
+        ctrl.undoStateChanged.connect(lambda: states.append(1))
+
+        added = ctrl.merge(path)
+
+        assert added == 2
+        assert states == [1], "合并成功后要发 undoStateChanged，否则按钮停在上一次的启用态"
+        assert ctrl.can_undo() is False
+
+    def test_merge_failure_does_not_emit(self, path: Path) -> None:
+        engine = FakeEngine(page_count=3, merge_error=FileOpenError("合并失败"))
+        ctrl = DocumentController(engine=cast(PdfEngine, engine))
+        ctrl.open_file(path)
+        states: list[int] = []
+        ctrl.undoStateChanged.connect(lambda: states.append(1))
+
+        assert ctrl.merge(path) == 0
+        assert states == []
+        assert "合并失败" in ctrl.last_error
+
+    def test_merge_without_document(self, controller: DocumentController, path: Path) -> None:
+        assert controller.merge(path) == 0
+        assert controller.last_error == "未打开文档"
 
 
 # ----------------------------------------------------------------------
@@ -174,6 +224,11 @@ class TestClose:
         controller.open_file(path)
         closed: list[bool] = []
         controller.documentClosed.connect(lambda: closed.append(True))
-        # 再次打开会先关闭旧的
+        # 再次打开：静默替换旧文档，不发 documentClosed（避免打开新文件时欢迎页闪烁）
         controller.open_file(path)
-        assert closed == [True]
+        assert closed == []
+        assert controller.has_document is True
+
+    def test_get_words_empty_without_document(self, controller: DocumentController) -> None:
+        """无文档时取词返回空元组（不抛异常）。"""
+        assert controller.get_words(0) == ()

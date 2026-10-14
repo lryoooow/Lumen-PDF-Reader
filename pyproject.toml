@@ -31,11 +31,12 @@ classifiers = [
 ]
 dependencies = [
     "PySide6>=6.8,<6.10",
-    "pymupdf>=1.24,<1.30",
+    "pymupdf>=1.28,<1.29",  # 引擎依赖 1.28 的内部 _get_textpage 与日志守卫补丁，升级需复核
     "rapidocr-onnxruntime>=1.4,<1.5",
     "pdf2docx>=0.5,<0.6",
     "pdfplumber>=0.11,<0.12",
     "openpyxl>=3.1,<4.0",
+    "numpy>=1.26",  # 阅读模式（夜间 / 护眼）颜色滤镜
 ]
 
 [project.urls]
@@ -59,6 +60,7 @@ dev = [
     "pytest-qt>=4.4",
     "pytest-xvfb; sys_platform == 'linux'",
     "pyinstaller>=6.21.0",
+    "pillow>=10",  # scripts/make_icon.py 生成 app.ico
 ]
 
 # ----------------------------------------------------------------------------
@@ -74,7 +76,8 @@ packages = ["src/pdfreader"]
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
-extend-exclude = ["docs", "scripts"]
+# memory/ 存放分析记录与一次性调试脚本（见 AGENTS.md），不属于产品代码
+extend-exclude = ["docs", "memory", "scripts"]
 
 [tool.ruff.lint]
 select = [
@@ -98,9 +101,6 @@ ignore = [
     "RUF002",  # docstring 中的歧义 Unicode 字符
     "RUF003",  # 注释中的歧义 Unicode 字符
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # 测试允许 assert
 
 [tool.ruff.format]
 quote-style = "double"
@@ -130,6 +130,13 @@ module = [
     "openpyxl.*",
 ]
 ignore_missing_imports = true
+
+# numpy 2.x 的 .pyi 存根使用 3.12 的 type 语句，而本项目按 3.10 检查：跳过其存根
+# （仅 gui/widgets/pdf_view.py 的阅读模式滤镜用到 numpy，按 Any 处理即可）
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 # PyMuPDF 是动态类型库（无类型存根），在 PyMuPdfEngine 内部调用其 API
 # 会触发 no-untyped-call。引擎适配层的职责本就是桥接动态类型库，
@@ -166,3 +173,6 @@ concurrency = ["thread", "multiprocessing"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+# 覆盖率门槛：当前约 72%，先从 70 卡住，防止后续改动把它拖下去
+# （GUI 对话框与 main.py 仍是低覆盖区，修复这些区域时应同步上调本值）
+fail_under = 75

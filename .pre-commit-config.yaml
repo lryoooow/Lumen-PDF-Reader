@@ -13,18 +13,23 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+  # ruff / mypy 用项目自己的环境（uv.lock 锁定的版本与 pyproject.toml 配置），
+  # 避免 pre-commit 自带的独立版本与项目不一致。
+  - repo: local
     hooks:
       - id: ruff
-        args: ["--fix"]
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
       - id: ruff-format
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.0
-    hooks:
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
       - id: mypy
-        additional_dependencies:
-          - PySide6>=6.8
-        args: ["--strict"]
-        files: ^src/
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false

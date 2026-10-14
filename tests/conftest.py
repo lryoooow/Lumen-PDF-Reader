@@ -21,6 +21,26 @@ def qtbot(qtbot: pytest.fixture) -> pytest.fixture:  # type: ignore[type-arg]
 
 
 @pytest.fixture(autouse=True)
-def _no_write_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """防止测试期间向磁盘写入用户配置。"""
+def _no_write_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[None]:
+    """测试期间把用户设置重定向到临时目录。
+
+    旧实现只是空 ``yield``：主窗口测试打开样例文件时会把它们写进开发者真实的
+    ``~/.pdfreader/settings.json``（最近文件 / 阅读位置），还会读入开发者的设置影响结果。
+    """
+    from pdfreader.config import settings as settings_module
+
+    path = tmp_path_factory.mktemp("settings") / "settings.json"
+    monkeypatch.setattr(settings_module, "default_settings_path", lambda: path)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_motion() -> Iterator[None]:
+    """测试默认关闭界面动效：断言针对最终状态，不依赖动画时序（动效专项测试会自行打开）。"""
+    from pdfreader.gui.widgets import motion
+
+    motion.set_enabled(False)
+    yield
+    motion.set_enabled(False)

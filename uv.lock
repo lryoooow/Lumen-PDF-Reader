@@ -1280,6 +1280,9 @@ name = "pdfreader"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openpyxl" },
     { name = "pdf2docx" },
     { name = "pdfplumber" },
@@ -1291,6 +1294,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "pillow" },
     { name = "pre-commit" },
     { name = "pyinstaller" },
     { name = "pytest" },
@@ -1302,10 +1306,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "numpy", specifier = ">=1.26" },
     { name = "openpyxl", specifier = ">=3.1,<4.0" },
     { name = "pdf2docx", specifier = ">=0.5,<0.6" },
     { name = "pdfplumber", specifier = ">=0.11,<0.12" },
-    { name = "pymupdf", specifier = ">=1.24,<1.30" },
+    { name = "pymupdf", specifier = ">=1.28,<1.29" },
     { name = "pyside6", specifier = ">=6.8,<6.10" },
     { name = "rapidocr-onnxruntime", specifier = ">=1.4,<1.5" },
 ]
@@ -1313,6 +1318,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.13" },
+    { name = "pillow", specifier = ">=10" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pyinstaller", specifier = ">=6.21.0" },
     { name = "pytest", specifier = ">=8.3" },

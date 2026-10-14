@@ -21,9 +21,15 @@ def test_version_is_string() -> None:
     assert pdfreader.__version__  # 非空
 
 
-def test_version_matches_expected() -> None:
-    """当前版本为 0.0.1。"""
-    assert pdfreader.__version__ == "0.0.1"
+def test_version_matches_pyproject() -> None:
+    """__version__ 与 pyproject.toml 保持一致（避免版本升级时漏改）。"""
+    from pathlib import Path
+
+    import tomllib
+
+    root = Path(__file__).resolve().parents[2]
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pdfreader.__version__ == data["project"]["version"]
 
 
 def test_license_declared() -> None:

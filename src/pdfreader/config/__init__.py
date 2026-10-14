@@ -1,4 +1,4 @@
-"""配置管理：用户设置、快捷键、常量。"""
+"""用户设置的持久化（~/.pdfreader/settings.json）。"""
 
 from __future__ import annotations
 

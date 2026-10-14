@@ -8,7 +8,7 @@
 2. 上层测试可用 Mock 实现替代真实引擎
 3. 引擎 API 变更被限制在实现类内部
 
-阶段 1 仅定义**读取类**操作；编辑/批注类操作在后续阶段补充。
+坐标约定：所有矩形 / 点一律是**可见帧**坐标（``page_bounds`` 所在坐标系，已应用 /Rotate）。
 """
 
 from __future__ import annotations
@@ -20,15 +20,18 @@ from pdfreader.engines.types import (
     Annotation,
     DocumentMeta,
     InkStroke,
+    LinkInfo,
     PageText,
     PixmapData,
     Point,
     Rect,
     SearchResult,
+    TocEntry,
+    WordBox,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Sequence
 
 __all__ = ["EngineDocument", "PdfEngine"]
 
@@ -77,7 +80,7 @@ class PdfEngine(Protocol):
         ...
 
     def page_bounds(self, doc: EngineDocument, page_num: int) -> Rect:
-        """获取指定页的边界框（尺寸），返回 PDF 点单位的 Rect。
+        """获取指定页的边界框（尺寸），返回 **可见帧**（已应用 /Rotate）的 Rect。
 
         Raises:
             PageIndexError: 页码越界
@@ -106,10 +109,46 @@ class PdfEngine(Protocol):
         """
         ...
 
-    def search(self, doc: EngineDocument, query: str) -> SearchResult:
+    def pixmap_to_png(self, data: PixmapData) -> bytes:
+        """把渲染结果编码为 PNG 字节。
+
+        供不依赖 GUI（Qt）的消费方使用，例如 OCR 需要图片字节而非原始像素。
+        """
+        ...
+
+    def images_to_pdf(self, image_paths: Sequence[Path], output_path: Path) -> int:
+        """把若干图片合成一个 PDF（每张图一页），返回页数。
+
+        Raises:
+            FileOpenError: 写入失败
+        """
+        ...
+
+    def get_words(self, doc: EngineDocument, page_num: int) -> tuple[WordBox, ...]:
+        """获取指定页的词及其坐标（按阅读顺序，用于文本选择/复制）。
+
+        坐标一律是**可见帧**坐标：与 ``page_bounds`` / ``render_page`` 同一套
+        （已应用 /Rotate），上层可直接与鼠标位置比较。
+
+        Raises:
+            PageIndexError: 页码越界
+        """
+        ...
+
+    def search(
+        self,
+        doc: EngineDocument,
+        query: str,
+        *,
+        cancel: Callable[[], bool] | None = None,
+    ) -> SearchResult:
         """全文搜索。
 
-        返回所有命中（页码 + 矩形）。空查询返回空结果。
+        返回所有命中（页码 + 矩形，矩形为**可见帧**坐标）。空查询返回空结果。
+
+        Args:
+            cancel: 可选取消回调，逐页调用；返回 True 时立刻停止并返回**已找到的
+                部分结果**（供后台线程"取消后不再使用结果"的语义使用）。
 
         Raises:
             SearchError: 搜索失败
@@ -147,8 +186,15 @@ class PdfEngine(Protocol):
         """
         ...
 
-    def add_text_watermark(self, doc: EngineDocument, page_num: int, text: str) -> None:
-        """给指定页添加文字水印。
+    def add_text_watermark(
+        self,
+        doc: EngineDocument,
+        page_num: int | Sequence[int],
+        text: str,
+        *,
+        opacity: float = ...,
+    ) -> None:
+        """给一页或多页添加居中半透明文字水印（多页为一次可撤销操作）。
 
         Raises:
             PageIndexError: 页码越界
@@ -158,8 +204,11 @@ class PdfEngine(Protocol):
     def save(self, doc: EngineDocument, path: Path, *, incremental: bool = False) -> None:
         """保存文档。
 
+        目标是打开时的原文件时一律增量保存（无论 ``incremental``）；
+        原文件在打开时被修复过、无法增量保存时抛 ``FileOpenError`` 并说明原因。
+
         Args:
-            incremental: 增量保存（仅当原文件可写且为同一路径时）
+            incremental: 调用方意图「存回原文件」
 
         Raises:
             FileOpenError: 保存失败
@@ -173,22 +222,105 @@ class PdfEngine(Protocol):
     # ------------------------------------------------------------------
     # 批注操作（阶段 7）
     # ------------------------------------------------------------------
-    def add_highlight(self, doc: EngineDocument, page_num: int, rect: Rect) -> None:
-        """给指定页添加高亮批注。"""
+    def add_highlight(
+        self,
+        doc: EngineDocument,
+        page_num: int,
+        rect: Rect | Sequence[Rect],
+        *,
+        color: tuple[float, float, float] | None = None,
+    ) -> None:
+        """添加高亮；多个矩形（多行）合成**一条**批注。
+
+        Raises:
+            PageIndexError: 页码越界
+        """
+        ...
+
+    def add_markup(
+        self,
+        doc: EngineDocument,
+        page_num: int,
+        rects: Rect | Sequence[Rect],
+        *,
+        kind: str = "highlight",
+        color: tuple[float, float, float] | None = None,
+    ) -> None:
+        """添加文字标记：``kind`` 为 highlight / underline / strikeout / squiggly。"""
+        ...
+
+    def set_annotation_content(
+        self, doc: EngineDocument, page_num: int, index: int, text: str
+    ) -> None:
+        """修改第 index 个批注的笔记内容（可撤销）。"""
         ...
 
     def add_ink(self, doc: EngineDocument, page_num: int, strokes: tuple[InkStroke, ...]) -> None:
-        """给指定页添加手写笔迹批注。"""
+        """给指定页添加手写笔迹批注（笔画坐标为可见帧坐标）。"""
         ...
 
     def add_text_annot(self, doc: EngineDocument, page_num: int, point: Point, text: str) -> None:
-        """给指定页添加文本便签批注。"""
+        """给指定页添加文本便签批注（``point`` 为可见帧坐标）。"""
         ...
 
     def list_annotations(self, doc: EngineDocument, page_num: int) -> list[Annotation]:
-        """列出指定页的所有批注。"""
+        """列出指定页的所有批注（可见帧坐标；文字标记类附带被标记的原文）。"""
         ...
 
     def delete_annotation(self, doc: EngineDocument, page_num: int, index: int) -> bool:
-        """删除指定页的第 index 个批注。返回是否成功。"""
+        """删除指定页的第 index 个批注。序号不存在返回 False，引擎出错抛 PdfEngineError。"""
+        ...
+
+    # ------------------------------------------------------------------
+    # 目录与链接
+    # ------------------------------------------------------------------
+    def get_toc(self, doc: EngineDocument) -> tuple[TocEntry, ...]:
+        """文档目录（书签 / 大纲）；没有目录时返回空元组。"""
+        ...
+
+    def get_links(self, doc: EngineDocument, page_num: int) -> tuple[LinkInfo, ...]:
+        """页面上的内部跳转与外部网址链接（热区为可见帧坐标）。"""
+        ...
+
+    def annotation_index_at(self, doc: EngineDocument, page_num: int, point: Point) -> int | None:
+        """返回点（可见帧坐标）命中的最上层批注索引；无则 None。"""
+        ...
+
+    def insert_image(
+        self, doc: EngineDocument, page_num: int, rect: Rect, image_path: Path
+    ) -> None:
+        """在页面矩形处插入图片（``rect`` 为可见帧坐标；签名 / 图片）。"""
+        ...
+
+    def insert_text(
+        self, doc: EngineDocument, page_num: int, point: Point, text: str, *, fontsize: int = 12
+    ) -> None:
+        """在页面指定点插入文字（``point`` 为可见帧坐标；日期 / 时间戳）。"""
+        ...
+
+    # ------------------------------------------------------------------
+    # 撤销 / 重做
+    # ------------------------------------------------------------------
+    def undo(self, doc: EngineDocument) -> bool:
+        """撤销上一步。"""
+        ...
+
+    def redo(self, doc: EngineDocument) -> bool:
+        """重做。"""
+        ...
+
+    def can_undo(self, doc: EngineDocument) -> bool:
+        """是否有可撤销的操作。"""
+        ...
+
+    def can_redo(self, doc: EngineDocument) -> bool:
+        """是否有可重做的操作。"""
+        ...
+
+    def history_position(self, doc: EngineDocument) -> int:
+        """当前在撤销历史中的位置（0 = 打开时/已回到最初的状态）。
+
+        上层用它判断「撤销回上次保存的状态后文档是否还算脏」；不支持历史
+        （如合并后重建的文档、非 PDF）时返回 0。
+        """
         ...

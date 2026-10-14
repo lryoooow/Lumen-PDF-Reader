@@ -121,6 +121,19 @@ class LRUCache:
         with self._lock:
             return list(self._data.keys())
 
+    def items(self) -> list[tuple[object, object]]:
+        """按「最旧 → 最新」返回全部条目（不改变使用顺序）。"""
+        with self._lock:
+            return list(self._data.items())
+
+    def pop_oldest(self) -> tuple[object, object] | None:
+        """淘汰并返回最久未使用的条目；缓存为空时返回 None。"""
+        with self._lock:
+            if not self._data:
+                return None
+            self._evictions += 1
+            return self._data.popitem(last=False)
+
     def __len__(self) -> int:
         return self.size
 

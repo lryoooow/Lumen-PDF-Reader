@@ -103,3 +103,40 @@ class TestErrors:
         out = tmp_path / "noext"  # 无扩展名
         result = service.convert(SIMPLE, out, "txt")
         assert result.output_path.suffix == ".txt"
+
+
+class TestConvertRound3:
+    """第三轮：加密文档、实际输出文件列表。"""
+
+    ENCRYPTED = SAMPLES / "encrypted.pdf"
+
+    def test_encrypted_source_with_password(self, service: ConvertService, tmp_path: Path) -> None:
+        result = service.convert(self.ENCRYPTED, tmp_path / "enc", "txt", password="secret")
+        assert "Encrypted content" in result.output_path.read_text(encoding="utf-8")
+
+    def test_encrypted_source_without_password_fails_clearly(
+        self, service: ConvertService, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ConvertError, match="密码"):
+            service.convert(self.ENCRYPTED, tmp_path / "enc", "txt")
+
+    def test_encrypted_to_docx_and_xlsx(self, service: ConvertService, tmp_path: Path) -> None:
+        assert service.convert(self.ENCRYPTED, tmp_path / "e", "docx", password="secret").files
+        assert service.convert(self.ENCRYPTED, tmp_path / "e", "xlsx", password="secret").files
+
+    def test_multi_page_image_lists_real_files(
+        self, service: ConvertService, tmp_path: Path
+    ) -> None:
+        result = service.convert(SIMPLE, tmp_path / "doc", "png", dpi=36)
+        assert [p.name for p in result.files] == ["doc_1.png", "doc_2.png", "doc_3.png"]
+        assert all(p.exists() for p in result.files)
+
+    def test_xlsx_without_tables_is_flagged_empty(
+        self, service: ConvertService, tmp_path: Path
+    ) -> None:
+        result = service.convert(SIMPLE, tmp_path / "t", "xlsx")
+        assert result.is_empty
+
+    def test_resolve_output(self) -> None:
+        assert ConvertService.resolve_output(Path("a/b"), "docx") == Path("a/b.docx")
+        assert ConvertService.resolve_output(Path("a/b.DOCX"), "docx") == Path("a/b.DOCX")

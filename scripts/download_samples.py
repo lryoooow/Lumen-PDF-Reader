@@ -117,6 +117,22 @@ def make_encrypted(out: Path) -> None:
     doc.close()
 
 
+def make_rotated(out: Path) -> None:
+    """含 /Rotate=90 页的 PDF：坐标帧与撤销日志的回归样例。
+
+    第 0 页旋转 90°（原 400x600 → 可见 600x400），第 1 页不旋转。
+    两页都有可搜索关键词与可选中文字，用于覆盖「旋转页上取词/搜索/批注/插入」。
+    """
+    doc = pymupdf.open()
+    rotated = doc.new_page(width=400, height=600)
+    rotated.insert_text((50, 100), "Rotated Page Keyword", fontsize=14)
+    rotated.set_rotation(90)
+    plain = doc.new_page(width=400, height=600)
+    plain.insert_text((50, 100), "Plain Page Keyword", fontsize=14)
+    doc.save(out)
+    doc.close()
+
+
 def make_empty(out: Path) -> None:
     """空白页文档（1 页，无任何内容）。用于测试空内容页的渲染/提取。"""
     doc = pymupdf.open()
@@ -138,6 +154,7 @@ def main() -> None:
         "with_annotations.pdf": make_with_annotations,
         "scanned.pdf": make_scanned,
         "encrypted.pdf": make_encrypted,
+        "rotated.pdf": make_rotated,
         "empty.pdf": make_empty,
         "corrupt.pdf": make_corrupt,
     }

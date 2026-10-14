@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from pdfreader.engines import FileOpenError, SearchError
 from pdfreader.engines.types import SearchResult
 from pdfreader.workers import SearchWorker
 
@@ -71,3 +72,109 @@ class TestSearchWorker:
         worker.setup(SAMPLES / "corrupt.pdf", "anything")
         _run_and_wait(worker, qtbot, expect_fail=True)
         assert len(errors) == 1
+
+
+class TestSearchWorkerCancel:
+    """取消语义：search 逐页检查 cancel；被取消后一个结果都不发。"""
+
+    def test_run_cancelled_before_start_emits_nothing(self, worker: SearchWorker) -> None:
+        got: list = []
+        worker.searchCompleted.connect(lambda q, r: got.append((q, r)))
+        worker.searchFailed.connect(lambda m: got.append(m))
+        worker.setup(SIMPLE, "PyMuPDF")
+        worker.shutdown()
+        worker.run()
+        assert got == []
+
+    def test_cancel_callback_handed_to_engine(self, worker: SearchWorker, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        seen: dict = {}
+
+        def fake_search(doc, query, *, cancel=None):  # type: ignore[no-untyped-def]
+            seen["cancel"] = cancel
+            seen["before"] = cancel() if cancel else None
+            worker.shutdown()  # 模拟"搜索途中用户发起新搜索"
+            seen["after"] = cancel() if cancel else None
+            return SearchResult(query=query, hits=())
+
+        monkeypatch.setattr(worker._engine, "search", fake_search)
+        worker.setup(SIMPLE, "x")
+        worker.run()
+
+        assert callable(seen["cancel"])
+        assert seen["before"] is False  # 未取消时不应提前中断
+        assert seen["after"] is True
+
+    def test_cancelled_result_not_emitted(self, worker: SearchWorker, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        got: list = []
+        worker.searchCompleted.connect(lambda q, r: got.append((q, r)))
+
+        def fake_search(doc, query, *, cancel=None):  # type: ignore[no-untyped-def]
+            worker.shutdown()
+            return SearchResult(query=query, hits=())
+
+        monkeypatch.setattr(worker._engine, "search", fake_search)
+        worker.setup(SIMPLE, "x")
+        worker.run()
+        assert got == []
+
+
+class TestSearchWorkerDirectRun:
+    """直接调用 run()（与线程内是同一段代码），覆盖各条错误分支。"""
+
+    def test_run_emits_result(self, worker: SearchWorker) -> None:
+        got: list = []
+        worker.searchCompleted.connect(lambda q, r: got.append((q, r)))
+        worker.setup(SIMPLE, "PyMuPDF")
+        worker.run()
+        assert got[0][0] == "PyMuPDF"
+        assert got[0][1].hit_count == 3
+
+    def test_run_without_path(self, worker: SearchWorker) -> None:
+        errors: list[str] = []
+        worker.searchFailed.connect(errors.append)
+        worker.run()
+        assert errors == ["未指定文档路径"]
+
+    def test_run_engine_open_error(self, worker: SearchWorker, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise FileOpenError("需要密码")
+
+        monkeypatch.setattr(worker._engine, "open", boom)
+        errors: list[str] = []
+        worker.searchFailed.connect(errors.append)
+        worker.setup(SIMPLE, "x")
+        worker.run()
+        assert errors == ["需要密码"]
+
+    def test_run_unexpected_open_error(self, worker: SearchWorker, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("磁盘掉线")
+
+        monkeypatch.setattr(worker._engine, "open", boom)
+        errors: list[str] = []
+        worker.searchFailed.connect(errors.append)
+        worker.setup(SIMPLE, "x")
+        worker.run()
+        assert "打开文档失败" in errors[0]
+
+    def test_run_search_error(self, worker: SearchWorker, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise SearchError("搜索炸了")
+
+        monkeypatch.setattr(worker._engine, "search", boom)
+        errors: list[str] = []
+        worker.searchFailed.connect(errors.append)
+        worker.setup(SIMPLE, "x")
+        worker.run()
+        assert errors == ["搜索炸了"]
+
+    def test_run_unexpected_search_error(self, worker: SearchWorker, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("怪事")
+
+        monkeypatch.setattr(worker._engine, "search", boom)
+        errors: list[str] = []
+        worker.searchFailed.connect(errors.append)
+        worker.setup(SIMPLE, "x")
+        worker.run()
+        assert "搜索失败" in errors[0]
