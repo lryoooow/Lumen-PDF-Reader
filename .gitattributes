@@ -1,0 +1,13 @@
+# 统一换行：仓库内一律 LF（与 .editorconfig 的 end_of_line = lf 一致），
+# 避免 Windows 上编辑后提交时出现 CRLF 转换警告与无意义的整行改动。
+* text=auto eol=lf
+
+# NSIS 脚本以 UTF-8 BOM 编码，交给 makensis 时保持原样
+*.nsi text eol=lf
+
+# 二进制文件：不做换行转换，也不做文本 diff
+*.pdf binary
+*.png binary
+*.ico binary
+*.jpg binary
+*.exe binary
