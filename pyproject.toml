@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "pdfreader"
 version = "0.0.1"
-description = "开源多功能 PDF 阅读器与编辑器（AGPL-3.0）"
+description = "Lumen：免费开源的 PDF 文献阅读器——目录与引用跳转、多色批注与笔记导出、OCR（AGPL-3.0）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
-authors = [{ name = "PDF Reader Contributors" }]
-keywords = ["pdf", "reader", "editor", "viewer", "pymupdf", "pyside6", "qt"]
+authors = [{ name = "Lumen Contributors" }]
+keywords = ["pdf", "reader", "research", "annotation", "lumen", "pymupdf", "pyside6", "qt"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: X11 Applications :: Qt",
@@ -40,9 +40,11 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/your-org/pdfreader/blob/main/docs"
-Repository = "https://github.com/your-org/pdfreader"
-Changelog = "https://github.com/your-org/pdfreader/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/lryoooow/PDF-Reader"
+Documentation = "https://github.com/lryoooow/PDF-Reader/tree/main/docs"
+Repository = "https://github.com/lryoooow/PDF-Reader"
+Changelog = "https://github.com/lryoooow/PDF-Reader/blob/main/CHANGELOG.md"
+Issues = "https://github.com/lryoooow/PDF-Reader/issues"
 
 [project.gui-scripts]
 pdfreader = "pdfreader.main:main"

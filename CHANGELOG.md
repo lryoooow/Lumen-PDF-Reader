@@ -214,9 +214,3 @@
 - 构建脚本：`scripts/build_windows.py`
 
 详细开发历程见 git log 与 [docs/](docs/)。
-
-[Unreleased]: https://github.com/your-org/pdfreader/compare/lumen-v0.0.1...HEAD
-[Lumen 0.0.1]: https://github.com/your-org/pdfreader/compare/v0.0.4...lumen-v0.0.1
-[0.0.4]: https://github.com/your-org/pdfreader/compare/v0.0.2...v0.0.4
-[0.0.2]: https://github.com/your-org/pdfreader/compare/v0.0.1...v0.0.2
-[0.0.1]: https://github.com/your-org/pdfreader/releases/tag/v0.0.1
