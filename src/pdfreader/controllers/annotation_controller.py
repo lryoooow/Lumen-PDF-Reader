@@ -24,6 +24,7 @@ class AnnotationMode:
     ERASER = "eraser"  # 橡皮擦（点删批注）
     SIGNATURE = "signature"  # 放置签名（单击页面）
     TIMESTAMP = "timestamp"  # 放置日期时间（单击页面）
+    CAPTURE = "capture"  # 框选区域（公式 / 图表）交给 AI 解释
 
 
 class AnnotationController(QObject):

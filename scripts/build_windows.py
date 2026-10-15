@@ -41,6 +41,7 @@ HIDDEN_IMPORTS = [
     "pdfplumber",
     "openpyxl",
     "PySide6.QtPrintSupport",  # 打印
+    "keyring.backends.Windows",  # AI 助读：API Key 存 Windows 凭据管理器
 ]
 
 # 需连同数据文件（模型 / 配置）一起收集的包
@@ -51,6 +52,8 @@ COLLECT_ALL = [
     "pdfplumber",
     "openpyxl",
     "shapely",
+    "keyring",  # 后端靠包元数据（entry points）发现，需连同 dist-info 收集
+    "certifi",  # httpx 的 HTTPS 根证书
 ]
 
 

@@ -153,6 +153,8 @@ class PdfView(QGraphicsView):
     )  # page, Point, kind, payload（放置图片/文字）
     linkActivated = Signal(int, object)  # 链接所在页, LinkInfo
     markupRequested = Signal(int, object, str)  # page, tuple[Rect, ...], kind
+    areaCaptured = Signal(int, object)  # 框选工具松开：page, Rect（可见帧 PDF 点）
+    aiRequested = Signal(str)  # 右键选中文字 → AI：translate / explain / ask
 
     def __init__(  # type: ignore[no-untyped-def]
         self,
@@ -230,6 +232,7 @@ class PdfView(QGraphicsView):
         self._hl_words: list[WordBox] = []  # 当前高亮覆盖的词
         self._ink_points: list[QPointF] = []
         self._ink_item: QGraphicsPathItem | None = None
+        self._capture_item: QGraphicsItem | None = None  # 框选区域预览（虚线框）
 
         # 待放置内容（签名图片 / 时间戳文字）：下一次点击落到页面上
         self._pending_kind: str | None = None
@@ -343,6 +346,10 @@ class PdfView(QGraphicsView):
                 self._annot_drawing = True
                 self._ink_points = [pdf_point]
                 self._start_ink_item(page_num)
+            elif mode == "capture":
+                self._annot_start = pdf_point
+                self._annot_drawing = True
+                self._update_capture_item(pdf_point)
             return
         # 浏览模式：左键拖拽 = 选择文本；不拖动直接松开 = 单击（可能是链接）
         if event.button() == Qt.MouseButton.LeftButton:
@@ -371,6 +378,8 @@ class PdfView(QGraphicsView):
                 elif mode == "ink":
                     self._ink_points.append(pt)
                     self._update_ink_item()
+                elif mode == "capture":
+                    self._update_capture_item(pt)
             return
         if self._selecting and self._sel_start is not None:
             self._update_selection(event)
@@ -394,6 +403,8 @@ class PdfView(QGraphicsView):
                     self._commit_highlight(kind=mode)
                 elif mode == "ink":
                     self._commit_ink()
+                elif mode == "capture" and self._annot_page is not None:
+                    self._commit_capture(self._point_on_page(event, self._annot_page))
                 self._annot_drawing = False
             return
         if self._selecting:
@@ -699,8 +710,58 @@ class PdfView(QGraphicsView):
             self._ink_item = None
         self._ink_points = []
 
+    def _capture_rect(self, end: QPointF) -> Rect | None:
+        start, page = self._annot_start, self._annot_page
+        if start is None or page is None:
+            return None
+        return Rect(
+            min(start.x(), end.x()),
+            min(start.y(), end.y()),
+            max(start.x(), end.x()),
+            max(start.y(), end.y()),
+        )
+
+    def _update_capture_item(self, end: QPointF) -> None:
+        rect = self._capture_rect(end)
+        if rect is None or self._annot_page is None:
+            return
+        page_x, page_y = self._page_origin(self._annot_page)
+        scene_rect = QRectF(
+            page_x + rect.x0 * self._zoom,
+            page_y + rect.y0 * self._zoom,
+            rect.width * self._zoom,
+            rect.height * self._zoom,
+        )
+        if self._capture_item is None:
+            accent = QColor(self._palette.accent)
+            pen = QPen(accent, 1.5, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            fill = QColor(accent)
+            fill.setAlpha(28)
+            self._capture_item = self._scene.addRect(scene_rect, pen, QBrush(fill))
+            self._capture_item.setZValue(12)
+        elif isinstance(self._capture_item, QGraphicsRectItem):
+            self._capture_item.setRect(scene_rect)
+
+    def _remove_capture_item(self) -> None:
+        if self._capture_item is not None:
+            scene = self._capture_item.scene()
+            if scene is not None:
+                scene.removeItem(self._capture_item)
+            self._capture_item = None
+
+    def _commit_capture(self, end: QPointF) -> None:
+        rect = self._capture_rect(end)
+        page = self._annot_page
+        self._remove_capture_item()
+        self._annot_start = None
+        # 太小的框多半是误点（< 6pt）
+        if rect is not None and page is not None and rect.width >= 6 and rect.height >= 6:
+            self.areaCaptured.emit(page, rect)
+
     def _clear_annot_preview(self) -> None:
         self._remove_overlay(self._annot_items)
+        self._remove_capture_item()
         if self._ink_item is not None:
             scene = self._ink_item.scene()
             if scene is not None:
@@ -785,6 +846,13 @@ class PdfView(QGraphicsView):
                 ("波浪线", "squiggly"),
             ):
                 menu.addAction(label, lambda k=kind: self._request_markup(k))
+            menu.addSeparator()
+            for label, kind in (
+                ("AI 翻译", "translate"),
+                ("AI 解释", "explain"),
+                ("问 AI…", "ask"),
+            ):
+                menu.addAction(label, lambda k=kind: self.aiRequested.emit(k))
             menu.exec(event.globalPos())
             return
         super().contextMenuEvent(event)

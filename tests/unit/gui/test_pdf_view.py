@@ -426,3 +426,32 @@ def test_escape_exits_annotation_mode(qtbot) -> None:  # type: ignore[no-untyped
         QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
     )
     assert ac.mode == AnnotationMode.NONE
+
+
+def test_capture_drag_emits_area(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """框选提问：拖拽显示虚线框，松开发出区域；太小的框视为误点。"""
+    from PySide6.QtCore import QPointF
+
+    from pdfreader.controllers import AnnotationController, AnnotationMode
+
+    view = PdfView()
+    qtbot.addWidget(view)
+    view.setup_document(1, [(595, 842)])
+    view.set_zoom(1.0)
+    ac = AnnotationController()
+    ac.set_mode(AnnotationMode.CAPTURE)
+    view.set_annotation_controller(ac)
+    got: list = []
+    view.areaCaptured.connect(lambda p, r: got.append((p, r)))
+    view._annot_page = 0
+    view._annot_start = QPointF(50, 60)
+    view._update_capture_item(QPointF(200, 160))
+    assert view._capture_item is not None
+    view._commit_capture(QPointF(200, 160))
+    assert view._capture_item is None
+    assert got and got[0][0] == 0
+    assert (got[0][1].x0, got[0][1].y0, got[0][1].x1, got[0][1].y1) == (50, 60, 200, 160)
+    view._annot_page = 0
+    view._annot_start = QPointF(50, 60)
+    view._commit_capture(QPointF(52, 61))
+    assert len(got) == 1

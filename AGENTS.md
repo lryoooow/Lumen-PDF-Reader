@@ -22,9 +22,10 @@
 1. `core/`、`services/` 绝不 import PySide6 或 pymupdf —— 这条由 `tests/unit/test_layering.py`
    用 AST 扫描强制（新增违规会直接失败）。
 2. 只有 `engines/` 知道 PyMuPDF 的存在（`main.py --selftest` 是打包自检的例外）。
-   第三方库（pdf2docx / pdfplumber / rapidocr）只允许出现在 `services/`。
-3. PyMuPDF 非线程安全：子线程只跑 `workers/` 里的 OCR / 搜索 / 转换；**页面渲染在主线程**
+   第三方库（pdf2docx / pdfplumber / rapidocr / httpx / keyring）只允许出现在 `services/`。
+3. PyMuPDF 非线程安全：子线程只跑 `workers/` 里的 OCR / 搜索 / 转换 / AI 请求；**页面渲染在主线程**
    直接渲染受控文档（`MainWindow._render_page`），以保证批注/编辑所见即所得。
+   AI 用到的文字在主线程取好再交给 `AiWorker`，后台线程只做网络 I/O。
 4. 分层依赖方向：`gui → controllers → core → engines`（`services`/`workers` 可被 gui 使用）。
    领域逻辑不写进 GUI 事件处理器，错误经控制器上报（`DocumentController.last_error`）。
 
@@ -42,6 +43,8 @@
 * **用户数据优先**：任何"保存/导出/快照"路径都不得静默写明文、丢加密、退回磁盘旧内容或吞异常；
   失败要如实上报给界面。
 * **用户可见的失败不得静默**：`except` 后必须留日志或把原因交给界面显示（后台线程用信号上报）。
+* **AI 隐私**：API Key 只进系统凭据管理器（`services/ai/keystore.py`），不得写入 `settings.json` /
+  `ai.json` / 日志；内容只在用户主动发起时发送；测试一律用 `httpx.MockTransport` 与内存凭据库，不访问真实网络。
 
 ## Python 规范
 

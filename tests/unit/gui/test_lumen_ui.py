@@ -80,6 +80,7 @@ class TestHeaderAndRibbon:
             ["当前页 · 第 1 页"],
             ["布局", "缩放", "阅读"],
             ["识别", "输出", "文档"],
+            ["全文", "划词与框选", "模型"],
         ]
 
     def test_page_group_title_tracks_current_page(self, window: MainWindow, tmp_path: Path) -> None:
@@ -154,10 +155,10 @@ class TestTools:
         window.copy_merge_action.trigger()
         assert window.status_bar.message() == "请先用「选择」工具选中文字"
 
-    def test_translate_reports_not_configured(self, window: MainWindow, tmp_path: Path) -> None:
+    def test_translate_without_selection_hints(self, window: MainWindow, tmp_path: Path) -> None:
         window.open_path(_make_paper(tmp_path / "tr.pdf"))
         window.translate_action.trigger()
-        assert window.status_bar.message() == "翻译插件尚未配置"
+        assert window.status_bar.message() == "请先用「选择」工具选中文字"
 
 
 # ---------------------------------------------------------------- 阅读模式 / 状态栏

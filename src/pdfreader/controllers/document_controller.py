@@ -234,6 +234,36 @@ class DocumentController(QObject):
         ]
         return join_words_list(picked)
 
+    @property
+    def is_encrypted(self) -> bool:
+        """源文件是否加密（AI 助读据此在外发前二次确认）。"""
+        doc = self._document
+        return doc is not None and not doc.is_closed and doc.meta.is_encrypted
+
+    def page_text(self, page_num: int) -> str:
+        """整页文字（按引擎的阅读顺序：同一行拼接，行间换行，块间空行）。"""
+        lines: list[str] = []
+        current: tuple[int, int] | None = None
+        block: int | None = None
+        pieces: list[str] = []
+        for w in self.get_words(page_num):
+            key = (w.block, w.line)
+            if key != current:
+                if pieces:
+                    lines.append(join_words_list(pieces))
+                    pieces = []
+                if block is not None and w.block != block:
+                    lines.append("")
+                current, block = key, w.block
+            pieces.append(w.text)
+        if pieces:
+            lines.append(join_words_list(pieces))
+        return "\n".join(lines)
+
+    def page_texts(self) -> list[str]:
+        """全部页的文字（AI 助读的上下文；主线程调用，PyMuPDF 非线程安全）。"""
+        return [self.page_text(i) for i in range(self.page_count)]
+
     def text_excerpt(self, page_num: int, y: float | None, *, max_chars: int = 240) -> str:
         """链接目标处的原文摘录：从页内纵坐标 ``y``（None = 页首）起取几行文字。
 

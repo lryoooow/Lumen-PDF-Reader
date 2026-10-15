@@ -68,6 +68,13 @@ _PATHS: dict[str, str] = {
     "list": '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
     "grid": '<path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/>',
     "pen": '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    # AI 助读
+    "ai": '<path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9zM18.5 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/>',
+    "capture": '<path d="M7 3v14h14M3 7h14v14"/>',
+    "settings": '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4"/>',
+    "send": '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    "stop": '<path d="M7 7h10v10H7z"/>',
+    "question": '<path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.5V14M12 17.5v.5M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z"/>',
 }
 
 ICON_NAMES = tuple(_PATHS.keys())

@@ -232,3 +232,29 @@ class TestClose:
     def test_get_words_empty_without_document(self, controller: DocumentController) -> None:
         """无文档时取词返回空元组（不抛异常）。"""
         assert controller.get_words(0) == ()
+
+
+def test_page_text_groups_lines_and_blocks(tmp_path: Path) -> None:
+    """整页文字：同行拼接、行间换行；加密标记默认 False（AI 助读外发前据此确认）。"""
+    import pymupdf
+
+    src = tmp_path / "t.pdf"
+    d = pymupdf.open()
+    page = d.new_page()
+    page.insert_text((72, 80), "Hello world", fontsize=12)
+    page.insert_text((72, 400), "Second block", fontsize=12)
+    d.new_page()
+    d.save(str(src))
+    d.close()
+    ctrl = DocumentController()
+    assert ctrl.page_text(0) == "" and not ctrl.is_encrypted
+    assert ctrl.open_file(src)
+    try:
+        text = ctrl.page_text(0)
+        assert "Hello world" in text and "Second block" in text
+        assert text.index("Hello") < text.index("Second")
+        texts = ctrl.page_texts()
+        assert len(texts) == 2 and texts[1] == ""
+        assert not ctrl.is_encrypted
+    finally:
+        ctrl.close_document()

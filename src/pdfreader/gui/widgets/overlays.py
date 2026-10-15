@@ -27,6 +27,7 @@ TOOL_HINTS = {
     "eraser": "单击批注删除",
     "signature": "点击页面放置签名",
     "timestamp": "点击页面放置时间",
+    "capture": "拖框选取公式 / 图表，交给 AI 解释",
 }
 
 

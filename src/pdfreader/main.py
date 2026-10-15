@@ -125,9 +125,18 @@ def run_selftest() -> int:
     def _pdf() -> None:
         import pymupdf  # noqa: F401
 
+    def _ai() -> None:
+        import httpx  # noqa: F401
+        import keyring
+
+        backend = keyring.get_keyring()
+        if "fail" in type(backend).__module__:
+            raise RuntimeError(f"没有可用的凭据后端：{type(backend).__name__}")
+
     check("pdf_engine", _pdf)
     check("convert_deps", _convert)
     check("ocr_engine", _ocr)
+    check("ai_deps", _ai)
 
     text = json.dumps(result, ensure_ascii=False, indent=2)
     with contextlib.suppress(Exception):

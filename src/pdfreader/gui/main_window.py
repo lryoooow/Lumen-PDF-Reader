@@ -58,7 +58,9 @@ from pdfreader.controllers import (
     OpenResult,
 )
 from pdfreader.engines.types import Annotation, LinkInfo, Rect, SearchResult
-from pdfreader.gui.panels import SearchPanel, SidePanel
+from pdfreader.gui.ai_assistant import AiAssistant
+from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
+from pdfreader.gui.panels.ai_panel import AI_PANEL_WIDTH
 from pdfreader.gui.panels.sidebar import SIDEBAR_WIDTH
 from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.palette import TOKENS
@@ -99,6 +101,7 @@ _TOOL_NAMES = {
     AnnotationMode.ERASER: "橡皮擦",
     AnnotationMode.SIGNATURE: "签名",
     AnnotationMode.TIMESTAMP: "时间",
+    AnnotationMode.CAPTURE: "框选提问",
 }
 # 「参考文献 [12]」式链接文字（取词常带上相邻标点，如 "[1]."、"([2,3])"）
 _CITATION_RE = re.compile(r"^\W*\[?\s*(\d+(?:\s*[,，–\-]\s*\d+)*)\s*\]?\W*$")
@@ -183,6 +186,16 @@ class MainWindow(QMainWindow):
         self._setup_window()
         self._create_actions()
         self._setup_ui()
+        self._ai = AiAssistant(
+            self,
+            self._controller,
+            self.ai_panel,
+            current_page=self._current_page,
+            navigate=self._navigate_to,
+            show_panel=lambda: self._set_ai_panel_visible(True),
+            notify=self.status_bar.show_message,
+            on_annotation_added=self._after_annotation_change,
+        )
         self._connect_signals()
         self._theme.changed.connect(self._on_theme_changed)
 
@@ -365,6 +378,8 @@ class MainWindow(QMainWindow):
             "underline", "下划线", AnnotationMode.UNDERLINE
         )
         self.underline_action.setToolTip("拖拽选字添加下划线（右键选中文字可选删除线 / 波浪线）")
+        self.capture_action = self._annot_mode_action("capture", "框选提问", AnnotationMode.CAPTURE)
+        self.capture_action.setToolTip("拖框选取公式 / 图表，交给 AI 解释")
         self.color_action = self._act(
             "chevron_down", "颜色", None, enabled=False, tooltip="高亮颜色"
         )
@@ -397,6 +412,7 @@ class MainWindow(QMainWindow):
             AnnotationMode.ERASER: self.eraser_action,
             AnnotationMode.SIGNATURE: self.signature_action,
             AnnotationMode.TIMESTAMP: self.timestamp_action,
+            AnnotationMode.CAPTURE: self.capture_action,
         }
 
         # 工具
@@ -436,7 +452,40 @@ class MainWindow(QMainWindow):
             tooltip="复制选中文字并合并 PDF 排版换行与断词（便于粘贴到翻译 / 笔记）",
         )
         self.translate_action = self._act(
-            "translate", "翻译", self._on_translate, enabled=False, tooltip="划词翻译"
+            "translate", "翻译", self._on_translate, enabled=False, tooltip="AI 翻译选中的文字"
+        )
+
+        # AI 助读
+        self.ai_panel_action = self._act(
+            "ai",
+            "AI 面板",
+            lambda: self._set_ai_panel_visible(self.ai_panel_action.isChecked()),
+            shortcut="Ctrl+J",
+            checkable=True,
+            tooltip="打开 / 关闭 AI 助读面板",
+        )
+        self.ai_summary_action = self._act(
+            "list",
+            "总结全文",
+            lambda: self._ai.summarize(),
+            enabled=False,
+            tooltip="结构化总结（研究问题 / 方法 / 结果 / 局限），要点带页码可跳转",
+        )
+        self.ai_suggest_action = self._act(
+            "question",
+            "推荐问题",
+            lambda: self._ai.suggest(),
+            enabled=False,
+            tooltip="让 AI 提出值得问的问题，点击即可提问",
+        )
+        self.ai_explain_action = self._act(
+            "info", "解释", self._on_ai_explain, enabled=False, tooltip="AI 解释选中的文字"
+        )
+        self.ai_settings_action = self._act(
+            "settings",
+            "模型设置",
+            lambda: self._ai.open_settings(),
+            tooltip="配置 OpenAI 兼容的模型服务（DeepSeek / 通义 / Kimi / Ollama …）",
         )
 
         # 关于
@@ -528,6 +577,17 @@ class MainWindow(QMainWindow):
                 ("文档", [self.doc_info_action]),
             ],
         )
+        self.ribbon.add_tab(
+            "AI 助读",
+            [
+                ("全文", [self.ai_panel_action, self.ai_summary_action, self.ai_suggest_action]),
+                (
+                    "划词与框选",
+                    [self.translate_action, self.ai_explain_action, self.capture_action],
+                ),
+                ("模型", [self.ai_settings_action]),
+            ],
+        )
         self.ribbon.add_trailing_action(self.about_action)
         self.ribbon.finish()
         layout.addWidget(self.ribbon)
@@ -562,6 +622,10 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self.pdf_view)
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self._stack, stretch=1)
+        self.ai_panel = AiPanel()
+        self.ai_panel.setMaximumWidth(0)
+        self.ai_panel.setVisible(False)
+        content_layout.addWidget(self.ai_panel)
         layout.addWidget(self._content, stretch=1)
 
         # 浮层：搜索卡片、工具提示胶囊、参考文献预览卡
@@ -645,6 +709,10 @@ class MainWindow(QMainWindow):
         self.pdf_view.linkActivated.connect(self._on_link_activated)
         self.pdf_view.markupRequested.connect(self._on_markup_requested)
         self.pdf_view.placementFinished.connect(self._on_placement_finished)
+        self.pdf_view.aiRequested.connect(self._on_ai_requested)
+        self.pdf_view.areaCaptured.connect(self._on_area_captured)
+        self.ai_panel.closeRequested.connect(lambda: self._set_ai_panel_visible(False))
+        self.ai_panel.captureRequested.connect(self._start_capture)
 
         self.status_bar.prevRequested.connect(self._prev_page)
         self.status_bar.nextRequested.connect(self._next_page)
@@ -1101,6 +1169,7 @@ class MainWindow(QMainWindow):
         self._back_stack.clear()
         self._forward_stack.clear()
         self._update_history_actions()
+        self._ai.invalidate_text()
         if self._controller.is_modified:
             self.status_bar.show_message(f"共 {count} 页 · 未保存")
 
@@ -1161,6 +1230,8 @@ class MainWindow(QMainWindow):
             return QCursor(render_pixmap("note", p.accent, size=24), 4, 4)
         if mode == AnnotationMode.ERASER:
             return QCursor(render_pixmap("eraser", p.text_secondary, size=24), 4, 20)
+        if mode == AnnotationMode.CAPTURE:
+            return QCursor(Qt.CursorShape.CrossCursor)
         return QCursor(Qt.CursorShape.IBeamCursor)  # 浏览/选择：文本光标
 
     def _highlight_color(self) -> tuple[float, float, float] | None:
@@ -1355,9 +1426,78 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.show_message("请先用「选择」工具选中文字")
 
+    # ------------------------------------------------------------------ AI 助读
+    def _selection_context(self) -> tuple[str, int | None, Rect | None]:
+        text = self.pdf_view.selected_text.strip()
+        picked = self.pdf_view.selection_rects()
+        if picked is None or not picked[1]:
+            return text, None, None
+        page, rects = picked
+        bound = Rect(
+            min(r.x0 for r in rects),
+            min(r.y0 for r in rects),
+            max(r.x1 for r in rects),
+            max(r.y1 for r in rects),
+        )
+        return text, page, bound
+
     def _on_translate(self) -> None:
-        """划词翻译：需要接入在线翻译服务（API Key / 隐私策略待定），当前如实提示。"""
-        self.status_bar.show_message("翻译插件尚未配置")
+        """AI 划词翻译（右键「AI 翻译」/ 功能区「翻译」）。"""
+        text, page, rect = self._selection_context()
+        if not text:
+            self.status_bar.show_message("请先用「选择」工具选中文字")
+            return
+        self._ai.translate(text, page, rect)
+
+    def _on_ai_explain(self) -> None:
+        text, page, rect = self._selection_context()
+        if not text:
+            self.status_bar.show_message("请先用「选择」工具选中文字")
+            return
+        self._ai.explain(text, page, rect)
+
+    def _on_ai_requested(self, kind: str) -> None:
+        """右键菜单：AI 翻译 / 解释 / 问 AI（把选中文字引用进输入框）。"""
+        if kind == "translate":
+            self._on_translate()
+        elif kind == "explain":
+            self._on_ai_explain()
+        elif kind == "ask":
+            text, _page, _rect = self._selection_context()
+            self._set_ai_panel_visible(True)
+            self.ai_panel.prefill(f"关于「{text}」：" if text else "")
+
+    def _start_capture(self) -> None:
+        if not self._controller.has_document:
+            self.status_bar.show_message("请先打开文档")
+            return
+        self._annotation_controller.set_mode(AnnotationMode.CAPTURE)
+
+    def _on_area_captured(self, page_num: int, rect: Rect) -> None:
+        self._annotation_controller.set_mode(AnnotationMode.NONE)
+        self._ai.explain_area(page_num, rect)
+
+    def _set_ai_panel_visible(self, visible: bool) -> None:
+        """右侧 AI 面板：与左侧边栏同样的宽度动画。"""
+        self.ai_panel_action.setChecked(visible)
+        panel = self.ai_panel
+        if visible:
+            self._ai.refresh_panel()
+        start = panel.width() if panel.isVisible() else 0
+        end = AI_PANEL_WIDTH if visible else 0
+        if visible:
+            panel.setVisible(True)
+        if not motion.enabled() or start == end:
+            panel.setMaximumWidth(end)
+            panel.setVisible(visible)
+        else:
+            anim = motion.animate_property(
+                panel, b"maximumWidth", start, end, TOKENS.anim_sidebar, owner=panel
+            )
+            if anim is not None and not visible:
+                anim.finished.connect(lambda: panel.setVisible(self.ai_panel_action.isChecked()))
+        if visible:
+            panel.input.setFocus()
 
     # ------------------------------------------------------------------ 撤销 / 橡皮擦 / 放置
     def _on_undo(self) -> None:
@@ -1545,6 +1685,7 @@ class MainWindow(QMainWindow):
         for w in (self._search_worker, self._ocr_worker):
             if w is not None:
                 workers.append(w)
+        self._ai.shutdown()
         running = [w for w in workers if w.isRunning()]
         if not running:
             return
@@ -1779,6 +1920,7 @@ class MainWindow(QMainWindow):
         self._forward_stack.clear()
         self.sidebar.clear()
         self._annotations_stale = True
+        self._ai.reset_document()
 
     def _on_document_opened(self, page_count: int) -> None:
         self._reset_document_session()
@@ -1853,6 +1995,10 @@ class MainWindow(QMainWindow):
             self.search_action,
             self.copy_merge_action,
             self.translate_action,
+            self.ai_summary_action,
+            self.ai_suggest_action,
+            self.ai_explain_action,
+            self.capture_action,
             self.color_action,
             self.select_action,
             self.hand_action,

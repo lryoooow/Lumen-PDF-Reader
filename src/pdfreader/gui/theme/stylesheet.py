@@ -305,6 +305,54 @@ QPushButton#LinkButton {
 }
 QPushButton#LinkButton:hover { text-decoration: underline; }
 
+/* ================================================================ AI 助读面板（右侧抽屉） */
+#AiPanel {
+    background-color: $surface;
+    border-left: 1px solid $border;
+}
+QLabel#AiTitle { font-size: 14px; font-weight: 600; }
+QLabel#AiProvider { font-size: 11px; color: $text_muted; }
+QLabel#AiStatus { font-size: 11px; color: $text_muted; }
+QToolButton#AiChip {
+    background-color: $surface_hover;
+    border: none;
+    border-radius: 12px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: $text_secondary;
+}
+QToolButton#AiChip:hover { background-color: $accent_soft; color: $accent_text; }
+QToolButton#AiChip:disabled { color: $border_strong; }
+QToolButton#AiChip::menu-indicator { image: none; width: 0; }
+QTextBrowser#AiTranscript {
+    background-color: $popover;
+    border: 1px solid $border;
+    border-radius: 12px;
+    padding: 6px 8px;
+    font-size: 13px;
+}
+#AiInputBox {
+    background-color: $popover;
+    border: 1px solid $border_strong;
+    border-radius: 12px;
+}
+QPlainTextEdit#AiInput { background: transparent; border: none; padding: 0px; }
+QToolButton#AiSendButton {
+    background-color: $accent;
+    border: none;
+    border-radius: 8px;
+    min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px;
+}
+QToolButton#AiSendButton:hover { background-color: $accent_hover; }
+QToolButton#AiSendButton:disabled { background-color: $border_strong; }
+QListWidget#AiProviderList {
+    background-color: $window;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 4px;
+}
+QLabel#AiHint { font-size: 11px; color: $text_muted; }
+
 /* ================================================================ 输入控件 */
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {
     background-color: $popover;

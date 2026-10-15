@@ -6,7 +6,7 @@
 
 * 回复用中文；自主执行，只在删除文件/目录、核心架构调整、破坏性数据操作前确认。
 * 三条铁律：`core/`+`services/` 不 import PySide6/pymupdf；只有 `engines/` 知道 PyMuPDF；
-  子线程只跑 `workers/`（OCR/搜索/转换），页面渲染在主线程直接渲染受控文档。
+  子线程只跑 `workers/`（OCR/搜索/转换/AI 网络请求），页面渲染在主线程直接渲染受控文档。
 * 坐标一律"可见帧"（`page.rect`，已应用 /Rotate）；文本读取走引擎 `_textpage()`
   （PyMuPDF 的 `Page.get_text*` 会改写 /Rotate，和撤销日志冲突）。
 * 提交前：`uv run ruff check .` → `uv run ruff format --check .` → `uv run mypy` → `uv run pytest`。

@@ -37,6 +37,8 @@ dependencies = [
     "pdfplumber>=0.11,<0.12",
     "openpyxl>=3.1,<4.0",
     "numpy>=1.26",  # 阅读模式（夜间 / 护眼）颜色滤镜
+    "httpx>=0.27,<1.0",  # AI 助读：OpenAI 兼容接口（流式 SSE）
+    "keyring>=25,<26",  # AI 助读：API Key 存入系统凭据管理器，不落盘
 ]
 
 [project.urls]

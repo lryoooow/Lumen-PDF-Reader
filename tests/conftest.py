@@ -44,3 +44,30 @@ def _no_motion() -> Iterator[None]:
     motion.set_enabled(False)
     yield
     motion.set_enabled(False)
+
+
+class _MemoryKeyring:
+    """内存版凭据后端：测试绝不读写开发者真实的系统凭据管理器。"""
+
+    def __init__(self) -> None:
+        self.data: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.data.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.data[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self.data.pop((service, username), None)
+
+
+@pytest.fixture(autouse=True)
+def memory_keyring() -> Iterator[_MemoryKeyring]:
+    """把 API Key 存取换成内存后端（测试可直接检查 ``.data``）。"""
+    from pdfreader.services.ai import keystore
+
+    backend = _MemoryKeyring()
+    keystore.set_default_backend(backend)
+    yield backend
+    keystore.set_default_backend(None)

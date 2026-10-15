@@ -65,12 +65,12 @@ def test_close_document_action_disabled_initially(qtbot) -> None:  # type: ignor
 
 
 def test_ribbon_has_expected_tabs(qtbot) -> None:  # type: ignore[no-untyped-def]
-    """选项卡式功能区：开始 / 批注 / 页面 / 视图 / 工具。"""
+    """选项卡式功能区：开始 / 批注 / 页面 / 视图 / 工具 / AI 助读。"""
     window = MainWindow()
     qtbot.addWidget(window)
     ribbon = window.ribbon
     tabs = [ribbon._tab_group.button(i).text() for i in range(ribbon._stack.count())]
-    assert tabs == ["开始", "批注", "页面", "视图", "工具"]
+    assert tabs == ["开始", "批注", "页面", "视图", "工具", "AI 助读"]
 
 
 def test_ribbon_button_for_returns_widget(qtbot) -> None:  # type: ignore[no-untyped-def]
