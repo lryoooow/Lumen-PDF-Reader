@@ -9,10 +9,12 @@
 
 ### 整理
 - 文档重组为 `docs/01_功能说明`、`02_架构设计`、`03_项目结构`、`04_界面与交互规范`、`05_开发与测试`、
-  `06_打包与发布` 与导航 `docs/README.md`；早期调研 / 选型 / 开发计划移入 `docs/历史/`；README 精简为入口页并配新截图
+  `06_打包与发布` 与导航 `docs/README.md`；README 精简为入口页并配新截图
 - 清理：移除无引用的 `core/outline.py`（已被 `TocEntry` 取代）、`DocumentState`、`ThemeManager.accent_icon`、
   `PdfView._page_pen`；以「第几轮」命名的测试文件改为按主题命名；修正过时的包说明
-- `memory/` 只保留可运行的复现脚本、第三轮与 Lumen 验收探针及报告，新增索引 `memory/README.md`
+- 移除过时文档与内部记录：早期调研 / 选型 / 开发计划（原 `docs/历史/`）、三轮审查报告与复现 / 探针脚本（原 `memory/`，
+  结论已落入回归测试与本文件）；`memory/` 改为本地目录不再入库
+- 界面截图脚本移至 `scripts/capture_screenshots.py`（生成 `docs/images/` 截图）
 - Makefile 增加 `format-check`（并入 `make check`）、`samples`、`icon`、`build`、`installer`、`clean-dist`；
   pre-commit 改用项目环境中的 ruff / mypy；Pillow 显式列入开发依赖
 
@@ -49,9 +51,9 @@
 ### 工程
 - 版本号重置为 Lumen 0.0.1（`pyproject.toml` / `__init__.py` / `installer.nsi` 三处同步）；新增依赖 `numpy`（阅读模式颜色滤镜，原已随 pdf2docx 间接安装）
 - 新增 `tests/unit/gui/test_lumen_ui.py`（设计稿逐项对接测试）与视觉验收脚本
-  `memory/_probe_lumen_screenshots.py`
+  `scripts/capture_screenshots.py`
 
-> 第三轮全面审查与修复（2026-10-14），详见 `memory/2026-10-14_第三轮全面审查与修复计划.md`；
+> 第三轮全面审查与修复（2026-10-14，问题编号 R3-xx）；
 > 功能全貌见 `docs/01_功能说明.md` / `docs/04_界面与交互规范.md`。
 
 ### 修复：数据安全（P0）

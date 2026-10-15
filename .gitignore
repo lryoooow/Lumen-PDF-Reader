@@ -84,5 +84,5 @@ logs/
 # 用户配置（运行时生成）
 config/user_settings.json
 
-# 排查脚本生成的临时样例（memory/repro_*.py 运行产物）
-memory/_tmp/
+# 本地分析记录、排查报告、复现脚本与探针（见 AGENTS.md）
+memory/

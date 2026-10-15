@@ -1,6 +1,6 @@
 """Lumen 设计稿视觉验收：离屏渲染各状态截图（用 Windows 字体目录，中文正常显示）。
 
-用法：uv run python memory/_probe_lumen_screenshots.py <输出目录>
+用法：uv run python scripts/capture_screenshots.py <输出目录>
 """
 import os, sys, tempfile, time
 from pathlib import Path

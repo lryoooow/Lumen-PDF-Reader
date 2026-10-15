@@ -10,5 +10,5 @@
 * 坐标一律"可见帧"（`page.rect`，已应用 /Rotate）；文本读取走引擎 `_textpage()`
   （PyMuPDF 的 `Page.get_text*` 会改写 /Rotate，和撤销日志冲突）。
 * 提交前：`uv run ruff check .` → `uv run ruff format --check .` → `uv run mypy` → `uv run pytest`。
-* 分析记录、复现脚本、探针统一放 `memory/`（索引 `memory/README.md`）；现状文档见 `docs/README.md`。
+* 分析记录、复现脚本、探针放本地 `memory/`（不入库）；现状文档见 `docs/README.md`。
 * 版本号三处同步：`pyproject.toml`、`src/pdfreader/__init__.py`、`scripts/installer.nsi`，并写 `CHANGELOG.md`。
