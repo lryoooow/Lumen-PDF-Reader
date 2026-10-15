@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 __all__ = [
+    "FREE_TEXT_FONTSIZE",
     "MARKUP_TYPES",
     "Annotation",
     "AnnotationType",
@@ -179,6 +180,8 @@ class AnnotationType:
     STAMP = 13  # 图章
     INK = 15  # 手写
 
+
+FREE_TEXT_FONTSIZE = 11.0  # 文本框批注字号（pt）；GUI 按它估算文本框大小
 
 # 文字标记类批注（高亮 / 下划线 / 删除线 / 波浪线）：都覆盖一段文字，可提取被标记的原文
 MARKUP_TYPES = frozenset(

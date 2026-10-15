@@ -57,7 +57,14 @@ from pdfreader.controllers import (
     DocumentController,
     OpenResult,
 )
-from pdfreader.engines.types import Annotation, LinkInfo, Rect, SearchResult
+from pdfreader.engines.types import (
+    FREE_TEXT_FONTSIZE,
+    Annotation,
+    LinkInfo,
+    Point,
+    Rect,
+    SearchResult,
+)
 from pdfreader.gui.ai_assistant import AiAssistant
 from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
 from pdfreader.gui.panels.ai_panel import AI_PANEL_WIDTH
@@ -68,6 +75,7 @@ from pdfreader.gui.widgets import PdfView, Ribbon, StatusBar, WelcomeWidget, mot
 from pdfreader.gui.widgets.overlays import CitePopover, ToolHint
 from pdfreader.gui.widgets.pdf_view import ReadingMode
 from pdfreader.services.ocr import OCR_AVAILABLE
+from pdfreader.utils.text import is_cjk_char
 from pdfreader.workers import OcrWorker, SearchWorker
 
 __all__ = ["MainWindow"]
@@ -98,6 +106,7 @@ _TOOL_NAMES = {
     AnnotationMode.UNDERLINE: "下划线",
     AnnotationMode.INK: "手写",
     AnnotationMode.TEXT: "便签",
+    AnnotationMode.FREETEXT: "文本框",
     AnnotationMode.ERASER: "橡皮擦",
     AnnotationMode.SIGNATURE: "签名",
     AnnotationMode.TIMESTAMP: "时间",
@@ -119,6 +128,32 @@ def _hex_to_rgb(value: str) -> tuple[float, float, float] | None:
         return (int(text[0:2], 16) / 255, int(text[2:4], 16) / 255, int(text[4:6], 16) / 255)
     except ValueError:
         return None
+
+
+def free_text_rect(
+    point: Point, text: str, page: Rect, fontsize: float = FREE_TEXT_FONTSIZE
+) -> Rect:
+    """按文字量估算文本框大小：左上角落在单击点，最宽 260pt 自动折行，超出页边则往回挪。
+
+    估算偏宽一点（中文按 1em、西文按 0.55em），让 MuPDF 的实际排版不至于溢出框外。
+    """
+    max_w = min(260.0, page.width - 24)
+    line_h = fontsize * 1.4
+    widths: list[float] = []
+    for para in text.splitlines() or [""]:
+        w = 0.0
+        for ch in para:
+            step = fontsize if is_cjk_char(ch) else fontsize * 0.55
+            if w + step > max_w:
+                widths.append(w)
+                w = 0.0
+            w += step
+        widths.append(w)
+    width = min(max_w, max(60.0, max(widths) * 1.08)) + 10
+    height = len(widths) * line_h + 10
+    x0 = min(max(page.x0 + 4, point.x), page.x1 - width - 4)
+    y0 = min(max(page.y0 + 4, point.y), page.y1 - height - 4)
+    return Rect(x0, y0, x0 + width, y0 + height)
 
 
 class _ContentArea(QWidget):
@@ -373,6 +408,8 @@ class MainWindow(QMainWindow):
         )
         self.ink_action = self._annot_mode_action("ink", "手写", AnnotationMode.INK)
         self.note_action = self._annot_mode_action("note", "便签", AnnotationMode.TEXT)
+        self.freetext_action = self._annot_mode_action("textbox", "文本框", AnnotationMode.FREETEXT)
+        self.freetext_action.setToolTip("单击页面放置文本框：文字直接显示在页面上")
         self.eraser_action = self._annot_mode_action("eraser", "橡皮擦", AnnotationMode.ERASER)
         self.underline_action = self._annot_mode_action(
             "underline", "下划线", AnnotationMode.UNDERLINE
@@ -409,6 +446,7 @@ class MainWindow(QMainWindow):
             AnnotationMode.UNDERLINE: self.underline_action,
             AnnotationMode.INK: self.ink_action,
             AnnotationMode.TEXT: self.note_action,
+            AnnotationMode.FREETEXT: self.freetext_action,
             AnnotationMode.ERASER: self.eraser_action,
             AnnotationMode.SIGNATURE: self.signature_action,
             AnnotationMode.TIMESTAMP: self.timestamp_action,
@@ -534,7 +572,10 @@ class MainWindow(QMainWindow):
             "批注",
             [
                 ("文字标记", [self.highlight_action, self.color_action, self.underline_action]),
-                ("绘制", [self.ink_action, self.note_action, self.eraser_action]),
+                (
+                    "绘制",
+                    [self.ink_action, self.note_action, self.freetext_action, self.eraser_action],
+                ),
                 ("插入", [self.signature_action, self.timestamp_action]),
             ],
         )
@@ -1228,6 +1269,8 @@ class MainWindow(QMainWindow):
             return QCursor(render_pixmap("ink", p.danger, size=26), 3, 23)
         if mode == AnnotationMode.TEXT:
             return QCursor(render_pixmap("note", p.accent, size=24), 4, 4)
+        if mode == AnnotationMode.FREETEXT:
+            return QCursor(render_pixmap("textbox", p.accent, size=24), 4, 4)
         if mode == AnnotationMode.ERASER:
             return QCursor(render_pixmap("eraser", p.text_secondary, size=24), 4, 20)
         if mode == AnnotationMode.CAPTURE:
@@ -1282,12 +1325,30 @@ class MainWindow(QMainWindow):
     def _on_annot_text(self, page_num: int, point) -> None:  # type: ignore[no-untyped-def]
         if self._controller.document is None:
             return
+        if self._annotation_controller.mode == AnnotationMode.FREETEXT:
+            self._place_free_text(page_num, point)
+            return
         text, ok = QInputDialog.getMultiLineText(self, "便签", "输入便签内容：")
         if ok and text.strip():
             if self._controller.add_text_annot(page_num, point, text.strip()):
                 self._after_annotation_change(page_num)
             else:
                 self._report_failure("添加便签")
+
+    def _place_free_text(self, page_num: int, point: Point) -> None:
+        text, ok = QInputDialog.getMultiLineText(self, "文本框", "输入要显示在页面上的文字：")
+        text = text.strip()
+        if not ok or not text:
+            return
+        bounds = self._controller.get_page_bounds()
+        if not 0 <= page_num < len(bounds):
+            return
+        rect = free_text_rect(point, text, bounds[page_num])
+        if self._controller.add_free_text(page_num, rect, text):
+            self._after_annotation_change(page_num)
+            self.status_bar.show_message("已添加文本框 · 双击侧栏卡片可修改文字 · Ctrl+Z 撤销")
+        else:
+            self._report_failure("添加文本框")
 
     def _after_annotation_change(self, page_num: int) -> None:
         self._refresh_page(page_num)
@@ -2006,6 +2067,7 @@ class MainWindow(QMainWindow):
             self.underline_action,
             self.ink_action,
             self.note_action,
+            self.freetext_action,
             self.eraser_action,
             self.signature_action,
             self.timestamp_action,

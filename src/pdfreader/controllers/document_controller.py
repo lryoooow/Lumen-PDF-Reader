@@ -357,6 +357,9 @@ class DocumentController(QObject):
     def add_text_annot(self, page_num: int, point: Point, text: str) -> bool:
         return self._run("添加便签", lambda d: d.add_text_annot(page_num, point, text))
 
+    def add_free_text(self, page_num: int, rect: Rect, text: str) -> bool:
+        return self._run("添加文本框", lambda d: d.add_free_text(page_num, rect, text))
+
     def set_annotation_content(self, page_num: int, index: int, text: str) -> bool:
         return self._run("修改批注笔记", lambda d: d.set_annotation_content(page_num, index, text))
 

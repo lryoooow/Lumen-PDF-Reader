@@ -367,3 +367,40 @@ def test_search_panel_steps_through_results(qtbot) -> None:  # type: ignore[no-u
         panel.select_relative(1)
     panel.select_relative(-1)
     assert pages == [0, 1, 2, 0, 2]
+
+
+class TestFreeText:
+    def test_place_free_text_with_tool(
+        self, window: MainWindow, tmp_path: Path, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        from pdfreader.controllers.annotation_controller import AnnotationMode
+        from pdfreader.engines.types import AnnotationType, Point
+
+        window.open_path(_make_pdf(tmp_path / "f.pdf", 2))
+        window.freetext_action.trigger()
+        assert window._annotation_controller.mode == AnnotationMode.FREETEXT
+        monkeypatch.setattr(QInputDialog, "getMultiLineText", lambda *a, **k: ("页边批注", True))
+        window.pdf_view.annotationNote.emit(1, Point(120, 200))
+        (annot,) = window._controller.list_all_annotations()
+        assert annot.annot_type == AnnotationType.FREE_TEXT
+        assert annot.page_num == 1 and annot.content == "页边批注"
+        assert "页边批注" in window.sidebar.annot_list.item(0).text()
+        # 取消输入：不添加
+        monkeypatch.setattr(QInputDialog, "getMultiLineText", lambda *a, **k: ("", False))
+        window.pdf_view.annotationNote.emit(1, Point(120, 400))
+        assert len(window._controller.list_all_annotations()) == 1
+
+
+def test_free_text_rect_sizes_and_clamps() -> None:
+    from pdfreader.engines.types import Point
+    from pdfreader.gui.main_window import free_text_rect
+
+    page = Rect(0, 0, 600, 800)
+    short = free_text_rect(Point(100, 100), "hi", page)
+    assert short.x0 == 100 and short.y0 == 100 and short.width >= 60
+    long = free_text_rect(Point(100, 100), "中" * 80, page)
+    assert long.width <= 271 and long.height > short.height  # 最宽 260 后折行
+    two = free_text_rect(Point(100, 100), "a\nb", page)
+    assert two.height > short.height
+    edge = free_text_rect(Point(590, 795), "靠右下角的文字", page)  # 超出页边就往回挪
+    assert edge.x1 <= 600 and edge.y1 <= 800

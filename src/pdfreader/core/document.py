@@ -307,6 +307,10 @@ class Document:
         """添加文本便签批注。"""
         self._edit(lambda h: self._engine.add_text_annot(h, page_num, point, text), page_num)
 
+    def add_free_text(self, page_num: int, rect: Rect, text: str) -> None:
+        """添加文本框批注（文字直接显示在页面上）。"""
+        self._edit(lambda h: self._engine.add_free_text(h, page_num, rect, text), page_num)
+
     def set_annotation_content(self, page_num: int, index: int, text: str) -> None:
         """修改批注的笔记内容。"""
         self._edit(

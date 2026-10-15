@@ -259,3 +259,16 @@ class TestRotatedPageWrites:
         assert engine.undo(handle) is True
         assert engine.render_page(handle, 0, 1.0).width > 0  # type: ignore[arg-type]
         assert engine.extract_text(handle, 0).full_text.strip()  # type: ignore[arg-type]
+
+
+def test_free_text_draws_inside_visible_rect(engine: PyMuPdfEngine, handle: EngineDocument) -> None:
+    """旋转页上的文本框落在可见帧矩形里，列举出的矩形也是可见帧。"""
+    box = Rect(80.0, 60.0, 300.0, 110.0)
+    before = engine.render_page(handle, 0, 1.0)
+    engine.add_free_text(handle, 0, box, "旋转页文本框")
+    after = engine.render_page(handle, 0, 1.0)
+    changed = _diff_bbox(before, after)
+    assert changed is not None
+    assert _overlap_ratio(changed, box) > 0.9
+    listed = engine.list_annotations(handle, 0)[0]
+    assert abs(listed.rect.x0 - box.x0) < 2 and abs(listed.rect.y0 - box.y0) < 2

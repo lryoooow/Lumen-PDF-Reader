@@ -31,6 +31,7 @@ _PATHS: dict[str, str] = {
     "underline": '<path d="M6 4v6a6 6 0 0 0 12 0V4M4 21h16"/>',
     "ink": '<path d="M12 19l7-7 3 3-7 7zM18 13l-1.5-7.5L2 2l3.5 14.5L13 18zM2 2l7.6 7.6"/>',
     "note": '<path d="M4 4h16v12l-4 4H4zM16 20v-4h4"/>',
+    "textbox": '<path d="M4 5h16v14H4zM8 9h8M12 9v7"/>',
     "eraser": '<path d="m7 21-4-4L14 6l7 7-8 8zM10 10l7 7"/>',
     "signature": '<path d="M3 17c3-6 5-6 6-3s3 3 5-2 4 2 7 1M3 21h18"/>',
     "stamp": '<path d="M12 7v5l3 2M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z"/>',

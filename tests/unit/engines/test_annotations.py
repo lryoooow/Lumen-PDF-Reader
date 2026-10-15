@@ -106,3 +106,40 @@ class TestAnnotationProperties:
         b = Annotation(page_num=0, annot_type=AnnotationType.INK, rect=Rect(0, 0, 1, 1))
         assert b.type_name == "手写"
         assert b.is_ink is True
+
+
+class TestAddFreeText:
+    def test_free_text_lists_content_and_survives_save(
+        self, engine: PyMuPdfEngine, work_pdf: Path, tmp_path: Path
+    ) -> None:
+        doc = engine.open(work_pdf)
+        box = Rect(100, 300, 300, 340)
+        engine.add_free_text(doc, 0, box, "中文文本框 <b>&\n第二行")
+        (annot,) = engine.list_annotations(doc, 0)
+        assert annot.annot_type == AnnotationType.FREE_TEXT
+        assert annot.type_name == "文本框"
+        assert annot.content == "中文文本框 <b>&\n第二行"  # 原样保留，HTML 只用于外观
+        assert abs(annot.rect.x0 - box.x0) < 2 and abs(annot.rect.y1 - box.y1) < 2
+        out = tmp_path / "saved.pdf"
+        engine.save(doc, out)
+        engine.close(doc)
+        again = engine.open(out)
+        assert engine.list_annotations(again, 0)[0].content.startswith("中文文本框")
+        engine.close(again)
+
+    def test_edit_free_text_rebuilds_in_place_and_undoes(
+        self, engine: PyMuPdfEngine, work_pdf: Path
+    ) -> None:
+        doc = engine.open(work_pdf)
+        box = Rect(100, 300, 300, 340)
+        engine.add_free_text(doc, 0, box, "旧文字")
+        engine.set_annotation_content(doc, 0, 0, "新文字")
+        (annot,) = engine.list_annotations(doc, 0)
+        assert annot.annot_type == AnnotationType.FREE_TEXT
+        assert annot.content == "新文字"
+        assert abs(annot.rect.x0 - box.x0) < 2 and abs(annot.rect.y0 - box.y0) < 2
+        assert engine.undo(doc) is True  # 一次撤销回到旧文字（删+建在同一个操作里）
+        assert engine.list_annotations(doc, 0)[0].content == "旧文字"
+        assert engine.undo(doc) is True
+        assert engine.list_annotations(doc, 0) == []
+        engine.close(doc)

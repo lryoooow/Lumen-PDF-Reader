@@ -87,3 +87,46 @@ def test_thumbnails_requested_only_for_visible_pages(panel: SidePanel, qtbot) ->
     requests.clear()
     panel._emit_visible_thumbnails()
     assert requests and 0 not in requests[-1]
+
+
+def test_annotation_filter_by_text_type_and_color(panel: SidePanel) -> None:
+    yellow = (0.98, 0.8, 0.08)
+    blue = (0.2, 0.4, 0.9)
+    annots = [
+        Annotation(
+            0, AnnotationType.HIGHLIGHT, Rect(0, 10, 9, 20), marked_text="Transformer", color=yellow
+        ),
+        Annotation(
+            0, AnnotationType.UNDERLINE, Rect(0, 30, 9, 40), marked_text="注意力机制", color=blue
+        ),
+        Annotation(
+            1,
+            AnnotationType.HIGHLIGHT,
+            Rect(0, 10, 9, 20),
+            marked_text="结论",
+            content="重要 TODO",
+            color=blue,
+        ),
+    ]
+    panel.set_annotations(annots)
+    assert panel.annot_type_filter.count() == 3  # 全部 + 高亮 + 下划线
+    assert panel.annot_color_filter.count() == 3
+    panel.annot_search.setText("transformer")  # 不区分大小写
+    assert [a.marked_text for a in panel.visible_annotations()] == ["Transformer"]
+    panel.annot_search.setText("todo")  # 也搜笔记
+    assert [a.marked_text for a in panel.visible_annotations()] == ["结论"]
+    panel.annot_search.clear()
+    panel.annot_type_filter.setCurrentIndex(
+        panel.annot_type_filter.findData(AnnotationType.HIGHLIGHT)
+    )
+    assert len(panel.visible_annotations()) == 2
+    panel.annot_color_filter.setCurrentIndex(2)  # 第二种颜色：蓝
+    assert [a.marked_text for a in panel.visible_annotations()] == ["结论"]
+    panel.annot_search.setText("不存在")
+    assert panel.visible_annotations() == []
+    assert not panel.annot_no_match.isHidden()
+    # 刷新批注后保留筛选
+    panel.annot_search.clear()
+    panel.set_annotations(annots)
+    assert panel.annot_type_filter.currentData() == AnnotationType.HIGHLIGHT
+    assert [a.marked_text for a in panel.visible_annotations()] == ["结论"]

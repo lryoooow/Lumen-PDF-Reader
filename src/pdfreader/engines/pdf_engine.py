@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import logging
 import re
 from collections.abc import Iterator, Sequence
@@ -32,8 +33,10 @@ from pdfreader.engines.exceptions import (
     SearchError,
 )
 from pdfreader.engines.types import (
+    FREE_TEXT_FONTSIZE,
     MARKUP_TYPES,
     Annotation,
+    AnnotationType,
     DocumentMeta,
     InkStroke,
     LinkInfo,
@@ -224,6 +227,38 @@ def _unrotated_points(page: pymupdf.Page, points: tuple[Point, ...]) -> list[pym
 def _unrotated_rect(page: pymupdf.Page, rect: Rect) -> pymupdf.Rect:
     """可见帧矩形 → 未旋转帧矩形（同上）。"""
     return pymupdf.Rect(rect.x0, rect.y0, rect.x1, rect.y1) * page.derotation_matrix
+
+
+_FREE_TEXT_FILL = (1.0, 0.98, 0.85)  # 浅米黄底，与便签一致的「贴纸」观感
+
+
+def _add_free_text(
+    page: pymupdf.Page,
+    rect: Rect,
+    text: str,
+    *,
+    fill: tuple[float, ...] | None = None,
+) -> pymupdf.Annot:
+    """在可见帧矩形处添加文本框（FreeText）批注。
+
+    用富文本外观：普通模式只认 base-14 字体，中文会变方框或字距错乱；富文本由 MuPDF
+    的排版引擎按字形回退到内置 CJK 字体，旋转页上配合 ``rotate`` 仍是屏幕横排。
+    富文本模式下 /Contents 为空，这里补写纯文本，供批注列表 / 导出笔记 / 搜索使用。
+    """
+    rich = html.escape(text).replace("\n", "<br/>")
+    annot = page.add_freetext_annot(
+        _unrotated_rect(page, rect),
+        rich,
+        richtext=True,
+        style=f"font-size:{FREE_TEXT_FONTSIZE:g}pt;font-family:sans-serif;color:#1A1A1A",
+        rotate=_normalized_rotation(page),
+        border_width=0.8,
+        border_color=(0.55, 0.55, 0.55),
+        fill_color=tuple(fill) if fill else _FREE_TEXT_FILL,
+    )
+    annot.set_info(content=text)
+    annot.update()
+    return annot
 
 
 def _visible_rect(page: pymupdf.Page, rect: pymupdf.Rect) -> Rect:
@@ -1092,8 +1127,15 @@ class PyMuPdfEngine:
         try:
             with self._op(handle, "annot_content"):
                 annot = annots[index]
-                annot.set_info(content=text)
-                annot.update()
+                if annot.type and int(annot.type[0]) == AnnotationType.FREE_TEXT:
+                    # 文本框的外观由富文本生成，改 /Contents 不会重绘：原位置、原底色重建
+                    rect = _visible_rect(page, annot.rect)
+                    fill = (annot.colors or {}).get("fill") or None
+                    page.delete_annot(annot)
+                    _add_free_text(page, rect, text, fill=tuple(fill) if fill else None)
+                else:
+                    annot.set_info(content=text)
+                    annot.update()
         except Exception as exc:
             raise PdfEngineError(f"修改批注失败：{exc}") from exc
 
@@ -1118,6 +1160,23 @@ class PyMuPdfEngine:
                 page.add_text_annot(_unrotated_point(page, point), text)
         except Exception as exc:
             raise PdfEngineError(f"添加便签失败：{exc}") from exc
+
+    def add_free_text(
+        self,
+        doc: EngineDocument,
+        page_num: int,
+        rect: Rect,
+        text: str,
+        *,
+        fill: tuple[float, float, float] | None = None,
+    ) -> None:
+        handle = self._require(doc)
+        page = handle.get_page(page_num)
+        try:
+            with self._op(handle, "freetext"):
+                _add_free_text(page, rect, text, fill=fill)
+        except Exception as exc:
+            raise PdfEngineError(f"添加文本框失败：{exc}") from exc
 
     def list_annotations(self, doc: EngineDocument, page_num: int) -> list[Annotation]:
         """列出该页批注（可见帧坐标）；文字标记类附带被标记的原文。"""

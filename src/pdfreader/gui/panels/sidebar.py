@@ -2,8 +2,8 @@
 
 * 顶部**分段切换**：滑块随页签滑动（400ms OutExpo），「批注」带数量角标。
 * **目录**：扁平缩进列表（每级 16px），右侧页码；当前页所在的顶级章节以强调色标出。
-* **批注**：卡片——左侧色条、「第 N 页 · 类型」、衬线引文、📝笔记；单击跳转、双击编辑、
-  右键更多；底部虚线按钮「导出笔记 (.md)」。
+* **批注**：顶部搜索框 + 类型 / 颜色筛选；卡片——左侧色条、「第 N 页 · 类型」、衬线引文、
+  📝笔记；单击跳转、双击编辑、右键更多；底部虚线按钮「导出笔记 (.md)」。
 * **缩略图**：两列网格，当前页带强调色描边，只为可见条目请求渲染（大文档不卡）。
 
 本面板只负责展示与发信号，不直接访问文档；数据由主窗口经控制器提供。
@@ -17,10 +17,12 @@ from PySide6.QtCore import QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLayout,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -420,6 +422,23 @@ class SidePanel(QWidget):
         annot_layout = QVBoxLayout(annot_page)
         annot_layout.setContentsMargins(0, 0, 0, 0)
         annot_layout.setSpacing(8)
+        self.annot_search = QLineEdit()
+        self.annot_search.setObjectName("AnnotSearch")
+        self.annot_search.setPlaceholderText("搜索批注原文 / 笔记")
+        self.annot_search.setClearButtonEnabled(True)
+        self.annot_search.textChanged.connect(lambda _t: self._apply_annot_filter())
+        annot_layout.addWidget(self.annot_search)
+        filters = QHBoxLayout()
+        filters.setSpacing(6)
+        self.annot_type_filter = QComboBox()
+        self.annot_type_filter.setToolTip("按批注类型筛选")
+        self.annot_type_filter.currentIndexChanged.connect(lambda _i: self._apply_annot_filter())
+        self.annot_color_filter = QComboBox()
+        self.annot_color_filter.setToolTip("按颜色筛选")
+        self.annot_color_filter.currentIndexChanged.connect(lambda _i: self._apply_annot_filter())
+        filters.addWidget(self.annot_type_filter, stretch=1)
+        filters.addWidget(self.annot_color_filter, stretch=1)
+        annot_layout.addLayout(filters)
         self.annot_list = QListWidget()
         self.annot_list.setObjectName("AnnotList")
         self.annot_list.setItemDelegate(_AnnotationCardDelegate(self.annot_list))
@@ -436,6 +455,10 @@ class SidePanel(QWidget):
         self.annot_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.annot_empty.setWordWrap(True)
         annot_layout.addWidget(self.annot_empty)
+        self.annot_no_match = QLabel("没有符合筛选条件的批注")
+        self.annot_no_match.setProperty("variant", "muted")
+        self.annot_no_match.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        annot_layout.addWidget(self.annot_no_match)
         self.export_btn = QPushButton("导出笔记 (.md)")
         self.export_btn.setObjectName("ExportNotesButton")
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -554,7 +577,7 @@ class SidePanel(QWidget):
         for annot in self._annotations:
             quote = annot.marked_text.replace("\n", " ").strip()
             note = annot.content.strip()
-            if not quote and annot.annot_type == 0 and note:  # 便签：正文作为主内容
+            if not quote and annot.annot_type in (0, 2) and note:  # 便签 / 文本框：正文为主
                 quote, note = note, ""
             lines = [f"第 {annot.page_num + 1} 页 · {annot.type_name}"]
             if quote:
@@ -577,7 +600,69 @@ class SidePanel(QWidget):
         self.tabs.set_badge(self.TAB_ANNOTATIONS, str(count))
         self.export_btn.setEnabled(count > 0)
         self.annot_empty.setVisible(count == 0)
-        self.annot_list.setVisible(count > 0)
+        for widget in (self.annot_search, self.annot_type_filter, self.annot_color_filter):
+            widget.setVisible(count > 0)
+        self._rebuild_filter_options()
+        self._apply_annot_filter()
+
+    def _rebuild_filter_options(self) -> None:
+        """类型 / 颜色下拉只列出当前文档里出现过的；刷新后尽量保留原选择。"""
+        types: dict[int, str] = {}
+        colors: list[str] = []
+        for annot in self._annotations:
+            types.setdefault(annot.annot_type, annot.type_name)
+            hex_color = _hex(annot.color)
+            if hex_color not in colors:
+                colors.append(hex_color)
+        combos: tuple[tuple[QComboBox, str, list[tuple[str, object]]], ...] = (
+            (self.annot_type_filter, "全部类型", [(n, t) for t, n in sorted(types.items())]),
+            (self.annot_color_filter, "全部颜色", [(c.upper(), c) for c in colors]),
+        )
+        for combo, label, options in combos:
+            previous = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(label, None)
+            for text, data in options:
+                if combo is self.annot_color_filter:
+                    combo.addItem(_swatch(str(data)), text, data)
+                else:
+                    combo.addItem(text, data)
+            pos = combo.findData(previous) if previous is not None else 0
+            combo.setCurrentIndex(max(0, pos))
+            combo.blockSignals(False)
+
+    def _apply_annot_filter(self) -> None:
+        """按搜索词（原文 / 笔记 / 类型，不区分大小写）、类型、颜色隐藏不匹配的卡片。"""
+        needle = self.annot_search.text().strip().casefold()
+        want_type = self.annot_type_filter.currentData()
+        want_color = self.annot_color_filter.currentData()
+        shown = 0
+        for row in range(self.annot_list.count()):
+            item = self.annot_list.item(row)
+            annot = self._annotation_for(item)
+            if annot is None:
+                continue
+            ok = (want_type is None or annot.annot_type == want_type) and (
+                want_color is None or _hex(annot.color) == want_color
+            )
+            if ok and needle:
+                haystack = f"{annot.marked_text} {annot.content} {annot.type_name}"
+                ok = needle in haystack.casefold()
+            item.setHidden(not ok)
+            shown += int(ok)
+        self.annot_list.setVisible(shown > 0)
+        self.annot_no_match.setVisible(bool(self._annotations) and shown == 0)
+
+    def visible_annotations(self) -> list[Annotation]:
+        """当前筛选条件下可见的批注（按列表顺序）。"""
+        result: list[Annotation] = []
+        for row in range(self.annot_list.count()):
+            item = self.annot_list.item(row)
+            annot = self._annotation_for(item)
+            if annot is not None and not item.isHidden():
+                result.append(annot)
+        return result
 
     def _annotation_for(self, item: QListWidgetItem | None) -> Annotation | None:
         if item is None:
@@ -671,6 +756,12 @@ class SidePanel(QWidget):
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
         self._thumb_timer.start()
+
+
+def _swatch(color: str) -> QIcon:
+    pix = QPixmap(12, 12)
+    pix.fill(QColor(color))
+    return QIcon(pix)
 
 
 def _hex(color: tuple[float, float, float] | None) -> str:

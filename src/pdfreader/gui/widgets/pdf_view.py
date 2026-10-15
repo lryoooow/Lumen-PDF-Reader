@@ -335,7 +335,7 @@ class PdfView(QGraphicsView):
             if page_num is None or pdf_point is None:
                 return
             self._annot_page = page_num
-            if mode == "text":  # 便签：单击放置
+            if mode in ("text", "freetext"):  # 便签 / 文本框：单击放置
                 self.annotationNote.emit(page_num, Point(pdf_point.x(), pdf_point.y()))
             elif mode in ("highlight", "underline"):
                 self._annot_start = pdf_point

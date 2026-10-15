@@ -24,6 +24,7 @@ TOOL_HINTS = {
     "underline": "拖拽选字以添加下划线",
     "ink": "按住拖动手写",
     "text": "单击页面放置便签",
+    "freetext": "单击页面放置文本框",
     "eraser": "单击批注删除",
     "signature": "点击页面放置签名",
     "timestamp": "点击页面放置时间",

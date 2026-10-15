@@ -21,6 +21,7 @@ class AnnotationMode:
     UNDERLINE = "underline"  # 下划线（拖拽选字）
     INK = "ink"  # 手写
     TEXT = "text"  # 便签
+    FREETEXT = "freetext"  # 文本框（文字直接显示在页面上）
     ERASER = "eraser"  # 橡皮擦（点删批注）
     SIGNATURE = "signature"  # 放置签名（单击页面）
     TIMESTAMP = "timestamp"  # 放置日期时间（单击页面）

@@ -263,6 +263,18 @@ class PdfEngine(Protocol):
         """给指定页添加文本便签批注（``point`` 为可见帧坐标）。"""
         ...
 
+    def add_free_text(
+        self,
+        doc: EngineDocument,
+        page_num: int,
+        rect: Rect,
+        text: str,
+        *,
+        fill: tuple[float, float, float] | None = None,
+    ) -> None:
+        """在可见帧矩形处添加文本框（FreeText）批注，正文直接显示在页面上。"""
+        ...
+
     def list_annotations(self, doc: EngineDocument, page_num: int) -> list[Annotation]:
         """列出指定页的所有批注（可见帧坐标；文字标记类附带被标记的原文）。"""
         ...
