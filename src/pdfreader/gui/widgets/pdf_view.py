@@ -1052,6 +1052,32 @@ class PdfView(QGraphicsView):
         """该页是否已有渲染缓存。"""
         return self._rendered_cache.contains(page_num)
 
+    def release_render_cache(self) -> None:
+        """标签切到后台：丢掉全部渲染位图，只留骨架占位与阅读位置（切回时按需重渲染）。
+
+        后台标签只占文档本身的内存，开再多标签渲染内存也只有当前这一份。
+        """
+        self._rendered_cache.clear()
+        for page_num, item in list(self._page_items.items()):
+            if isinstance(item, QGraphicsPixmapItem):
+                self._restore_placeholder(page_num)
+
+    def settle_scroll(self) -> None:
+        """平滑滚动进行中就立刻落到终点（标签切到后台时调用，免得停在半路）。"""
+        anim = self._scroll_anim
+        if anim is None:
+            return
+        self._scroll_anim = None
+        end = anim.endValue()
+        anim.stop()
+        self.verticalScrollBar().setValue(int(end))
+        self._update_current_page()
+
+    def request_visible(self) -> None:
+        """重新请求视口内尚未渲染的页（标签切回前台时调用）。"""
+        self._update_current_page()
+        self._request_visible_pages()
+
     def invalidate_page(self, page_num: int) -> None:
         """丢弃某页的渲染 / 词表 / 链接缓存，并把该页换回骨架占位（调用方随后重新渲染）。"""
         self._rendered_cache.remove(page_num)

@@ -1,6 +1,7 @@
 """主窗口（Lumen 设计稿）。
 
 - 顶部：标题栏（品牌 / 文档名 · 选项卡 · 主题切换 · 关于）+ 按组标题分组的功能区
+  + 文档标签栏（多文档：每个标签独立持有文档 / 视图 / AI 对话，见 ``document_tab``）
 - 中部：左侧边栏（目录 / 批注 / 缩略图，宽度动画显隐）+ 欢迎页 ⇄ 阅读区；
   阅读区上叠加搜索浮层、工具提示胶囊，点击引用弹出参考文献预览卡
 - 底部：状态栏（翻页 · 阅读进度 · 自动消失的消息 · 阅读模式标签 · 缩放滑杆）
@@ -15,7 +16,7 @@ import contextlib
 import os
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from uuid import uuid4
 
@@ -66,14 +67,23 @@ from pdfreader.engines.types import (
     SearchResult,
 )
 from pdfreader.gui.ai_assistant import AiAssistant
+from pdfreader.gui.document_tab import DocumentTab
 from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
 from pdfreader.gui.panels.ai_panel import AI_PANEL_WIDTH
 from pdfreader.gui.panels.sidebar import SIDEBAR_WIDTH
 from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.palette import TOKENS
-from pdfreader.gui.widgets import PdfView, Ribbon, StatusBar, WelcomeWidget, motion
+from pdfreader.gui.widgets import (
+    DocumentTabBar,
+    PdfView,
+    Ribbon,
+    StatusBar,
+    WelcomeWidget,
+    motion,
+)
 from pdfreader.gui.widgets.overlays import CitePopover, ToolHint
 from pdfreader.gui.widgets.pdf_view import ReadingMode
+from pdfreader.services.ai.provider import AiSettings
 from pdfreader.services.ocr import OCR_AVAILABLE
 from pdfreader.utils.text import is_cjk_char
 from pdfreader.workers import OcrWorker, SearchWorker
@@ -118,6 +128,8 @@ _CITATION_RE = re.compile(r"^\W*\[?\s*(\d+(?:\s*[,，–\-]\s*\d+)*)\s*\]?\W*$")
 _HISTORY_LIMIT = 50
 # 批注面板「随时刷新」的页数上限（更大的文档只在批注页签可见时扫描）
 _ANNOT_SCAN_PAGE_LIMIT = 300
+# 同时打开的文档标签上限（每个标签常驻一份已解析的文档）
+MAX_TABS = 20
 
 
 def _hex_to_rgb(value: str) -> tuple[float, float, float] | None:
@@ -192,23 +204,23 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._theme = get_theme()
-        self._controller = DocumentController()
         self._annotation_controller = AnnotationController()
+        # 文档标签：至少一个；没有打开文档时只剩一个空标签（显示欢迎页）
+        self._tabs: list[DocumentTab] = []
+        self._parked_tabs: list[DocumentTab] = []  # 已关闭、AI 请求线程还没停下的标签
+        self._shutting_down = False
         self._search_worker: SearchWorker | None = None
         self._retired_search_workers: list[SearchWorker] = []
         self._active_query: str = ""
-        self._ocr_worker: OcrWorker | None = None
         self._retired_ocr_workers: list[OcrWorker] = []
-        self._ocr_results: dict[int, str] = {}
         self._ocr_progress: QProgressDialog | None = None
+        self._ocr_progress_owner: DocumentTab | None = None
+        self._tab: DocumentTab  # 当前标签（由 _activate 设定）
+        self._pending_link: tuple[int, float | None] | None = None  # 引用预览卡待跳转的目标
         self._snapshot_dir = Path(tempfile.gettempdir()) / f"pdfreader_snapshots_{os.getpid()}"
         self._snapshot_paths: list[Path] = []
         self._temp_files: list[Path] = []  # 其他本进程生成的临时文件（如手绘签名）
         self._last_open_failure: str = ""
-        # 导航历史（链接 / 目录 / 搜索结果跳转后可「后退」）：(页, 页内偏移)
-        self._back_stack: list[tuple[int, float]] = []
-        self._forward_stack: list[tuple[int, float]] = []
-        self._annotations_stale = True
 
         # 设置持久化（主题、窗口尺寸、最近文件、阅读位置……）
         self._settings_store = SettingsStore()
@@ -221,29 +233,410 @@ class MainWindow(QMainWindow):
         self._setup_window()
         self._create_actions()
         self._setup_ui()
-        self._ai = AiAssistant(
-            self,
-            self._controller,
-            self.ai_panel,
-            current_page=self._current_page,
-            navigate=self._navigate_to,
-            show_panel=lambda: self._set_ai_panel_visible(True),
-            notify=self.status_bar.show_message,
-            on_annotation_added=self._after_annotation_change,
-            start_ocr=self._on_ocr_all_pages if OCR_AVAILABLE else None,
-            show_marks=self.pdf_view.set_marks,
-        )
+        self._activate(self._new_tab())
         self._connect_signals()
         self._theme.changed.connect(self._on_theme_changed)
 
-        self.pdf_view.set_annotation_controller(self._annotation_controller)
-        self.pdf_view.highlight_color = self._settings.highlight_color
-        self.pdf_view.set_reading_mode(self._settings.reading_mode)
         self.welcome.set_recent(self._settings.recent_files)
         self._set_document_state(False)
 
         if self._settings.window_maximized:
             QTimer.singleShot(0, self.showMaximized)
+
+    # ------------------------------------------------------------------ 当前标签
+    # 单文档时代的代码都通过这几个属性访问「当前文档」：它们总是指向当前标签，
+    # 而后台标签的视图 / 面板信号在接线处就被挡掉（见 _for_tab），不会作用到当前文档上。
+    @property
+    def _controller(self) -> DocumentController:
+        return self._tab.controller
+
+    @property
+    def pdf_view(self) -> PdfView:
+        return self._tab.view
+
+    @property
+    def ai_panel(self) -> AiPanel:
+        return self._tab.panel
+
+    @property
+    def _ai(self) -> AiAssistant:
+        return self._tab.ai
+
+    @property
+    def _back_stack(self) -> list[tuple[int, float]]:
+        return self._tab.back_stack
+
+    @property
+    def _forward_stack(self) -> list[tuple[int, float]]:
+        return self._tab.forward_stack
+
+    @property
+    def _ocr_results(self) -> dict[int, str]:
+        return self._tab.ocr_results
+
+    @_ocr_results.setter
+    def _ocr_results(self, value: dict[int, str]) -> None:
+        self._tab.ocr_results = value
+
+    @property
+    def _ocr_worker(self) -> OcrWorker | None:
+        return self._tab.ocr_worker
+
+    @_ocr_worker.setter
+    def _ocr_worker(self, worker: OcrWorker | None) -> None:
+        self._tab.ocr_worker = worker
+
+    @property
+    def _annotations_stale(self) -> bool:
+        return self._tab.annotations_stale
+
+    @_annotations_stale.setter
+    def _annotations_stale(self, value: bool) -> None:
+        self._tab.annotations_stale = value
+
+    @property
+    def tabs(self) -> list[DocumentTab]:
+        """全部文档标签（按标签栏顺序；无文档时是一个空标签）。"""
+        return list(self._tabs)
+
+    @property
+    def current_tab(self) -> DocumentTab:
+        return self._tab
+
+    # ------------------------------------------------------------------ 标签：创建与接线
+    def _new_tab(self) -> DocumentTab:
+        """新建一个标签（尚未加入标签栏）：自己的控制器、视图、AI 面板与 AI 会话。"""
+        tab = DocumentTab(DocumentController(), PdfView(), AiPanel())
+        view, controller = tab.view, tab.controller
+        view.set_annotation_controller(self._annotation_controller)
+        view.highlight_color = self._settings.highlight_color
+        view.set_reading_mode(self._settings.reading_mode)
+        view.set_text_provider(controller.get_words)
+        view.set_link_provider(controller.get_links)
+
+        # 新标签沿用当前的 AI 配置（设置 / 密钥库 / 客户端工厂），保证各标签行为一致
+        template: AiAssistant | None = self._tab.ai if self._tabs else None
+
+        def current_page() -> int:
+            return self._page_of(tab)
+
+        def navigate(page: int, y: float | None) -> None:
+            if tab is self._tab:
+                self._navigate_to(page, y)
+
+        def show_panel() -> None:
+            if tab is self._tab:
+                self._set_ai_panel_visible(True)
+
+        def notify(message: str) -> None:
+            if tab is self._tab:
+                self.status_bar.show_message(message)
+
+        def annotation_added(page: int) -> None:
+            self._after_tab_annotation_change(tab, page)
+
+        def start_ocr() -> None:
+            if tab is self._tab:
+                self._on_ocr_all_pages()
+
+        tab.ai = AiAssistant(
+            self,
+            controller,
+            tab.panel,
+            current_page=current_page,
+            navigate=navigate,
+            show_panel=show_panel,
+            notify=notify,
+            on_annotation_added=annotation_added,
+            start_ocr=start_ocr if OCR_AVAILABLE else None,
+            show_marks=view.set_marks,
+            store=template.store if template is not None else None,
+            keystore=template.keystore if template is not None else None,
+            client_factory=template.client_factory if template is not None else None,
+        )
+        if template is not None:
+            tab.ai.adopt_settings(template.settings)
+        tab.ai.settingsApplied.connect(lambda settings: self._share_ai_settings(tab, settings))
+        self._wire_tab(tab)
+        return tab
+
+    def _for_tab(self, tab: DocumentTab, handler: Callable[..., object]) -> Callable[..., None]:
+        """包一层：只有当前标签发出的信号才交给 handler（后台标签的一律忽略）。"""
+
+        def slot(*args: object) -> None:
+            if tab is self._tab:
+                handler(*args)
+
+        return slot
+
+    def _wire_tab(self, tab: DocumentTab) -> None:
+        controller, view, panel = tab.controller, tab.view, tab.panel
+        controller.documentOpened.connect(lambda count: self._on_tab_opened(tab, count))
+        controller.documentClosed.connect(lambda: self._on_tab_closed(tab))
+        controller.openFailed.connect(self._on_open_failed)
+        controller.undoStateChanged.connect(lambda: self._on_tab_undo_state(tab))
+
+        on = self._for_tab
+        view.renderRequested.connect(on(tab, self._render_page))
+        view.pageChanged.connect(on(tab, self._on_page_changed))
+        view.zoomChanged.connect(on(tab, lambda _z: self._update_zoom_label()))
+        view.textCopied.connect(
+            on(tab, lambda n: self.status_bar.show_message(f"已复制 {n} 个字符"))
+        )
+        view.linkActivated.connect(on(tab, self._on_link_activated))
+        view.markupRequested.connect(on(tab, self._on_markup_requested))
+        view.placementFinished.connect(on(tab, self._on_placement_finished))
+        view.aiRequested.connect(on(tab, self._on_ai_requested))
+        view.areaCaptured.connect(on(tab, self._on_area_captured))
+        # 批注提交由视图在松开鼠标后发出（拖拽时已实时预览）
+        view.annotationHighlight.connect(on(tab, self._on_annot_highlight))
+        view.annotationInk.connect(on(tab, self._on_annot_ink))
+        view.annotationNote.connect(on(tab, self._on_annot_text))
+        view.eraseRequested.connect(on(tab, self._on_erase))
+        view.placementRequested.connect(on(tab, self._on_placement))
+        panel.closeRequested.connect(on(tab, lambda: self._set_ai_panel_visible(False)))
+        panel.captureRequested.connect(on(tab, self._start_capture))
+
+    def _share_ai_settings(self, source: DocumentTab, settings: AiSettings) -> None:
+        """某个标签保存了 AI 设置：同步给其他标签（设置是全局的）。"""
+        for tab in (*self._tabs, *self._parked_tabs):
+            if tab is not source:
+                tab.ai.adopt_settings(settings)
+
+    def _page_of(self, tab: DocumentTab) -> int:
+        page = tab.view.current_page_num
+        count = tab.controller.page_count
+        if page is None or count == 0:
+            return 0
+        return min(max(page, 0), count - 1)
+
+    # ------------------------------------------------------------------ 标签：切换
+    def _activate(self, tab: DocumentTab, *, refresh: bool = True) -> None:
+        """切到某个标签：先收拾共用界面上属于旧标签的东西，再用新标签的数据重新填充。"""
+        old: DocumentTab | None = self._tab if self._tabs else None
+        if tab is old:
+            return
+        if old is not None:
+            self._leave_tab(old)
+        if tab not in self._tabs:
+            at = self._tabs.index(old) + 1 if old in self._tabs else len(self._tabs)
+            self._tabs.insert(at, tab)
+        self._tab = tab
+        if self._stack.indexOf(tab.view) < 0:
+            self._stack.addWidget(tab.view)
+        if self._ai_dock.indexOf(tab.panel) < 0:
+            self._ai_dock.addWidget(tab.panel)
+        self._ai_dock.setCurrentWidget(tab.panel)
+        if refresh and tab.has_document:
+            self._show_tab(tab)
+        self._sync_tab_bar()
+
+    def _leave_tab(self, old: DocumentTab) -> None:
+        """离开旧标签：取消搜索、收起只对它有意义的浮层与工具，释放它的渲染位图。"""
+        if self._search_worker is not None:
+            self._retire_search_worker(self._search_worker)
+            self._search_worker = None
+        self._active_query = ""
+        self.search_panel.clear()
+        self.search_panel.setVisible(False)
+        self.find_next_action.setEnabled(False)
+        self.find_prev_action.setEnabled(False)
+        self.cite_popover.hide()
+        self._pending_link = None
+        if self._annotation_controller.mode != AnnotationMode.NONE:
+            # 此时 pdf_view 仍是旧视图：模式切换的收尾（清选区 / 待放置）作用在它身上
+            self._annotation_controller.set_mode(AnnotationMode.NONE)
+        self.tool_hint.hide()
+        old.view.clear_pending()
+        old.view.clear_search_hit()
+        old.view.settle_scroll()
+        old.view.release_render_cache()
+
+    def _show_tab(self, tab: DocumentTab) -> None:
+        """切回一个已打开文档的标签：共用的侧边栏 / 功能区 / 状态栏按它重新填充。"""
+        controller = tab.controller
+        count = controller.page_count
+        self._stack.setCurrentWidget(tab.view)
+        visible = self._settings.sidebar_visible
+        self.sidebar_action.setChecked(visible)
+        self.sidebar.setMaximumWidth(SIDEBAR_WIDTH if visible else 0)
+        self.sidebar.setVisible(visible)
+        self.sidebar.clear()
+        self.sidebar.set_toc(controller.get_toc())
+        self.sidebar.set_page_count(count)
+        self._refresh_bookmarks()
+        tab.annotations_stale = True
+
+        self._set_document_state(True)
+        self._update_title()
+        self._update_undo_actions()
+        self._update_zoom_label()
+        self._update_page_actions()
+        page = self._current_page()
+        self.status_bar.set_page(page + 1, count)
+        self.sidebar.set_current_page(page)
+        self._page_group_title.setText(f"当前页 · 第 {page + 1} 页")
+        self._refresh_annotations_if_shown()
+        tab.ai.refresh_panel()
+        tab.view.request_visible()
+        tab.view.setFocus()
+
+    def _switch_tab(self, step: int) -> None:
+        """Ctrl+Tab / Ctrl+Shift+Tab：循环切换标签。"""
+        tabs = [t for t in self._tabs if t.has_document]
+        if len(tabs) < 2 or self._tab not in tabs:
+            return
+        index = (tabs.index(self._tab) + step) % len(tabs)
+        self._activate(tabs[index])
+
+    # ------------------------------------------------------------------ 标签：标签栏
+    def _sync_tab_bar(self) -> None:
+        """按 ``_tabs`` 重建标签栏（结构变化时调用；只改文字用 _refresh_tab_labels）。"""
+        bar = self.tab_bar
+        bar.blockSignals(True)
+        try:
+            while bar.count():
+                bar.removeTab(bar.count() - 1)
+            shown = [t for t in self._tabs if t.has_document]
+            for tab in shown:
+                index = bar.addTab(tab.label())
+                path = tab.path
+                bar.setTabToolTip(index, str(path) if path is not None else "")
+            if self._tab in shown:
+                bar.setCurrentIndex(shown.index(self._tab))
+        finally:
+            bar.blockSignals(False)
+        bar.setVisible(bool(shown))
+
+    def _refresh_tab_labels(self) -> None:
+        shown = [t for t in self._tabs if t.has_document]
+        if len(shown) != self.tab_bar.count():
+            self._sync_tab_bar()
+            return
+        for index, tab in enumerate(shown):
+            if self.tab_bar.tabText(index) != tab.label():
+                self.tab_bar.setTabText(index, tab.label())
+
+    def _tab_at(self, index: int) -> DocumentTab | None:
+        shown = [t for t in self._tabs if t.has_document]
+        return shown[index] if 0 <= index < len(shown) else None
+
+    def _on_tab_bar_current(self, index: int) -> None:
+        tab = self._tab_at(index)
+        if tab is not None:
+            self._activate(tab)
+
+    def _on_tab_bar_moved(self, src: int, dst: int) -> None:
+        """拖动排序：标签栏只显示有文档的标签，与 _tabs 一一对应。"""
+        shown = [t for t in self._tabs if t.has_document]
+        if len(shown) != len(self._tabs) or not (0 <= src < len(shown) and 0 <= dst < len(shown)):
+            self._sync_tab_bar()
+            return
+        self._tabs.insert(dst, self._tabs.pop(src))
+
+    def _on_tab_close_requested(self, index: int) -> None:
+        tab = self._tab_at(index)
+        if tab is not None:
+            self._close_tab(tab)
+
+    def _on_close_other_tabs(self, index: int) -> None:
+        keep = self._tab_at(index)
+        if keep is None:
+            return
+        for tab in [t for t in self._tabs if t is not keep and t.has_document]:
+            if not self._close_tab(tab):
+                break  # 用户在「保存更改」里点了取消：剩下的不再关
+        if keep in self._tabs:
+            self._activate(keep)
+
+    # ------------------------------------------------------------------ 标签：打开 / 关闭
+    def _find_tab(self, path: Path) -> DocumentTab | None:
+        return next((t for t in self._tabs if t.is_file(path)), None)
+
+    def _on_tab_opened(self, tab: DocumentTab, page_count: int) -> None:
+        """某个标签的控制器打开了文档：切到它，再走原来的「打开文档」流程。"""
+        if self._shutting_down:
+            return
+        self._activate(tab, refresh=False)
+        self._on_document_opened(page_count)
+
+    def _on_tab_closed(self, tab: DocumentTab) -> None:
+        """某个标签的文档关闭了：还有别的标签就移除它，最后一个则回到欢迎页。"""
+        if self._shutting_down:
+            return
+        others = [t for t in self._tabs if t is not tab]
+        if not others:
+            if tab is self._tab:
+                self._on_document_closed()
+            return
+        self._remove_tab(tab)
+
+    def _close_tab(self, tab: DocumentTab) -> bool:
+        """关闭一个标签（有未保存改动先切过去询问）。返回 False = 用户取消。"""
+        if not tab.has_document:
+            return True
+        if tab.controller.is_modified:
+            self._activate(tab)
+            if not self._maybe_save():
+                return False
+        self._remember_reading_position(tab)
+        tab.controller.close_document()  # → documentClosed → _on_tab_closed
+        return True
+
+    def _remove_tab(self, tab: DocumentTab) -> None:
+        if tab is self._tab:
+            index = self._tabs.index(tab)
+            neighbor = (
+                self._tabs[index + 1] if index + 1 < len(self._tabs) else self._tabs[index - 1]
+            )
+            self._activate(neighbor)
+        if tab in self._tabs:
+            self._tabs.remove(tab)
+        self._dispose_tab(tab)
+        self._sync_tab_bar()
+
+    def _dispose_tab(self, tab: DocumentTab) -> None:
+        """回收标签：停掉它的后台任务，销毁它的视图与面板。
+
+        AI 请求线程若还没停下，整个标签先「停放」着（线程运行中销毁 QThread 会让进程崩溃），
+        线程结束后再回收。
+        """
+        if tab.ocr_worker is not None:
+            self._retire_ocr_worker(tab.ocr_worker)
+            tab.ocr_worker = None
+        if self._ocr_progress_owner is tab:
+            self._close_ocr_progress()
+        tab.ai.stop()
+        tab.ai.clear_marks()
+        tab.view.clear()
+        self._stack.removeWidget(tab.view)
+        tab.view.deleteLater()
+        self._ai_dock.removeWidget(tab.panel)
+        tab.panel.hide()
+        self._parked_tabs.append(tab)
+        self._release_parked_tabs()
+
+    def _release_parked_tabs(self) -> None:
+        for tab in list(self._parked_tabs):
+            if any(w.isRunning() for w in tab.ai.workers()):
+                continue
+            self._parked_tabs.remove(tab)
+            tab.ai.deleteLater()
+            tab.panel.deleteLater()
+
+    def _on_tab_undo_state(self, tab: DocumentTab) -> None:
+        self._refresh_tab_labels()
+        if tab is self._tab:
+            self._update_undo_actions()
+
+    def _after_tab_annotation_change(self, tab: DocumentTab, page_num: int) -> None:
+        """AI 给某个标签添加了批注：当前标签走常规刷新，后台标签只让缓存失效。"""
+        if tab is self._tab:
+            self._after_annotation_change(page_num)
+            return
+        tab.view.invalidate_page(page_num)
+        tab.annotations_stale = True
+        self._refresh_tab_labels()
 
     # ------------------------------------------------------------------ 窗口
     def _setup_window(self) -> None:
@@ -550,6 +943,14 @@ class MainWindow(QMainWindow):
             tooltip="配置 OpenAI 兼容的模型服务（DeepSeek / 通义 / Kimi / Ollama …）",
         )
 
+        # 标签切换（不上功能区，只用快捷键）
+        self.next_tab_action = self._act(
+            "next", "下一个标签", lambda: self._switch_tab(1), shortcut="Ctrl+Tab"
+        )
+        self.prev_tab_action = self._act(
+            "prev", "上一个标签", lambda: self._switch_tab(-1), shortcut="Ctrl+Shift+Tab"
+        )
+
         # 关于
         self.about_action = self._act("info", "关于", self._on_about, tooltip="关于 PDF Reader")
 
@@ -681,6 +1082,11 @@ class MainWindow(QMainWindow):
         self.ribbon.set_menu(self.reading_mode_action, self._mode_menu)
         self.ribbon.set_menu(self.color_action, self._build_swatch_menu())
 
+        # 文档标签栏（有文档时显示）
+        self.tab_bar = DocumentTabBar()
+        self.tab_bar.setVisible(False)
+        layout.addWidget(self.tab_bar)
+
         # 内容区：侧边栏（宽度动画）| 欢迎页 / 阅读区
         self._content = _ContentArea()
         content_layout = QHBoxLayout(self._content)
@@ -689,24 +1095,25 @@ class MainWindow(QMainWindow):
         self.sidebar = SidePanel()
         self.sidebar.setMaximumWidth(0)
         self.sidebar.setVisible(False)
+        # 阅读区：欢迎页 + 每个标签自己的阅读视图（切换标签 = 切换显示哪一个）
         self._stack = QStackedWidget()
         self.welcome = WelcomeWidget(self._theme)
-        self.pdf_view = PdfView()
         self._stack.addWidget(self.welcome)
-        self._stack.addWidget(self.pdf_view)
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self._stack, stretch=1)
-        self.ai_panel = AiPanel()
-        self.ai_panel.setMaximumWidth(0)
-        self.ai_panel.setVisible(False)
-        content_layout.addWidget(self.ai_panel)
+        # AI 面板区：每个标签自己的 AI 面板（对话互不相干），整体做宽度动画
+        self._ai_dock = QStackedWidget()
+        self._ai_dock.setObjectName("AiDock")
+        self._ai_dock.setMaximumWidth(0)
+        self._ai_dock.setVisible(False)
+        content_layout.addWidget(self._ai_dock)
         layout.addWidget(self._content, stretch=1)
 
         # 浮层：搜索卡片、工具提示胶囊、参考文献预览卡
         self.search_panel = SearchPanel("搜索", self._content)
         self.search_panel.searchRequested.connect(self._on_search_requested)
         self.search_panel.resultClicked.connect(self._on_search_result_clicked)
-        self.search_panel.closed.connect(self.pdf_view.clear_search_hit)
+        self.search_panel.closed.connect(lambda: self.pdf_view.clear_search_hit())
         self.search_panel.closed.connect(lambda: self.pdf_view.setFocus())
         self._content.set_overlay(self.search_panel)
         self.tool_hint = ToolHint(self._content)
@@ -714,7 +1121,6 @@ class MainWindow(QMainWindow):
         self._content.reading_area = self._stack
         self.cite_popover = CitePopover(self)
         self.cite_popover.jumpRequested.connect(self._on_cite_jump)
-        self._pending_link: tuple[int, float | None] | None = None
 
         # 状态栏
         self.status_bar = StatusBar(self._theme)
@@ -765,28 +1171,14 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 信号
     def _connect_signals(self) -> None:
-        self._controller.documentOpened.connect(self._on_document_opened)
-        self._controller.documentClosed.connect(self._on_document_closed)
-        self._controller.openFailed.connect(self._on_open_failed)
-
+        # 每个标签自己的控制器 / 视图 / AI 面板信号在 _wire_tab 里接
         self.welcome.openRequested.connect(self._on_open)
         self.welcome.openRecentRequested.connect(self._on_open_recent)
 
-        self.pdf_view.pageChanged.connect(self._on_page_changed)
-        self.pdf_view.renderRequested.connect(self._render_page)
-        self.pdf_view.zoomChanged.connect(lambda _z: self._update_zoom_label())
-        self.pdf_view.set_text_provider(self._controller.get_words)
-        self.pdf_view.set_link_provider(self._controller.get_links)
-        self.pdf_view.textCopied.connect(
-            lambda n: self.status_bar.show_message(f"已复制 {n} 个字符")
-        )
-        self.pdf_view.linkActivated.connect(self._on_link_activated)
-        self.pdf_view.markupRequested.connect(self._on_markup_requested)
-        self.pdf_view.placementFinished.connect(self._on_placement_finished)
-        self.pdf_view.aiRequested.connect(self._on_ai_requested)
-        self.pdf_view.areaCaptured.connect(self._on_area_captured)
-        self.ai_panel.closeRequested.connect(lambda: self._set_ai_panel_visible(False))
-        self.ai_panel.captureRequested.connect(self._start_capture)
+        self.tab_bar.currentChanged.connect(self._on_tab_bar_current)
+        self.tab_bar.tabMoved.connect(self._on_tab_bar_moved)
+        self.tab_bar.tabCloseRequested.connect(self._on_tab_close_requested)
+        self.tab_bar.closeOthersRequested.connect(self._on_close_other_tabs)
 
         self.status_bar.prevRequested.connect(self._prev_page)
         self.status_bar.nextRequested.connect(self._next_page)
@@ -797,14 +1189,7 @@ class MainWindow(QMainWindow):
         self.status_bar.zoomPercentRequested.connect(self._on_zoom_percent)
         self.ribbon.themeToggleRequested.connect(self._toggle_theme)
 
-        # 批注提交由视图在松开鼠标后发出（拖拽时已实时预览）
-        self.pdf_view.annotationHighlight.connect(self._on_annot_highlight)
-        self.pdf_view.annotationInk.connect(self._on_annot_ink)
-        self.pdf_view.annotationNote.connect(self._on_annot_text)
-        self.pdf_view.eraseRequested.connect(self._on_erase)
-        self.pdf_view.placementRequested.connect(self._on_placement)
         self._annotation_controller.modeChanged.connect(self._on_annot_mode_changed)
-        self._controller.undoStateChanged.connect(self._update_undo_actions)
 
         # 侧边栏
         self.sidebar.tocActivated.connect(lambda page, y: self._navigate_to(page, y))
@@ -829,7 +1214,8 @@ class MainWindow(QMainWindow):
         self._theme.set_mode("light" if self._theme.is_dark else "dark")
 
     def _on_theme_changed(self, _name: str) -> None:
-        self.pdf_view.apply_palette(self._theme.palette)
+        for tab in self._tabs:
+            tab.view.apply_palette(self._theme.palette)
         self.setWindowIcon(self._theme.app_icon())
         # 持久化"模式"（含 system），而非解析后的具体配色
         self._settings.theme = self._theme.mode
@@ -878,11 +1264,7 @@ class MainWindow(QMainWindow):
 
     def _current_page(self) -> int:
         """用户正在看的页（视图维护；无文档时为 0）。"""
-        page = self.pdf_view.current_page_num
-        count = self._controller.page_count
-        if page is None or count == 0:
-            return 0
-        return min(max(page, 0), count - 1)
+        return self._page_of(self._tab)
 
     # ------------------------------------------------------------------ 书签
     def _bookmarks(self) -> list[Bookmark]:
@@ -1291,6 +1673,7 @@ class MainWindow(QMainWindow):
         dirty = doc.is_modified
         self.setWindowTitle(f"{'* ' if dirty else ''}{doc.path.name} — Lumen")
         self.ribbon.set_document_title(f"{doc.path.name}{' *' if dirty else ''}")
+        self._refresh_tab_labels()
 
     def _refresh_after_edit(self, keep: tuple[int, float] | None = None) -> None:
         """页结构可能变化的编辑（删页 / 旋转 / 合并 / 水印 / 撤销）之后整体重排。
@@ -1391,7 +1774,8 @@ class MainWindow(QMainWindow):
     def _set_highlight_color(self, color: str, name: str = "") -> None:
         self._settings.highlight_color = color
         self._save_settings()
-        self.pdf_view.highlight_color = color
+        for tab in self._tabs:
+            tab.view.highlight_color = color
         self._refresh_swatches()
         self._annotation_controller.set_mode(AnnotationMode.HIGHLIGHT)
         self.pdf_view.setCursor(self._mode_cursor(AnnotationMode.HIGHLIGHT))
@@ -1576,7 +1960,8 @@ class MainWindow(QMainWindow):
             self.sidebar.set_thumbnail(page, pixmap_to_qpixmap(data))
 
     def _set_reading_mode(self, mode: str) -> None:
-        self.pdf_view.set_reading_mode(mode)
+        for tab in self._tabs:  # 阅读模式是全局偏好：所有标签一致
+            tab.view.set_reading_mode(mode)
         actual = self.pdf_view.reading_mode
         self.reading_mode_action.setChecked(actual != ReadingMode.NORMAL)
         for key, act in self._mode_actions.items():
@@ -1649,24 +2034,24 @@ class MainWindow(QMainWindow):
     def _set_ai_panel_visible(self, visible: bool) -> None:
         """右侧 AI 面板：与左侧边栏同样的宽度动画。"""
         self.ai_panel_action.setChecked(visible)
-        panel = self.ai_panel
+        dock = self._ai_dock
         if visible:
             self._ai.refresh_panel()
-        start = panel.width() if panel.isVisible() else 0
+        start = dock.width() if dock.isVisible() else 0
         end = AI_PANEL_WIDTH if visible else 0
         if visible:
-            panel.setVisible(True)
+            dock.setVisible(True)
         if not motion.enabled() or start == end:
-            panel.setMaximumWidth(end)
-            panel.setVisible(visible)
+            dock.setMaximumWidth(end)
+            dock.setVisible(visible)
         else:
             anim = motion.animate_property(
-                panel, b"maximumWidth", start, end, TOKENS.anim_sidebar, owner=panel
+                dock, b"maximumWidth", start, end, TOKENS.anim_sidebar, owner=dock
             )
             if anim is not None and not visible:
-                anim.finished.connect(lambda: panel.setVisible(self.ai_panel_action.isChecked()))
+                anim.finished.connect(lambda: dock.setVisible(self.ai_panel_action.isChecked()))
         if visible:
-            panel.input.setFocus()
+            self.ai_panel.input.setFocus()
 
     # ------------------------------------------------------------------ 撤销 / 橡皮擦 / 放置
     def _on_undo(self) -> None:
@@ -1747,15 +2132,17 @@ class MainWindow(QMainWindow):
     def _start_ocr(self, page_nums: list[int] | None) -> None:
         if not self._controller.has_document:
             return
-        if self._ocr_worker is not None and self._ocr_worker.isRunning():
-            # 已在运行：再点一次不能开第二个线程（旧 worker 引用被覆盖后 wait 不到）
+        if any(t.ocr_worker is not None and t.ocr_worker.isRunning() for t in self._tabs):
+            # 已在运行（含其他标签的）：同一时间只跑一个 OCR，进度框也只有一个
             self.status_bar.show_message("OCR 正在进行中，请等当前任务结束")
             return
         source = self._worker_source()
         if source is None:
             return
         self._ocr_results.clear()  # 每轮独立，避免上一轮文本混进结果
+        self._close_ocr_progress()
         self._ocr_progress = QProgressDialog("OCR 识别中…", "取消", 0, 100, self)
+        self._ocr_progress_owner = self._tab
         self._ocr_progress.setWindowTitle("OCR")
         self._ocr_progress.setMinimumDuration(0)
         self._ocr_progress.show()
@@ -1772,17 +2159,30 @@ class MainWindow(QMainWindow):
         self._ocr_progress.canceled.connect(worker.shutdown)
         worker.start()
 
+    def _ocr_tab(self) -> DocumentTab:
+        """发出当前 OCR 信号的线程属于哪个标签（直接调用时视为当前标签）。"""
+        sender = self.sender()
+        if sender is not None:
+            for tab in self._tabs:
+                if tab.ocr_worker is sender:
+                    return tab
+        return self._tab
+
     def _on_ocr_page_done(self, result) -> None:  # type: ignore[no-untyped-def]
-        self._ocr_results[result.page_num] = result.text
-        self._ai.add_ocr_text(result.page_num, result.text)
+        tab = self._ocr_tab()
+        tab.ocr_results[result.page_num] = result.text
+        tab.ai.add_ocr_text(result.page_num, result.text)
 
     def _on_ocr_progress(self, done: int, total: int) -> None:
         if self._ocr_progress is not None and total > 0:
             self._ocr_progress.setValue(int(done * 100 / total))
 
     def _on_ocr_all_done(self, count: int) -> None:
+        tab = self._ocr_tab()
         self._close_ocr_progress()
-        self._show_ocr_results("OCR 完成", f"已识别 {count} 页，但未识别到任何文字。", False)
+        self._show_ocr_results(
+            "OCR 完成", f"已识别 {count} 页，但未识别到任何文字。", False, tab=tab
+        )
 
     def _on_ocr_failed(self, message: str) -> None:
         self._close_ocr_progress()
@@ -1790,18 +2190,24 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_cancelled(self, count: int) -> None:
         """用户取消：与「完成」区分开；已完成的页仍可查看。"""
+        tab = self._ocr_tab()
         self._close_ocr_progress()
-        self._show_ocr_results("OCR 已取消", f"已取消，取消前完成 {count} 页。", True)
+        self._show_ocr_results("OCR 已取消", f"已取消，取消前完成 {count} 页。", True, tab=tab)
 
-    def _show_ocr_results(self, title: str, empty_message: str, cancelled: bool) -> None:
-        if not any(text.strip() for text in self._ocr_results.values()):
+    def _show_ocr_results(
+        self, title: str, empty_message: str, cancelled: bool, *, tab: DocumentTab | None = None
+    ) -> None:
+        tab = tab or self._tab
+        doc = tab.controller.document
+        if tab is not self._tab and doc is not None:
+            title = f"{title} · {doc.path.name}"  # 识别完成时用户已切到别的标签
+        if not any(text.strip() for text in tab.ocr_results.values()):
             QMessageBox.information(self, title, empty_message)
             return
         from pdfreader.gui.dialogs import OcrResultDialog
 
-        doc = self._controller.document
         OcrResultDialog(
-            dict(self._ocr_results),
+            dict(tab.ocr_results),
             self,
             title=title,
             default_dir=doc.path.parent if doc is not None else None,
@@ -1812,12 +2218,14 @@ class MainWindow(QMainWindow):
         if self._ocr_progress is not None:
             self._ocr_progress.close()
             self._ocr_progress = None
+        self._ocr_progress_owner = None
 
     def _on_ocr_worker_finished(self) -> None:
         """OCR 线程收尾：清引用并交给 Qt 删除（否则连续 OCR 会累积线程对象）。"""
         worker = self.sender()
-        if worker is self._ocr_worker:
-            self._ocr_worker = None
+        for tab in self._tabs:
+            if worker is not None and tab.ocr_worker is worker:
+                tab.ocr_worker = None
         if isinstance(worker, OcrWorker):
             with contextlib.suppress(ValueError):
                 self._retired_ocr_workers.remove(worker)
@@ -1852,10 +2260,11 @@ class MainWindow(QMainWindow):
             *self._retired_search_workers,
             *self._retired_ocr_workers,
         ]
-        for w in (self._search_worker, self._ocr_worker):
+        for w in (self._search_worker, *(t.ocr_worker for t in self._tabs)):
             if w is not None:
                 workers.append(w)
-        self._ai.shutdown()
+        for tab in (*self._tabs, *self._parked_tabs):
+            tab.ai.shutdown()
         running = [w for w in workers if w.isRunning()]
         if not running:
             return
@@ -2004,24 +2413,24 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 打开 / 关闭
     def _on_open(self) -> None:
-        if not self._maybe_save():
-            return
         start_dir = ""
         if self._settings.recent_files:
             start_dir = str(Path(self._settings.recent_files[0]).parent)
-        path, _ = QFileDialog.getOpenFileName(self, "打开 PDF", start_dir, _PDF_FILTER)
-        if path:
-            self.open_path(path)
+        paths, _ = QFileDialog.getOpenFileNames(self, "打开 PDF", start_dir, _PDF_FILTER)
+        self._open_paths(paths)
 
     def _on_open_recent(self, path: str) -> None:
-        if not self._maybe_save():
-            return
         self.open_path(path)
+
+    def _open_paths(self, paths: Sequence[str | Path]) -> None:
+        for path in paths:
+            if not self.open_path(path):
+                break  # 失败 / 取消（如密码框点了取消）：不再接着打开后面的
 
     def open_path(self, path: str | Path) -> bool:
         """打开文件（菜单 / 最近文件 / 拖放 / 命令行共用）。加密文档会询问密码。
 
-        调用方负责事先处理当前文档的未保存改动（见 :meth:`_maybe_save`）。
+        已有文档时在新标签里打开（当前文档不受影响）；文件已在某个标签里打开则直接切过去。
         """
         target = Path(path)
         if not target.exists():
@@ -2030,11 +2439,37 @@ class MainWindow(QMainWindow):
             self.welcome.set_recent(self._settings.recent_files)
             self._save_settings()
             return False
+        existing = self._find_tab(target)
+        if existing is not None:
+            self._activate(existing)
+            self.status_bar.show_message(f"“{target.name}”已经打开，已切换到它的标签")
+            return True
+        if self._tab.has_document:
+            if sum(1 for t in self._tabs if t.has_document) >= MAX_TABS:
+                QMessageBox.information(
+                    self, "标签太多", f"最多同时打开 {MAX_TABS} 个文档，请先关闭一些标签。"
+                )
+                return False
+            tab = self._new_tab()  # 打开成功才加入标签栏（见 _on_tab_opened）
+        else:
+            tab = self._tab
         self._remember_reading_position()
+        opened = self._open_in(tab, target)
+        if not opened and tab is not self._tab:
+            self._discard_tab(tab)
+        return opened
+
+    def _discard_tab(self, tab: DocumentTab) -> None:
+        """丢弃一个没能打开文档的新标签（从未加入标签栏）。"""
+        tab.view.deleteLater()
+        tab.ai.deleteLater()
+        tab.panel.deleteLater()
+
+    def _open_in(self, tab: DocumentTab, target: Path) -> bool:
         password: str | None = None
         for attempt in range(_PASSWORD_ATTEMPTS + 1):
             self._last_open_failure = ""
-            if self._controller.open_file(target, password):
+            if tab.controller.open_file(target, password):
                 return True
             if self._last_open_failure not in (
                 OpenResult.NEEDS_PASSWORD,
@@ -2058,10 +2493,8 @@ class MainWindow(QMainWindow):
         return False
 
     def _on_close_document(self) -> None:
-        if not self._maybe_save():
-            return
-        self._remember_reading_position()
-        self._controller.close_document()
+        """关闭当前标签（Ctrl+W）；最后一个标签关闭后回到欢迎页。"""
+        self._close_tab(self._tab)
 
     def _reset_document_session(self) -> None:
         """丢弃与上一个文档相关的一切会话状态（关闭与切换文档共用）。
@@ -2081,7 +2514,8 @@ class MainWindow(QMainWindow):
         if self._ocr_worker is not None:
             self._retire_ocr_worker(self._ocr_worker)
             self._ocr_worker = None
-        self._close_ocr_progress()
+        if self._ocr_progress_owner in (None, self._tab):  # 别的标签的 OCR 进度框不动
+            self._close_ocr_progress()
         self._ocr_results.clear()
         self._annotation_controller.set_mode(AnnotationMode.NONE)
         self.select_action.setChecked(True)
@@ -2142,6 +2576,7 @@ class MainWindow(QMainWindow):
             self._settings.add_recent_file(doc.path)
             self.welcome.set_recent(self._settings.recent_files)
             self._save_settings()
+        self._sync_tab_bar()
 
     def _set_document_state(self, active: bool) -> None:
         """有无文档时统一切换所有相关动作与控件的可用性。"""
@@ -2213,6 +2648,7 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._set_document_state(False)
         self._update_undo_actions()
+        self._sync_tab_bar()
         self.status_bar.show_message("")
 
     def _on_open_failed(self, result: str, message: str) -> None:
@@ -2226,14 +2662,15 @@ class MainWindow(QMainWindow):
         }
         QMessageBox.warning(self, titles.get(result, "打开失败"), message)
 
-    def _remember_reading_position(self) -> None:
-        """记住当前文档的阅读位置与缩放（下次打开回到这里）。"""
-        doc = self._controller.document
-        if doc is None or self.pdf_view.page_count == 0:
+    def _remember_reading_position(self, tab: DocumentTab | None = None) -> None:
+        """记住某个标签（默认当前）的阅读位置与缩放（下次打开回到这里）。"""
+        tab = tab or self._tab
+        doc = tab.controller.document
+        if doc is None or tab.view.page_count == 0:
             return
-        page, offset = self.pdf_view.reading_position()
+        page, offset = tab.view.reading_position()
         self._settings.remember_position(
-            doc.path, ReadingPosition(page, round(offset, 4), round(self.pdf_view.zoom, 4))
+            doc.path, ReadingPosition(page, round(offset, 4), round(tab.view.zoom, 4))
         )
         self._save_settings()
 
@@ -2244,14 +2681,14 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        for url in event.mimeData().urls():
-            local = url.toLocalFile()
-            if local.lower().endswith(".pdf"):
-                if not self._maybe_save():
-                    return
-                self.open_path(local)
-                event.acceptProposedAction()
-                return
+        paths = [
+            u.toLocalFile()
+            for u in event.mimeData().urls()
+            if u.toLocalFile().lower().endswith(".pdf")
+        ]
+        if paths:
+            event.acceptProposedAction()
+            self._open_paths(paths)
 
     # ------------------------------------------------------------------ 持久化 / 关闭
     def _save_settings(self) -> None:
@@ -2259,19 +2696,25 @@ class MainWindow(QMainWindow):
             self._settings_store.save(self._settings)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        # 未保存改动：询问；取消则不关闭
-        if not self._maybe_save():
-            event.ignore()
-            return
-        self._remember_reading_position()
+        # 未保存改动：逐个标签切过去询问；任一处取消则不关闭
+        for tab in list(self._tabs):
+            if tab.has_document and tab.controller.is_modified:
+                self._activate(tab)
+                if not self._maybe_save():
+                    event.ignore()
+                    return
+        for tab in self._tabs:
+            self._remember_reading_position(tab)
         # 记录窗口状态
         self._settings.window_maximized = self.isMaximized()
         if not self.isMaximized():
             self._settings.window_width = self.width()
             self._settings.window_height = self.height()
         self._save_settings()
-        if self._controller.has_document:
-            self._controller.close_document()
+        self._shutting_down = True  # 下面逐个关文档时不再切换标签 / 刷新界面
+        for tab in self._tabs:
+            if tab.has_document:
+                tab.controller.close_document()
         self._wait_for_background_workers()
         self._cleanup_snapshots()
         super().closeEvent(event)

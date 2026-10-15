@@ -14,7 +14,7 @@ import base64
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect, Signal
 from PySide6.QtWidgets import QCheckBox, QDialog, QMessageBox, QWidget
 
 from pdfreader.controllers import DocumentController
@@ -56,7 +56,15 @@ class AiAssistant(QObject):
         on_annotation_added: AI 笔记存为便签后通知主窗口刷新该页
         start_ocr: 扫描件没有文字时启动全文 OCR（None = 不可用）
         show_marks: 在页面上显示 / 清除（空序列）速读标记
+
+    多标签时每个文档标签一个实例（对话、缓存、请求线程各归各的）；模型设置在实例间共享，
+    任一实例保存设置后发 ``settingsApplied``，主窗口再用 :meth:`adopt_settings` 同步给其他实例。
+
+    Signals:
+        settingsApplied(AiSettings): 用户保存了新设置
     """
+
+    settingsApplied = Signal(object)
 
     def __init__(
         self,
@@ -124,6 +132,18 @@ class AiAssistant(QObject):
     def busy(self) -> bool:
         return self._worker is not None
 
+    @property
+    def store(self) -> AiSettingsStore:
+        return self._store
+
+    @property
+    def keystore(self) -> KeyStore:
+        return self._keystore
+
+    @property
+    def client_factory(self) -> ClientFactory:
+        return self._client_factory
+
     def workers(self) -> list[AiWorker]:
         return [w for w in (self._worker, *self._retired) if w is not None]
 
@@ -168,6 +188,12 @@ class AiAssistant(QObject):
             self._store.save(settings)
         except OSError as exc:
             self._notify(f"AI 设置保存失败：{exc}")
+        self.refresh_panel()
+        self.settingsApplied.emit(settings)
+
+    def adopt_settings(self, settings: AiSettings) -> None:
+        """采用别处已保存的设置（不重复写盘、不再广播）。"""
+        self._settings = settings
         self.refresh_panel()
 
     # ------------------------------------------------------------------ 文档会话

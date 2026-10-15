@@ -116,6 +116,37 @@ QToolButton#Swatch {
 }
 QToolButton#Swatch[current="true"] { border: 2px solid $accent; }
 
+/* ================================================================ 文档标签栏 */
+QTabBar#DocTabs {
+    background-color: $window;
+    border-bottom: 1px solid $border;
+}
+QTabBar#DocTabs::tab {
+    background: transparent;
+    border: none;
+    border-right: 1px solid $border;
+    padding: 6px 8px 6px 14px;
+    min-width: 80px;
+    max-width: 220px;
+    font-size: 12px;
+    color: $text_muted;
+}
+QTabBar#DocTabs::tab:hover { background-color: $surface_hover; color: $text; }
+QTabBar#DocTabs::tab:selected {
+    background-color: $surface;
+    color: $text;
+    border-bottom: 2px solid $accent;
+}
+QTabBar#DocTabs::close-button {
+    image: url($close_icon);
+    subcontrol-position: right;
+    border-radius: 4px;
+    width: 14px; height: 14px;
+    margin: 2px;
+}
+QTabBar#DocTabs::close-button:hover { background-color: $surface_active; }
+QTabBar#DocTabs QToolButton { background-color: $surface; border: none; }
+
 /* ================================================================ 侧边栏 */
 #SidePanel {
     background-color: $surface;
@@ -460,22 +491,27 @@ QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 )
 
 
-def _chevron_file(color: str) -> str:
-    """下拉按钮的小箭头 SVG（写到临时目录，QSS 的 image 只能引用文件 / 资源）。"""
+def _svg_file(name: str, path_d: str, color: str) -> str:
+    """QSS 用的小图标 SVG（写到临时目录，QSS 的 image 只能引用文件 / 资源）。"""
     import tempfile
     from pathlib import Path
 
     folder = Path(tempfile.gettempdir()) / "pdfreader_ui"
-    path = folder / f"chevron_{color.lstrip('#')}.svg"
+    path = folder / f"{name}_{color.lstrip('#')}.svg"
     if not path.exists():
         folder.mkdir(parents=True, exist_ok=True)
         path.write_text(
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
             f'stroke="{color}" stroke-width="2.4" stroke-linecap="round" '
-            'stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+            f'stroke-linejoin="round"><path d="{path_d}"/></svg>',
             encoding="utf-8",
         )
     return path.as_posix()
+
+
+def _chevron_file(color: str) -> str:
+    """下拉按钮的小箭头。"""
+    return _svg_file("chevron", "m6 9 6 6 6-6", color)
 
 
 def build_stylesheet(palette: Palette) -> str:
@@ -483,6 +519,8 @@ def build_stylesheet(palette: Palette) -> str:
     values: dict[str, object] = {**asdict(TOKENS), **asdict(palette)}
     try:
         values["chevron"] = _chevron_file(palette.text_muted)
-    except OSError:  # 临时目录不可写：不画箭头，不影响功能
+        values["close_icon"] = _svg_file("close", "M7 7l10 10M17 7 7 17", palette.text_muted)
+    except OSError:  # 临时目录不可写：不画图标，不影响功能
         values["chevron"] = ""
+        values["close_icon"] = ""
     return _TEMPLATE.substitute(values)
