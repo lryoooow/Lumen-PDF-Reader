@@ -52,6 +52,9 @@
 - 移除过时文档与内部记录：早期调研 / 选型 / 开发计划（原 `docs/历史/`）、三轮审查报告与复现 / 探针脚本（原 `memory/`，
   结论已落入回归测试与本文件）；`memory/` 改为本地目录不再入库
 - 界面截图脚本移至 `scripts/capture_screenshots.py`（生成 `docs/images/` 截图）
+- **打包修复**：PATH 上有 Git（`mingw64\bin`）时，打包会收进同名但不兼容的 OpenSSL，安装后 AI 请求报
+  「DLL load failed while importing _ssl」。现在打包优先取解释器自带的 DLL 并逐字节核对；
+  `--selftest` 的 `ai_deps` 改为真正加载 `_ssl` 并建 HTTPS 客户端
 - Makefile 增加 `format-check`（并入 `make check`）、`samples`、`icon`、`build`、`installer`、`clean-dist`；
   pre-commit 改用项目环境中的 ruff / mypy；Pillow 显式列入开发依赖
 

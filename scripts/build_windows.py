@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,11 @@ APP_NAME = "PDFReader"
 ROOT = Path(__file__).resolve().parent.parent
 ENTRY = ROOT / "src" / "pdfreader" / "__main__.py"
 ICON = ROOT / "src" / "pdfreader" / "resources" / "icons" / "app.ico"
+# 解释器自带的扩展模块 DLL（_ssl.pyd 依赖的 libssl / libcrypto 就在这里）
+PY_DLLS = Path(sys.base_prefix) / "DLLs"
+# 必须与解释器自带版本逐字节一致的 DLL：PATH 上常有同名不同版的副本（如 Git 的 mingw64\bin），
+# 打进去就会「DLL load failed while importing _ssl: 找不到指定的程序」，所有 HTTPS 请求失败
+PINNED_DLLS = ("libcrypto-3-x64.dll", "libssl-3-x64.dll", "libffi-8.dll")
 
 # 需显式声明的隐藏导入（动态导入 / 可选依赖）
 HIDDEN_IMPORTS = [
@@ -100,7 +106,10 @@ def build() -> int:
     cmd.append(str(ENTRY))
 
     print("执行打包命令:\n" + " ".join(cmd) + "\n")
-    result = subprocess.run(cmd, check=False)
+    # 依赖 DLL 按 PATH 解析：把解释器自带的 DLL 目录放最前，免得收进 PATH 上同名的别家版本
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(PY_DLLS), env.get("PATH", "")])
+    result = subprocess.run(cmd, check=False, env=env)
     if result.returncode != 0:
         print(f"\n❌ 打包失败，退出码 {result.returncode}")
         return result.returncode
@@ -122,6 +131,13 @@ def _verify(dist: Path) -> int:
     onnx_files = list(models.glob("*.onnx")) if models.exists() else []
     ort_dlls = list(internal.glob("onnxruntime*/**/*.dll")) if internal.exists() else []
 
+    mismatched = _mismatched_dlls(internal)
+    if mismatched:
+        print("\n❌ 打进去的 DLL 与解释器自带版本不一致（会导致 _ssl 等模块加载失败）：")
+        for name in mismatched:
+            print(f"   {name}")
+        return 1
+
     total = sum(f.stat().st_size for f in app_dir.rglob("*") if f.is_file())
     print("\n✅ 打包成功（onedir）")
     print(f"   程序目录: {app_dir}")
@@ -129,9 +145,25 @@ def _verify(dist: Path) -> int:
     print(f"   总大小:   {total / (1024 * 1024):.1f} MB")
     print(f"   OCR 模型: {len(onnx_files)} 个 .onnx {'✓' if onnx_files else '✗（OCR 可能失效）'}")
     print(f"   onnx DLL: {'✓' if ort_dlls else '（依赖 PyInstaller hook）'}")
+    print("   OpenSSL:  ✓ 与解释器自带版本一致")
     if not onnx_files:
         print("   ⚠️  未检测到 OCR 模型文件，OCR 功能可能不可用。")
     return 0
+
+
+def _mismatched_dlls(internal: Path) -> list[str]:
+    """列出与解释器自带版本不一致（或缺失）的关键 DLL。"""
+    bad: list[str] = []
+    for name in PINNED_DLLS:
+        source = PY_DLLS / name
+        if not source.exists():
+            continue  # 该解释器不带这个 DLL，无需核对
+        bundled = internal / name
+        if not bundled.exists():
+            bad.append(f"{name}（缺失）")
+        elif bundled.read_bytes() != source.read_bytes():
+            bad.append(f"{name}（不是 {source} 这一份）")
+    return bad
 
 
 def make_installer() -> int:

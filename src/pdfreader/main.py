@@ -126,9 +126,14 @@ def run_selftest() -> int:
         import pymupdf  # noqa: F401
 
     def _ai() -> None:
-        import httpx  # noqa: F401
+        import ssl
+
+        import httpx
         import keyring
 
+        # 真正加载 _ssl 并建 HTTPS 客户端（只建不发）：DLL 版本不对、缺根证书都会在这里暴露
+        ssl.create_default_context()
+        httpx.Client(base_url="https://localhost").close()
         backend = keyring.get_keyring()
         if "fail" in type(backend).__module__:
             raise RuntimeError(f"没有可用的凭据后端：{type(backend).__name__}")
