@@ -7,8 +7,6 @@
 
 ## [Unreleased]
 
-## [Lumen 0.0.2] - 2026-10-15
-
 ### 新增：AI 助读（可选的联网功能，默认关闭）
 - **统一的模型服务配置**：按 OpenAI Chat Completions 协议接入任意兼容服务，内置 DeepSeek、通义千问、Kimi、智谱、
   豆包、硅基流动、OpenAI、Gemini、OpenRouter、Anthropic、Ollama（本机）预设与自定义；可获取模型列表、测试连接，
