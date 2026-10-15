@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from pdfreader.config.settings import ReadingPosition, SettingsStore
+from pdfreader.config.settings import Bookmark, ReadingPosition, SettingsStore
 from pdfreader.controllers import (
     AnnotationController,
     AnnotationMode,
@@ -374,6 +374,14 @@ class MainWindow(QMainWindow):
         self.forward_action = self._act(
             "forward", "前进", self._go_forward, shortcut="Alt+Right", enabled=False
         )
+        self.bookmark_action = self._act(
+            "bookmark",
+            "书签",
+            self._add_bookmark,
+            shortcut="Ctrl+D",
+            enabled=False,
+            tooltip="把当前位置加为书签（侧栏「目录」页查看）",
+        )
         self.reading_mode_action = self._act(
             "eye",
             "阅读模式",
@@ -597,7 +605,15 @@ class MainWindow(QMainWindow):
         self.ribbon.add_tab(
             "视图",
             [
-                ("布局", [self.sidebar_action, self.back_action, self.forward_action]),
+                (
+                    "布局",
+                    [
+                        self.sidebar_action,
+                        self.back_action,
+                        self.forward_action,
+                        self.bookmark_action,
+                    ],
+                ),
                 (
                     "缩放",
                     [
@@ -775,6 +791,10 @@ class MainWindow(QMainWindow):
 
         # 侧边栏
         self.sidebar.tocActivated.connect(lambda page, y: self._navigate_to(page, y))
+        self.sidebar.bookmarkActivated.connect(self._go_to_bookmark)
+        self.sidebar.bookmarkAddRequested.connect(self._add_bookmark)
+        self.sidebar.bookmarkRenameRequested.connect(self._rename_bookmark)
+        self.sidebar.bookmarkDeleteRequested.connect(self._delete_bookmark)
         self.sidebar.thumbnailActivated.connect(lambda page: self._navigate_to(page, None))
         self.sidebar.thumbnailsNeeded.connect(self._render_thumbnails)
         self.sidebar.annotationActivated.connect(self._on_annotation_activated)
@@ -846,6 +866,73 @@ class MainWindow(QMainWindow):
         if page is None or count == 0:
             return 0
         return min(max(page, 0), count - 1)
+
+    # ------------------------------------------------------------------ 书签
+    def _bookmarks(self) -> list[Bookmark]:
+        doc = self._controller.document
+        if doc is None:
+            return []
+        count = self._controller.page_count
+        return [b for b in self._settings.bookmarks_for(doc.path) if 0 <= b.page < count]
+
+    def _store_bookmarks(self, marks: list[Bookmark]) -> None:
+        doc = self._controller.document
+        if doc is None:
+            return
+        self._settings.set_bookmarks(doc.path, marks)
+        self._save_settings()
+        self._refresh_bookmarks()
+
+    def _refresh_bookmarks(self) -> None:
+        marks = sorted(self._bookmarks(), key=lambda b: (b.page, b.offset))
+        self.sidebar.set_bookmarks(marks)
+
+    def _add_bookmark(self) -> None:
+        """把视口顶边所在位置加为书签；标题取该处的一行原文（没有文字则「第 N 页」）。"""
+        if not self._controller.has_document or self.pdf_view.page_count == 0:
+            return
+        page, offset = self.pdf_view.reading_position()
+        marks = self._bookmarks()
+        if any(b.page == page and abs(b.offset - offset) < 0.05 for b in marks):
+            self.status_bar.show_message(f"第 {page + 1} 页这里已经有书签了")
+            return
+        bounds = self._controller.get_page_bounds()
+        y = offset * bounds[page].height if 0 <= page < len(bounds) else None
+        excerpt = self._controller.text_excerpt(page, y, max_chars=60).strip()
+        title = excerpt.splitlines()[0].strip()[:40] if excerpt else ""
+        marks.append(Bookmark(page, round(offset, 4), title or f"第 {page + 1} 页"))
+        self._store_bookmarks(marks)
+        self.sidebar.tabs.setCurrentIndex(SidePanel.TAB_TOC)
+        if not self.sidebar_action.isChecked():
+            self.sidebar_action.trigger()
+        self.status_bar.show_message(f"已添加书签：第 {page + 1} 页 · 右键可重命名")
+
+    def _go_to_bookmark(self, mark: Bookmark) -> None:
+        if not 0 <= mark.page < self._controller.page_count:
+            return
+        self._back_stack.append(self.pdf_view.reading_position())
+        del self._back_stack[:-_HISTORY_LIMIT]
+        self._forward_stack.clear()
+        self.pdf_view.restore_position(mark.page, mark.offset, animate=True)
+        self.pdf_view.pulse_page(mark.page)
+        self._update_history_actions()
+
+    def _rename_bookmark(self, index: int) -> None:
+        marks = self.sidebar.bookmarks()
+        if not 0 <= index < len(marks):
+            return
+        old = marks[index]
+        text, ok = QInputDialog.getText(self, "重命名书签", "书签名称：", text=old.title)
+        if ok and text.strip():
+            marks[index] = Bookmark(old.page, old.offset, text.strip())
+            self._store_bookmarks(marks)
+
+    def _delete_bookmark(self, index: int) -> None:
+        marks = self.sidebar.bookmarks()
+        if 0 <= index < len(marks):
+            removed = marks.pop(index)
+            self._store_bookmarks(marks)
+            self.status_bar.show_message(f"已删除书签：{removed.title}")
 
     # ------------------------------------------------------------------ 导航历史
     def _navigate_to(self, page_num: int, y: float | None) -> None:
@@ -1140,8 +1227,11 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return False
+        old_marks = self._settings.bookmarks_for(doc.path) if doc is not None else []
         if self._controller.save_as(Path(path)):
             self._after_saved()
+            if old_marks:  # 书签跟着新文件走（原文件的保留）
+                self._settings.set_bookmarks(Path(path), old_marks)
             self._settings.add_recent_file(Path(path))
             self._save_settings()
             return True
@@ -2024,7 +2114,8 @@ class MainWindow(QMainWindow):
         toc = self._controller.get_toc()
         self.sidebar.set_toc(toc)
         self.sidebar.set_page_count(page_count)
-        if toc:
+        self._refresh_bookmarks()
+        if toc or self.sidebar.bookmarks():
             self.sidebar.tabs.setCurrentIndex(SidePanel.TAB_TOC)
         self._refresh_annotations_if_shown()
 
@@ -2068,6 +2159,7 @@ class MainWindow(QMainWindow):
             self.ink_action,
             self.note_action,
             self.freetext_action,
+            self.bookmark_action,
             self.eraser_action,
             self.signature_action,
             self.timestamp_action,

@@ -131,3 +131,24 @@ class TestReadingPositions:
         s.remove_recent_file("/a.pdf")
         s.remove_recent_file("/not-there.pdf")
         assert s.recent_files == []
+
+
+def test_bookmarks_round_trip_and_tolerate_bad_data(tmp_path: Path) -> None:
+    import json
+
+    from pdfreader.config.settings import Bookmark
+
+    store = SettingsStore(tmp_path / "s.json")
+    settings = Settings()
+    settings.set_bookmarks("a.pdf", [Bookmark(3, 0.5, "结论"), Bookmark(0, 0.1, "引言")])
+    store.save(settings)
+    loaded = store.load()
+    assert loaded.bookmarks_for("a.pdf") == [Bookmark(0, 0.1, "引言"), Bookmark(3, 0.5, "结论")]
+    settings.set_bookmarks("a.pdf", [])  # 删光后不留空条目
+    assert "a.pdf" not in settings.bookmarks
+    (tmp_path / "s.json").write_text(
+        json.dumps({"bookmarks": {"x.pdf": [[1, 0.2, "ok"], ["bad", 0, "x"], [1, 2]], "y": 5}}),
+        encoding="utf-8",
+    )
+    assert store.load().bookmarks_for("x.pdf") == [Bookmark(1, 0.2, "ok")]
+    assert store.load().bookmarks_for("y") == []

@@ -1,7 +1,8 @@
 """左侧边栏：目录 / 批注 / 缩略图（Lumen 设计稿，宽 280）。
 
 * 顶部**分段切换**：滑块随页签滑动（400ms OutExpo），「批注」带数量角标。
-* **目录**：扁平缩进列表（每级 16px），右侧页码；当前页所在的顶级章节以强调色标出。
+* **目录**：上方「我的书签」（Ctrl+D 添加，右键重命名 / 删除）；下方文档目录——扁平缩进列表
+  （每级 16px），右侧页码；当前页所在的顶级章节以强调色标出。
 * **批注**：顶部搜索框 + 类型 / 颜色筛选；卡片——左侧色条、「第 N 页 · 类型」、衬线引文、
   📝笔记；单击跳转、双击编辑、右键更多；底部虚线按钮「导出笔记 (.md)」。
 * **缩略图**：两列网格，当前页带强调色描边，只为可见条目请求渲染（大文档不卡）。
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pdfreader.config.settings import Bookmark
 from pdfreader.engines.types import Annotation, TocEntry
 from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.manager import serif_font
@@ -337,6 +339,9 @@ class SidePanel(QWidget):
 
     Signals:
         tocActivated(int, object): 点击目录项 → (页码, 页内 y 或 None)
+        bookmarkActivated(object): 点击书签 → Bookmark
+        bookmarkAddRequested(): 「＋」添加当前位置为书签
+        bookmarkRenameRequested(int) / bookmarkDeleteRequested(int): 右键重命名 / 删除第 N 个书签
         annotationActivated(object): 点击批注 → Annotation
         annotationEditRequested(object): 编辑批注笔记 → Annotation
         annotationDeleteRequested(object): 删除批注 → Annotation
@@ -346,6 +351,10 @@ class SidePanel(QWidget):
     """
 
     tocActivated = Signal(int, object)
+    bookmarkActivated = Signal(object)  # Bookmark
+    bookmarkAddRequested = Signal()
+    bookmarkRenameRequested = Signal(int)  # 书签序号
+    bookmarkDeleteRequested = Signal(int)
     annotationActivated = Signal(object)
     annotationEditRequested = Signal(object)
     annotationDeleteRequested = Signal(object)
@@ -394,27 +403,45 @@ class SidePanel(QWidget):
         toc_page = QWidget()
         toc_layout = QVBoxLayout(toc_page)
         toc_layout.setContentsMargins(0, 0, 0, 0)
-        self.toc_tree = QTreeWidget()
-        self.toc_tree.setObjectName("TocTree")
-        self.toc_tree.setColumnCount(2)
-        self.toc_tree.setHeaderHidden(True)
-        self.toc_tree.setRootIsDecorated(False)
-        self.toc_tree.setItemsExpandable(False)
-        self.toc_tree.setIndentation(16)
-        self.toc_tree.setUniformRowHeights(True)
-        self.toc_tree.setMouseTracking(True)
-        header = self.toc_tree.header()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        toc_layout.setSpacing(6)
+        bm_header = QHBoxLayout()
+        bm_header.setContentsMargins(0, 0, 0, 0)
+        self.bookmark_title = QLabel("我的书签")
+        self.bookmark_title.setProperty("variant", "muted")
+        self.bookmark_add_btn = QToolButton()
+        self.bookmark_add_btn.setObjectName("BookmarkAddButton")
+        self.bookmark_add_btn.setText("＋ 添加")
+        self.bookmark_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bookmark_add_btn.setToolTip("把当前位置加为书签（Ctrl+D）")
+        self.bookmark_add_btn.clicked.connect(self.bookmarkAddRequested.emit)
+        bm_header.addWidget(self.bookmark_title)
+        bm_header.addStretch(1)
+        bm_header.addWidget(self.bookmark_add_btn)
+        toc_layout.addLayout(bm_header)
+        self.bookmark_list = self._flat_tree("BookmarkList")
+        self.bookmark_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.bookmark_list.customContextMenuRequested.connect(self._on_bookmark_menu)
+        self.bookmark_list.itemClicked.connect(self._on_bookmark_clicked)
+        self.bookmark_list.itemActivated.connect(self._on_bookmark_clicked)
+        self.bookmark_list.setToolTip("单击跳转 · 右键重命名 / 删除")
+        toc_layout.addWidget(self.bookmark_list)
+        self.bookmark_empty = QLabel("按 Ctrl+D 把当前位置加为书签")
+        self.bookmark_empty.setProperty("variant", "muted")
+        self.bookmark_empty.setWordWrap(True)
+        toc_layout.addWidget(self.bookmark_empty)
+        self.toc_title = QLabel("文档目录")
+        self.toc_title.setProperty("variant", "muted")
+        toc_layout.addWidget(self.toc_title)
+        self._bookmarks: list[Bookmark] = []
+        self.toc_tree = self._flat_tree("TocTree")
         self.toc_tree.itemClicked.connect(self._on_toc_clicked)
         self.toc_tree.itemActivated.connect(self._on_toc_clicked)
         self.toc_empty = QLabel("本文档没有目录（书签）")
         self.toc_empty.setProperty("variant", "muted")
         self.toc_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.toc_empty.setWordWrap(True)
-        toc_layout.addWidget(self.toc_tree)
-        toc_layout.addWidget(self.toc_empty)
+        toc_layout.addWidget(self.toc_tree, stretch=1)
+        toc_layout.addWidget(self.toc_empty, stretch=1)
         self._pages.addWidget(toc_page)
 
         # 批注
@@ -493,6 +520,25 @@ class SidePanel(QWidget):
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.set_annotations(())
+        self.set_bookmarks(())
+
+    @staticmethod
+    def _flat_tree(name: str) -> QTreeWidget:
+        """目录 / 书签共用的扁平两列列表：左标题、右页码。"""
+        tree = QTreeWidget()
+        tree.setObjectName(name)
+        tree.setColumnCount(2)
+        tree.setHeaderHidden(True)
+        tree.setRootIsDecorated(False)
+        tree.setItemsExpandable(False)
+        tree.setIndentation(16)
+        tree.setUniformRowHeights(True)
+        tree.setMouseTracking(True)
+        header = tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        return tree
 
     def _on_tab_changed(self, index: int) -> None:
         self._pages.setCurrentIndex(index)
@@ -568,6 +614,59 @@ class SidePanel(QWidget):
         data = item.data(0, _ROLE)
         if isinstance(data, tuple) and data[0] >= 0:
             self.tocActivated.emit(int(data[0]), data[1])
+
+    # ------------------------------------------------------------------ 书签
+    def set_bookmarks(self, marks: Sequence[Bookmark]) -> None:
+        """刷新书签列表（顺序由调用方给出，序号即信号里的 index）。"""
+        self._bookmarks = list(marks)
+        self.bookmark_list.clear()
+        font = QFont(self.bookmark_list.font())
+        font.setPixelSize(13)
+        page_font = QFont(font)
+        page_font.setPixelSize(11)
+        p = self._theme.palette
+        for i, mark in enumerate(self._bookmarks):
+            title = mark.title or f"第 {mark.page + 1} 页"
+            item = QTreeWidgetItem([title, str(mark.page + 1)])
+            item.setData(0, _ROLE, i)
+            item.setToolTip(0, f"{title}（第 {mark.page + 1} 页）")
+            item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            item.setFont(0, font)
+            item.setFont(1, page_font)
+            item.setForeground(0, QColor(p.text))
+            item.setForeground(1, QColor(p.text_muted))
+            self.bookmark_list.addTopLevelItem(item)
+        has = bool(self._bookmarks)
+        self.bookmark_list.setVisible(has)
+        self.bookmark_empty.setVisible(not has)
+        if has:  # 最多显示 6 行，其余滚动；下面留给文档目录
+            row_h = max(self.bookmark_list.sizeHintForRow(0), 24)
+            self.bookmark_list.setFixedHeight(min(len(self._bookmarks), 6) * row_h + 6)
+
+    def bookmarks(self) -> list[Bookmark]:
+        return list(self._bookmarks)
+
+    def _bookmark_index(self, item: QTreeWidgetItem | None) -> int | None:
+        if item is None:
+            return None
+        idx = item.data(0, _ROLE)
+        return idx if isinstance(idx, int) and 0 <= idx < len(self._bookmarks) else None
+
+    def _on_bookmark_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+        idx = self._bookmark_index(item)
+        if idx is not None:
+            self.bookmarkActivated.emit(self._bookmarks[idx])
+
+    def _on_bookmark_menu(self, pos: QPoint) -> None:
+        idx = self._bookmark_index(self.bookmark_list.itemAt(pos))
+        if idx is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("跳转", lambda: self.bookmarkActivated.emit(self._bookmarks[idx]))
+        menu.addAction("重命名…", lambda: self.bookmarkRenameRequested.emit(idx))
+        menu.addSeparator()
+        menu.addAction("删除书签", lambda: self.bookmarkDeleteRequested.emit(idx))
+        menu.exec(self.bookmark_list.viewport().mapToGlobal(pos))
 
     # ------------------------------------------------------------------ 批注
     def set_annotations(self, annotations: Sequence[Annotation]) -> None:
@@ -749,6 +848,7 @@ class SidePanel(QWidget):
     # ------------------------------------------------------------------ 通用
     def clear(self) -> None:
         self.set_toc(())
+        self.set_bookmarks(())
         self.set_annotations(())
         self.thumb_list.clear()
         self._thumb_done.clear()

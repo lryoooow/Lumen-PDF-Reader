@@ -15,10 +15,18 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-__all__ = ["ReadingPosition", "Settings", "SettingsStore", "default_settings_path"]
+__all__ = [
+    "Bookmark",
+    "ReadingPosition",
+    "Settings",
+    "SettingsStore",
+    "default_settings_path",
+]
 
 # 记住阅读位置的文件数上限（超出按最近使用淘汰）
 MAX_READING_POSITIONS = 200
+# 有书签的文件数上限（超出淘汰最久未改动的）
+MAX_BOOKMARKED_FILES = 500
 
 
 def default_settings_path() -> Path:
@@ -35,6 +43,15 @@ class ReadingPosition:
     zoom: float = 0.0  # 0 表示沿用默认（适应宽度）
 
 
+@dataclass(frozen=True)
+class Bookmark:
+    """用户书签：只存在本机设置里，不写进 PDF（只读 / 加密文档也能加，也不必另存）。"""
+
+    page: int
+    offset: float = 0.0  # 视口顶边在页内的相对位置 0..1（与阅读位置同一套）
+    title: str = ""
+
+
 @dataclass
 class Settings:
     """用户设置。"""
@@ -49,6 +66,8 @@ class Settings:
     sidebar_visible: bool = True
     # 文件路径 → [页, 页内偏移, 缩放]，插入顺序即最近使用顺序
     reading_positions: dict[str, list[float]] = field(default_factory=dict)
+    # 文件路径 → [[页, 页内偏移, 标题], ...]（按页序）
+    bookmarks: dict[str, list[list[object]]] = field(default_factory=dict)
 
     def add_recent_file(self, path: str | Path, *, max_count: int = 10) -> None:
         """添加最近文件（去重、置顶、限制数量）。"""
@@ -81,9 +100,52 @@ class Settings:
         except (TypeError, ValueError):
             return None
 
+    def bookmarks_for(self, path: str | Path) -> list[Bookmark]:
+        result: list[Bookmark] = []
+        for raw in self.bookmarks.get(str(path), []):
+            try:
+                page, offset, title = raw
+                result.append(Bookmark(int(page), float(offset), str(title)))  # type: ignore[call-overload,arg-type]
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def set_bookmarks(self, path: str | Path, marks: list[Bookmark]) -> None:
+        key = str(path)
+        self.bookmarks.pop(key, None)
+        if marks:
+            ordered = sorted(marks, key=lambda b: (b.page, b.offset))
+            self.bookmarks[key] = [[b.page, round(b.offset, 4), b.title] for b in ordered]
+        while len(self.bookmarks) > MAX_BOOKMARKED_FILES:
+            self.bookmarks.pop(next(iter(self.bookmarks)))
+
+
+def _coerce_bookmarks(value: object) -> dict[str, list[list[object]]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, list[list[object]]] = {}
+    for key, items in value.items():
+        if not isinstance(items, list):
+            continue
+        good = [
+            [int(it[0]), float(it[1]), it[2]]
+            for it in items
+            if isinstance(it, list)
+            and len(it) == 3
+            and isinstance(it[0], int)
+            and not isinstance(it[0], bool)
+            and isinstance(it[1], (int, float))
+            and isinstance(it[2], str)
+        ]
+        if good:
+            result[str(key)] = good
+    return result
+
 
 def _coerce(name: str, value: object, default: object) -> object:
     """把 JSON 里的值校正为字段默认值的类型；不合法时返回默认值。"""
+    if name == "bookmarks":
+        return _coerce_bookmarks(value)
     if isinstance(default, bool):
         return value if isinstance(value, bool) else default
     if isinstance(default, int):

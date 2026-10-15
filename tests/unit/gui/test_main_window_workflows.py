@@ -404,3 +404,32 @@ def test_free_text_rect_sizes_and_clamps() -> None:
     assert two.height > short.height
     edge = free_text_rect(Point(590, 795), "靠右下角的文字", page)  # 超出页边就往回挪
     assert edge.x1 <= 600 and edge.y1 <= 800
+
+
+class TestBookmarks:
+    def test_add_rename_jump_delete(self, window: MainWindow, tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        path = _make_pdf(tmp_path / "b.pdf", 5)
+        window.open_path(path)
+        window.pdf_view.jump_to_page(3)
+        window.bookmark_action.trigger()
+        marks = window.sidebar.bookmarks()
+        assert len(marks) == 1 and marks[0].page == 3 and marks[0].title
+        window.bookmark_action.trigger()  # 同一位置不重复添加
+        assert len(window.sidebar.bookmarks()) == 1
+        assert window.sidebar.tabs.currentIndex() == SidePanel.TAB_TOC
+
+        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("方法部分", True))
+        window._rename_bookmark(0)
+        assert window.sidebar.bookmarks()[0].title == "方法部分"
+        assert "方法部分" in window.sidebar.bookmark_list.topLevelItem(0).text(0)
+
+        window.pdf_view.jump_to_page(0)
+        window.sidebar._on_bookmark_clicked(window.sidebar.bookmark_list.topLevelItem(0))
+        assert window.back_action.isEnabled()  # 跳书签记入后退历史
+
+        # 重新打开同一文件：书签还在（存于设置，不改 PDF）
+        window.open_path(path)
+        assert [b.title for b in window.sidebar.bookmarks()] == ["方法部分"]
+        window._delete_bookmark(0)
+        assert window.sidebar.bookmarks() == []
+        assert window._settings.bookmarks_for(path) == []

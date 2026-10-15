@@ -138,18 +138,18 @@ QLabel#CountBadge {
     padding: 0px 4px;
     font-size: 10px;
 }
-QTreeWidget#TocTree, QListWidget#AnnotList, QListWidget#ThumbList {
+QTreeWidget#TocTree, QTreeWidget#BookmarkList, QListWidget#AnnotList, QListWidget#ThumbList {
     background: transparent;
     border: none;
     outline: none;
 }
-QTreeWidget#TocTree::item {
+QTreeWidget#TocTree::item, QTreeWidget#BookmarkList::item {
     padding: 6px 4px;
     border-radius: 6px;
 }
-QTreeWidget#TocTree::item:hover { background-color: $surface_hover; }
-QTreeWidget#TocTree::item:selected { background: transparent; color: $text; }
-QTreeWidget#TocTree::branch { background: transparent; image: none; border: none; }
+QTreeWidget#TocTree::item:hover, QTreeWidget#BookmarkList::item:hover { background-color: $surface_hover; }
+QTreeWidget#TocTree::item:selected, QTreeWidget#BookmarkList::item:selected { background: transparent; color: $text; }
+QTreeWidget#TocTree::branch, QTreeWidget#BookmarkList::branch { background: transparent; image: none; border: none; }
 QListWidget#AnnotList::item, QListWidget#ThumbList::item {
     background: transparent;
     border: none;
