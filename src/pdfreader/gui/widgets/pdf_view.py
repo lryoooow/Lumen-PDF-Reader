@@ -218,6 +218,9 @@ class PdfView(QGraphicsView):
         self._selected_text: str = ""
         self._selecting: bool = False
         self._search_items: list[QGraphicsItem] = []  # 搜索命中高亮
+        # 速读标记：不写入文件的高亮层（页 → 行矩形），缩放 / 重排后重画，换文档清空
+        self._marks: dict[int, list[Rect]] = {}
+        self._mark_items: list[QGraphicsItem] = []
 
         # 链接
         self._link_provider: Callable[[int], tuple[LinkInfo, ...]] | None = None
@@ -805,6 +808,34 @@ class PdfView(QGraphicsView):
         self._update_current_page()
         self.flash_rects(page_num, [rect], QColor(self._palette.accent), pulse=True)
 
+    # ------------------------------------------------------------------
+    # 速读标记
+    # ------------------------------------------------------------------
+    def set_marks(self, page_num: int, rects: Sequence[Rect]) -> None:
+        """给某页设置速读标记（空序列 = 清除该页）；不改文件，缩放后仍在。"""
+        if rects:
+            self._marks[page_num] = list(rects)
+        else:
+            self._marks.pop(page_num, None)
+        self._draw_marks()
+
+    def clear_marks(self) -> None:
+        self._marks.clear()
+        self._draw_marks()
+
+    def marks(self) -> dict[int, list[Rect]]:
+        return {page: list(rects) for page, rects in self._marks.items()}
+
+    def _draw_marks(self) -> None:
+        self._remove_overlay(self._mark_items)
+        color = QColor(self._palette.accent)
+        color.setAlpha(60)
+        for page, rects in sorted(self._marks.items()):
+            if page < len(self._page_y_positions):
+                self._mark_items.extend(self._add_overlay_rects(page, rects, color))
+        for item in self._mark_items:
+            item.setZValue(9)
+
     def clear_search_hit(self) -> None:
         """清除搜索命中高亮（关闭搜索面板 / 换文档 / 缩放时调用）。"""
         self._remove_overlay(self._search_items)
@@ -929,6 +960,8 @@ class PdfView(QGraphicsView):
         self._words_cache.clear()
         self._links_cache.clear()
         self._search_items.clear()
+        self._mark_items.clear()
+        self._marks.clear()
         self._annot_items.clear()
         self._ink_item = None
         self._ink_points = []
@@ -1305,6 +1338,7 @@ class PdfView(QGraphicsView):
             self._page_items[i] = self._make_placeholder(i, total_height)
             total_height += self._scaled_size(i)[1] + PAGE_GAP
         self._update_scene_rect(total_height)
+        self._draw_marks()
 
     def _update_scene_rect(self, total_height: float) -> None:
         """场景矩形：上方留 TOP_PADDING、左右各留阴影余量。"""
@@ -1415,6 +1449,8 @@ class PdfView(QGraphicsView):
         self._words_cache.clear()
         self._links_cache.clear()
         self._search_items.clear()
+        self._mark_items.clear()
+        self._marks.clear()
         self._annot_items.clear()
         self._ink_item = None
         self._ink_points = []

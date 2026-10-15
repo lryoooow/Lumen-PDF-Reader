@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,10 +17,13 @@ __all__ = [
     "ask_messages",
     "explain_image_messages",
     "explain_messages",
+    "parse_indices",
     "parse_questions",
     "preset_by_key",
+    "speedread_messages",
     "suggest_messages",
     "summary_messages",
+    "tldr_messages",
     "translate_messages",
 ]
 
@@ -87,6 +92,46 @@ def summary_messages(context: str, language: str, *, truncated: bool) -> list[Me
             ),
         },
     ]
+
+
+def tldr_messages(context: str, language: str, *, truncated: bool) -> list[Message]:
+    note = "（文档较长，片段只包含开头与结尾部分）\n" if truncated else ""
+    return [
+        _system(language),
+        {
+            "role": "user",
+            "content": (
+                "用不超过 3 句话写出这篇文档的 TL;DR：它要解决什么问题、怎么做、得到什么结论。"
+                "只输出这一段话，不要小标题和列表；每句后用 [p.N] 标注依据的页码，"
+                "片段里没有依据的内容不要写。\n\n"
+                f"{note}文档片段：\n{context}"
+            ),
+        },
+    ]
+
+
+def speedread_messages(sentences: Sequence[str], count: int) -> list[Message]:
+    numbered = "\n".join(f"[{i}] {s}" for i, s in enumerate(sentences, 1))
+    return [
+        {
+            "role": "system",
+            "content": "你是论文速读助手，帮读者挑出一页里最值得读的句子。只输出句子编号。",
+        },
+        {
+            "role": "user",
+            "content": (
+                f"下面是某一页按句编号的原文。挑出速读时最该看的约 {count} 句"
+                "（核心论点、方法要点、关键结果、结论；跳过页眉、致谢、引用列表与过渡句）。"
+                "只输出编号，用逗号分隔，例如：3, 7, 12。\n\n" + numbered
+            ),
+        },
+    ]
+
+
+def parse_indices(text: str, total: int) -> list[int]:
+    """从「3, 7, 12」式的回答里取出句子编号，返回 0 起、去重、升序的下标。"""
+    picked = {int(n) - 1 for n in re.findall(r"\d+", text) if 1 <= int(n) <= total}
+    return sorted(picked)
 
 
 def ask_messages(

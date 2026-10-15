@@ -80,7 +80,7 @@ class TestHeaderAndRibbon:
             ["当前页 · 第 1 页"],
             ["布局", "缩放", "阅读"],
             ["识别", "输出", "文档"],
-            ["全文", "划词与框选", "模型"],
+            ["全文", "速读", "划词与框选", "模型"],
         ]
 
     def test_page_group_title_tracks_current_page(self, window: MainWindow, tmp_path: Path) -> None:

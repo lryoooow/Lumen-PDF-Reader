@@ -74,7 +74,8 @@ class AiPanel(QFrame):
 
     Signals:
         askRequested(str): 用户提问
-        actionRequested(str): 预设动作（``summary`` / ``suggest`` / 预设动作 key）
+        actionRequested(str): 预设动作（``summary`` / ``suggest`` / ``tldr`` /
+            ``speedread`` / 预设动作 key）
         captureRequested(): 进入框选工具
         stopRequested(): 停止生成
         settingsRequested(): 打开模型设置
@@ -138,6 +139,9 @@ class AiPanel(QFrame):
         self.suggest_btn = self._chip("推荐问题", lambda: self.actionRequested.emit("suggest"))
         self.more_btn = self._chip("更多 ▾", None)
         menu = QMenu(self.more_btn)
+        menu.addAction("TL;DR 速览", lambda: self.actionRequested.emit("tldr"))
+        menu.addAction("速读高亮（当前页）", lambda: self.actionRequested.emit("speedread"))
+        menu.addSeparator()
         for action in PRESET_ACTIONS:
             menu.addAction(action.title, lambda k=action.key: self.actionRequested.emit(k))
         self.more_btn.setMenu(menu)

@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
             notify=self.status_bar.show_message,
             on_annotation_added=self._after_annotation_change,
             start_ocr=self._on_ocr_all_pages if OCR_AVAILABLE else None,
+            show_marks=self.pdf_view.set_marks,
         )
         self._connect_signals()
         self._theme.changed.connect(self._on_theme_changed)
@@ -518,6 +519,20 @@ class MainWindow(QMainWindow):
             enabled=False,
             tooltip="结构化总结（研究问题 / 方法 / 结果 / 局限），要点带页码可跳转",
         )
+        self.ai_tldr_action = self._act(
+            "doc",
+            "TL;DR",
+            lambda: self._ai.tldr(),
+            enabled=False,
+            tooltip="三句话以内的全文速览，每句带页码",
+        )
+        self.ai_speedread_action = self._act(
+            "eye",
+            "速读高亮",
+            lambda: self._ai.speed_read(),
+            enabled=False,
+            tooltip="让 AI 标出当前页最值得读的句子（不改文件，可再存为高亮）",
+        )
         self.ai_suggest_action = self._act(
             "question",
             "推荐问题",
@@ -639,6 +654,7 @@ class MainWindow(QMainWindow):
             "AI 助读",
             [
                 ("全文", [self.ai_panel_action, self.ai_summary_action, self.ai_suggest_action]),
+                ("速读", [self.ai_tldr_action, self.ai_speedread_action]),
                 (
                     "划词与框选",
                     [self.translate_action, self.ai_explain_action, self.capture_action],
@@ -1301,6 +1317,7 @@ class MainWindow(QMainWindow):
         self._back_stack.clear()
         self._forward_stack.clear()
         self._update_history_actions()
+        self._ai.clear_marks()  # 重排已清掉页面上的速读标记，页码也可能变了
         self._ai.invalidate_text()
         if self._controller.is_modified:
             self.status_bar.show_message(f"共 {count} 页 · 未保存")
@@ -2150,6 +2167,8 @@ class MainWindow(QMainWindow):
             self.copy_merge_action,
             self.translate_action,
             self.ai_summary_action,
+            self.ai_tldr_action,
+            self.ai_speedread_action,
             self.ai_suggest_action,
             self.ai_explain_action,
             self.capture_action,

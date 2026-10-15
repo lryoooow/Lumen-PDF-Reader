@@ -16,7 +16,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from pdfreader.controllers import AnnotationMode, DocumentController
-from pdfreader.engines.types import Rect
+from pdfreader.engines.types import AnnotationType, Rect
 from pdfreader.gui.ai_assistant import LARGE_SEND_CHARS, AiAssistant
 from pdfreader.gui.dialogs.ai_settings_dialog import AiSettingsDialog
 from pdfreader.gui.main_window import MainWindow
@@ -94,6 +94,7 @@ class Harness:
         self.messages: list[str] = []
         self.navigated: list[tuple[int, float | None]] = []
         self.added: list[int] = []
+        self.marks: dict[int, list[Rect]] = {}
         self.shown = 0
         self.ai = AiAssistant(
             self.host,
@@ -104,6 +105,7 @@ class Harness:
             show_panel=self._show,
             notify=self.messages.append,
             on_annotation_added=self.added.append,
+            show_marks=self._set_marks,
             store=self.store,
             client_factory=server.factory,
         )
@@ -114,6 +116,12 @@ class Harness:
 
     def _show(self) -> None:
         self.shown += 1
+
+    def _set_marks(self, page: int, rects) -> None:  # type: ignore[no-untyped-def]
+        if rects:
+            self.marks[page] = list(rects)
+        else:
+            self.marks.pop(page, None)
 
     def _confirm(self, title: str, text: str, *, remember: str | None = None) -> tuple[bool, bool]:
         self.confirms.append(title)
@@ -522,3 +530,82 @@ def test_main_window_feeds_ocr_pages_to_ai(window, tmp_path: Path) -> None:  # t
     assert window._ai._page_texts()[1] == "识别文字"
     window._reset_document_session()
     assert window._ai._ocr == {}
+
+
+# ---------------------------------------------------------------- 速读 / TL;DR
+def test_tldr_uses_overview(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("提出注意力机制 [p.1]。")
+    h = make(server=server)
+    h.panel.actionRequested.emit("tldr")
+    h.wait(qtbot)
+    assert "TL;DR" in server.last_user() and "Section 3" in server.last_user()
+    assert h.panel.turns[-1].title == "TL;DR 速览"
+    assert h.panel.turns[-1].answer.startswith("提出注意力机制")
+
+
+def test_speed_read_marks_page_then_saves_highlights(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("2")
+    h = make(server=server)
+    h.panel.actionRequested.emit("speedread")
+    h.wait(qtbot)
+    sent = server.last_user()
+    assert "[1] Section 1 attention mechanism" in sent
+    assert "[2] Body text of page 1 about transformers." in sent
+
+    turn = h.panel.turns[-1]
+    assert turn.title == "速读高亮" and turn.quote == "第 1 页"
+    assert "标出 1 句要点" in turn.answer and "Body text of page 1" in turn.answer
+    assert list(h.marks) == [0] and len(h.marks[0]) == 1
+    box = h.marks[0][0]
+    assert box.y0 < 118 < box.y1  # 落在第二行文字上（基线 y=120）
+
+    h.ai.save_note(turn.answer)
+    annots = h.controller.list_annotations(0)
+    assert [a.annot_type for a in annots] == [AnnotationType.HIGHLIGHT]
+    assert "transformers" in annots[0].marked_text
+    assert h.marks == {} and h.added == [0]
+
+    # 已存过：再点「存为批注」退回普通便签，不会重复加高亮
+    h.ai.save_note(turn.answer)
+    types = [a.annot_type for a in h.controller.list_annotations(0)]
+    assert types == [AnnotationType.HIGHLIGHT, AnnotationType.TEXT]
+
+
+def test_speed_read_unparseable_answer_and_clear(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("我觉得都很重要", "1, 2")
+    h = make(server=server)
+    h.ai.speed_read(1)
+    h.wait(qtbot)
+    assert "没能从回答里取到句子编号" in h.panel.turns[-1].answer
+    assert h.marks == {}
+
+    h.ai.speed_read(1)
+    h.wait(qtbot)
+    assert len(h.marks[1]) == 2
+    h.ai.clear()
+    assert h.marks == {}
+
+
+def test_speed_read_page_without_text(make, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    h = make()
+    h.controller.close_document()
+    h.ai.speed_read()
+    assert h.messages[-1] == "请先打开文档"
+    h.controller.open_file(_blank_doc(tmp_path / "scan.pdf"))
+    h.ai.speed_read()
+    assert "没有可定位的文字" in h.messages[-1]
+    assert h.ai.workers() == []
+
+
+def test_main_window_speed_read_marks_view(window, tmp_path: Path, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("1")
+    window._ai._client_factory = server.factory
+    window._ai.apply_settings(_configured())
+    window._ai.confirm = lambda *a, **k: (True, False)  # type: ignore[method-assign]
+    window.open_path(_make_doc(tmp_path / "w.pdf"))
+    assert window.ai_speedread_action.isEnabled() and window.ai_tldr_action.isEnabled()
+    window.ai_speedread_action.trigger()
+    qtbot.waitUntil(lambda: bool(window.pdf_view.marks()), timeout=5000)
+    assert list(window.pdf_view.marks()) == [0]
+    window.rotate_action.trigger()  # 页结构变化 → 标记清空
+    assert window.pdf_view.marks() == {}

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect
@@ -26,6 +26,7 @@ from pdfreader.services.ai.client import ChatClient
 from pdfreader.services.ai.context import overview_context, question_context
 from pdfreader.services.ai.keystore import KeyStore, KeyStoreError, default_keystore
 from pdfreader.services.ai.provider import AiSettings, AiSettingsStore, ProviderConfig
+from pdfreader.services.ai.speedread import Sentence, pick_count, split_sentences
 from pdfreader.workers.ai_worker import AiWorker
 
 __all__ = ["LARGE_SEND_CHARS", "AiAssistant"]
@@ -53,6 +54,8 @@ class AiAssistant(QObject):
         show_panel: 打开右侧面板
         notify: 状态栏提示
         on_annotation_added: AI 笔记存为便签后通知主窗口刷新该页
+        start_ocr: 扫描件没有文字时启动全文 OCR（None = 不可用）
+        show_marks: 在页面上显示 / 清除（空序列）速读标记
     """
 
     def __init__(
@@ -67,6 +70,7 @@ class AiAssistant(QObject):
         notify: Callable[[str], None],
         on_annotation_added: Callable[[int], None],
         start_ocr: Callable[[], None] | None = None,
+        show_marks: Callable[[int, Sequence[Rect]], None] | None = None,
         store: AiSettingsStore | None = None,
         keystore: KeyStore | None = None,
         client_factory: ClientFactory | None = None,
@@ -81,6 +85,7 @@ class AiAssistant(QObject):
         self._notify = notify
         self._on_annotation_added = on_annotation_added
         self._start_ocr = start_ocr
+        self._show_marks = show_marks
         self._store = store or AiSettingsStore()
         self._keystore = keystore or default_keystore()
         self._client_factory: ClientFactory = client_factory or (lambda b, k: ChatClient(b, k))
@@ -96,6 +101,10 @@ class AiAssistant(QObject):
         # 本次会话的 OCR 识别结果（页 → 文字）：扫描页没有文字层时用它代替，不必先另存
         self._ocr: dict[int, str] = {}
         self._ocr_page_count = 0
+        # 速读：正在请求的 (页, 句子)；完成后已标出的 (页, 各句矩形) 与那条回答（存为批注时认它）
+        self._speed_request: tuple[int, list[Sentence]] | None = None
+        self._speed_marks: tuple[int, list[tuple[Rect, ...]]] | None = None
+        self._speed_answer = ""
 
         panel.askRequested.connect(self.ask)
         panel.actionRequested.connect(self.run_action)
@@ -170,6 +179,7 @@ class AiAssistant(QObject):
         self._encrypted_ok = False
         self._texts = None
         self._ocr.clear()
+        self._forget_speed()
         self._panel.clear()
         self._panel.set_page_count(self._controller.page_count)
 
@@ -223,6 +233,10 @@ class AiAssistant(QObject):
     def run_action(self, key: str) -> None:
         if key == "summary":
             self.summarize()
+        elif key == "tldr":
+            self.tldr()
+        elif key == "speedread":
+            self.speed_read()
         elif key == "suggest":
             self.suggest()
         elif key == "capture":
@@ -242,6 +256,46 @@ class AiAssistant(QObject):
         )
         self._note_anchor = None
         self._start("总结全文", "", messages)
+
+    def tldr(self) -> None:
+        """三句话以内的全文速览（TL;DR），每句带页码。"""
+        pages = self._doc_pages()
+        if pages is None:
+            return
+        context, truncated = overview_context(pages, budget=16000)
+        messages = prompts.tldr_messages(
+            context, self._settings.target_language, truncated=truncated
+        )
+        self._note_anchor = None
+        self._start("TL;DR 速览", "", messages)
+
+    def speed_read(self, page: int | None = None) -> None:
+        """速读高亮：让 AI 挑出一页里最值得读的句子，在页面上标出来（不改文件）。"""
+        if not self._controller.has_document:
+            self._notify("请先打开文档")
+            return
+        page = self._current_page() if page is None else page
+        sentences = split_sentences(self._controller.get_words(page))
+        if not sentences:
+            self._show_panel()
+            self._notify(f"第 {page + 1} 页没有可定位的文字（扫描页需先 OCR 并另存）")
+            return
+        count = pick_count(len(sentences))
+        messages = prompts.speedread_messages([s.text for s in sentences], count)
+        self._note_anchor = None
+        if self._start("速读高亮", f"第 {page + 1} 页", messages, kind="speedread"):
+            self._speed_request = (page, sentences)
+
+    def clear_marks(self) -> None:
+        """清除速读标记（换文档 / 清空对话 / 存成高亮后）。"""
+        self._forget_speed()
+
+    def _forget_speed(self) -> None:
+        if self._speed_marks is not None and self._show_marks is not None:
+            self._show_marks(self._speed_marks[0], ())
+        self._speed_request = None
+        self._speed_marks = None
+        self._speed_answer = ""
 
     def suggest(self) -> None:
         pages = self._doc_pages()
@@ -302,11 +356,18 @@ class AiAssistant(QObject):
     def clear(self) -> None:
         self.stop()
         self._history.clear()
+        self._forget_speed()
         self._panel.clear()
 
     def save_note(self, text: str) -> None:
-        """把回答存为便签批注：锚在选区 / 框选处，否则当前页左上角。"""
+        """把回答存为便签批注：锚在选区 / 框选处，否则当前页左上角。
+
+        速读结果例外：把标出的句子逐句存为高亮批注（批注面板里每句一张卡片）。
+        """
         if not text.strip() or not self._controller.has_document:
+            return
+        if self._speed_marks is not None and text.strip() == self._speed_answer.strip():
+            self._save_speed_marks()
             return
         if self._note_anchor is not None and self._note_anchor[0] < self._controller.page_count:
             page, x, y = self._note_anchor
@@ -325,6 +386,22 @@ class AiAssistant(QObject):
             self._notify(f"已存为第 {page + 1} 页的便签")
         else:
             self._notify(f"保存便签失败：{self._controller.last_error or '未知原因'}")
+
+    def _save_speed_marks(self) -> None:
+        assert self._speed_marks is not None
+        page, groups = self._speed_marks
+        if page >= self._controller.page_count:
+            self._forget_speed()
+            return
+        saved = sum(
+            1 for rects in groups if self._controller.add_markup(page, rects, kind="highlight")
+        )
+        if not saved:
+            self._notify(f"保存高亮失败：{self._controller.last_error or '未知原因'}")
+            return
+        self._forget_speed()
+        self._on_annotation_added(page)
+        self._notify(f"已把第 {page + 1} 页的 {saved} 句要点存为高亮")
 
     def shutdown(self) -> None:
         """退出前：取消并等待所有请求线程。"""
@@ -427,12 +504,12 @@ class AiAssistant(QObject):
         *,
         kind: str = "chat",
         question: str = "",
-    ) -> None:
+    ) -> bool:
         provider = self._ensure_ready()
         if provider is None:
-            return
+            return False
         if not self._allowed(provider, _message_chars(messages)):
-            return
+            return False
         if self._worker is not None:
             self.stop()
         client = self._client_factory(provider.base_url, self._key(provider))
@@ -451,6 +528,7 @@ class AiAssistant(QObject):
         self._panel.set_page_count(self._controller.page_count)
         self._panel.begin_turn(title, quote)
         worker.start()
+        return True
 
     def _retire(self, worker: AiWorker) -> None:
         worker.shutdown()
@@ -465,7 +543,7 @@ class AiAssistant(QObject):
         return self._worker is not None and self.sender() is self._worker
 
     def _on_delta(self, text: str) -> None:
-        if self._is_current():
+        if self._is_current() and self._kind != "speedread":  # 速读只回编号，不逐字显示
             self._panel.append_delta(text)
 
     def _on_reasoning(self, text: str) -> None:
@@ -476,6 +554,9 @@ class AiAssistant(QObject):
         if not self._is_current():
             return
         self._worker = None
+        if self._kind == "speedread":
+            self._finish_speed_read(text)
+            return
         if self._kind == "suggest":
             questions = prompts.parse_questions(text)
             if questions:
@@ -488,6 +569,28 @@ class AiAssistant(QObject):
             self._history.append({"role": "user", "content": self._question})
             self._history.append({"role": "assistant", "content": text})
             del self._history[: -prompts.MAX_HISTORY_MESSAGES]
+
+    def _finish_speed_read(self, text: str) -> None:
+        request, self._speed_request = self._speed_request, None
+        if request is None or request[0] >= self._controller.page_count:
+            self._panel.finish_turn("页面已变化，请重新速读。")
+            return
+        page, sentences = request
+        picked = [sentences[i] for i in prompts.parse_indices(text, len(sentences))]
+        if not picked:
+            self._panel.finish_turn(f"没能从回答里取到句子编号：\n\n{text.strip()}")
+            return
+        self._forget_speed()  # 同时只保留一页的速读标记
+        rects = [r for s in picked for r in s.rects]
+        if self._show_marks is not None:
+            self._show_marks(page, rects)
+        answer = (
+            f"已在第 {page + 1} 页标出 {len(picked)} 句要点（点下方「存为批注」可转成高亮）：\n\n"
+            + "\n".join(f"- {_md_escape(s.text)} [p.{page + 1}]" for s in picked)
+        )
+        self._speed_marks = (page, [s.rects for s in picked])
+        self._speed_answer = answer
+        self._panel.finish_turn(answer)
 
     def _on_failed(self, message: str) -> None:
         if self._is_current():
@@ -537,6 +640,13 @@ class AiAssistant(QObject):
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         pixmap.copy(area).save(buffer, "PNG")
         return bytes(QByteArray(buffer.data()).data())
+
+
+def _md_escape(text: str) -> str:
+    """原文句子放进 Markdown 列表前转义会被当成格式的字符。"""
+    for ch in "\\`*_[]$<>#|":
+        text = text.replace(ch, "\\" + ch)
+    return text
 
 
 def _message_chars(messages: list[Message]) -> int:

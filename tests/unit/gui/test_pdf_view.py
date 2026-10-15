@@ -455,3 +455,35 @@ def test_capture_drag_emits_area(qtbot) -> None:  # type: ignore[no-untyped-def]
     view._annot_start = QPointF(50, 60)
     view._commit_capture(QPointF(52, 61))
     assert len(got) == 1
+
+
+def test_marks_survive_zoom_and_clear_on_new_layout(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """速读标记是不写文件的高亮层：缩放后按新坐标重画，换文档 / 页结构变化时清空。"""
+    from pdfreader.engines.types import Rect
+
+    view = PdfView()
+    qtbot.addWidget(view)
+    view.setup_document(2, [(595, 842)] * 2)
+    view.set_zoom(1.0)
+    view.set_marks(1, [Rect(10, 10, 50, 30), Rect(10, 40, 80, 52)])
+    assert len(view._mark_items) == 2
+    first = view._mark_items[0].sceneBoundingRect()
+
+    view.set_zoom(2.0)
+    assert len(view._mark_items) == 2
+    assert view._mark_items[0].sceneBoundingRect().width() == pytest.approx(first.width() * 2)
+    assert view.marks() == {1: [Rect(10, 10, 50, 30), Rect(10, 40, 80, 52)]}
+
+    view.set_marks(1, [])
+    assert view._mark_items == [] and view.marks() == {}
+
+    view.set_marks(0, [Rect(1, 1, 5, 5)])
+    view.setup_document(1, [(595, 842)])
+    assert view.marks() == {} and view._mark_items == []
+
+    view.set_marks(0, [Rect(1, 1, 5, 5)])
+    view.clear_marks()
+    assert view._mark_items == []
+    view.set_marks(0, [Rect(1, 1, 5, 5)])
+    view.clear()
+    assert view.marks() == {}
