@@ -460,3 +460,65 @@ class TestMainWindowWiring:
         window.ai_panel.finish_turn("y")
         window.open_path(_make_doc(tmp_path / "b.pdf"))
         assert window.ai_panel.turns == []
+
+
+# ---------------------------------------------------------------- 扫描件：OCR 结果直接给 AI
+def _blank_doc(path: Path, pages: int = 2) -> Path:
+    d = pymupdf.open()
+    for _ in range(pages):
+        d.new_page()
+    d.save(str(path))
+    d.close()
+    return path
+
+
+def test_scanned_doc_offers_ocr_then_uses_ocr_text(make, qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("回答")
+    h = make(server=server)
+    h.controller.close_document()
+    h.controller.open_file(_blank_doc(tmp_path / "scan.pdf"))
+    h.ai.reset_document()
+    started: list[bool] = []
+    h.ai._start_ocr = lambda: started.append(True)
+
+    h.ai.ask("这篇讲什么？")
+    assert "没有可读的文字" in h.confirms and started == [True]
+    assert server.requests == []  # 没有文字就不外发
+
+    h.ai.add_ocr_text(1, "扫描页识别出的内容 XYZ-42")
+    h.ai.ask("这篇讲什么？")
+    h.wait(qtbot)
+    sent = json.dumps(server.requests[-1]["body"], ensure_ascii=False)
+    assert "XYZ-42" in sent
+
+
+def test_scanned_doc_without_ocr_explains(make, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    h = make()
+    h.controller.close_document()
+    h.controller.open_file(_blank_doc(tmp_path / "scan.pdf"))
+    h.ai.reset_document()
+    h.ai.ask("问题")
+    assert any("OCR" in m for m in h.messages)
+
+
+def test_ocr_text_dropped_when_page_count_changes(make) -> None:  # type: ignore[no-untyped-def]
+    h = make()
+    h.ai.add_ocr_text(0, "  ")  # 空结果忽略
+    assert h.ai._ocr == {}
+    h.ai.add_ocr_text(0, "ocr")
+    h.ai.invalidate_text()  # 页数没变：保留
+    assert h.ai._ocr == {0: "ocr"}
+    h.controller.delete_page(0)
+    h.ai.invalidate_text()
+    assert h.ai._ocr == {}
+    assert "ocr" not in "".join(h.ai._page_texts())
+
+
+def test_main_window_feeds_ocr_pages_to_ai(window, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+
+    window.open_path(_blank_doc(tmp_path / "scan.pdf"))
+    window._on_ocr_page_done(SimpleNamespace(page_num=1, text="识别文字"))
+    assert window._ai._page_texts()[1] == "识别文字"
+    window._reset_document_session()
+    assert window._ai._ocr == {}

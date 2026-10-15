@@ -32,6 +32,8 @@ __all__ = ["LARGE_SEND_CHARS", "AiAssistant"]
 
 # 单次外发超过这么多字符时提醒（约等于一篇中等长度论文的全文）
 LARGE_SEND_CHARS = 40000
+# 文字层少于这么多字符的页视为扫描页，有 OCR 结果时用 OCR 文字代替
+_SCANNED_PAGE_CHARS = 20
 # 框选区域渲染：目标最长边像素（够看清公式，又不至于图片过大）
 _CAPTURE_MAX_SIDE = 1600
 _CAPTURE_MAX_ZOOM = 4.0
@@ -64,6 +66,7 @@ class AiAssistant(QObject):
         show_panel: Callable[[], None],
         notify: Callable[[str], None],
         on_annotation_added: Callable[[int], None],
+        start_ocr: Callable[[], None] | None = None,
         store: AiSettingsStore | None = None,
         keystore: KeyStore | None = None,
         client_factory: ClientFactory | None = None,
@@ -77,6 +80,7 @@ class AiAssistant(QObject):
         self._show_panel = show_panel
         self._notify = notify
         self._on_annotation_added = on_annotation_added
+        self._start_ocr = start_ocr
         self._store = store or AiSettingsStore()
         self._keystore = keystore or default_keystore()
         self._client_factory: ClientFactory = client_factory or (lambda b, k: ChatClient(b, k))
@@ -89,6 +93,9 @@ class AiAssistant(QObject):
         self._note_anchor: tuple[int, float, float] | None = None
         self._encrypted_ok = False
         self._texts: list[str] | None = None
+        # 本次会话的 OCR 识别结果（页 → 文字）：扫描页没有文字层时用它代替，不必先另存
+        self._ocr: dict[int, str] = {}
+        self._ocr_page_count = 0
 
         panel.askRequested.connect(self.ask)
         panel.actionRequested.connect(self.run_action)
@@ -162,17 +169,32 @@ class AiAssistant(QObject):
         self._note_anchor = None
         self._encrypted_ok = False
         self._texts = None
+        self._ocr.clear()
         self._panel.clear()
         self._panel.set_page_count(self._controller.page_count)
 
     def invalidate_text(self) -> None:
         """文档内容变了（删页 / 合并 / OCR 等）：下次重新取文字。"""
         self._texts = None
+        if self._controller.page_count != self._ocr_page_count:
+            self._ocr.clear()  # 页数变了，页码已对不上 OCR 结果
         self._panel.set_page_count(self._controller.page_count)
+
+    def add_ocr_text(self, page: int, text: str) -> None:
+        """收下一页 OCR 结果：该页没有文字层时，AI 用它代替（只在内存里，不改文件）。"""
+        if not text.strip():
+            return
+        self._ocr[page] = text
+        self._ocr_page_count = self._controller.page_count
+        self._texts = None
 
     def _page_texts(self) -> list[str]:
         if self._texts is None or len(self._texts) != self._controller.page_count:
-            self._texts = self._controller.page_texts()
+            texts = self._controller.page_texts()
+            for page, text in self._ocr.items():
+                if 0 <= page < len(texts) and len(texts[page].strip()) < _SCANNED_PAGE_CHARS:
+                    texts[page] = text
+            self._texts = texts
         return self._texts
 
     # ------------------------------------------------------------------ 动作入口
@@ -319,7 +341,16 @@ class AiAssistant(QObject):
         pages = self._page_texts()
         if not any(p.strip() for p in pages):
             self._show_panel()
-            self._notify("文档没有可提取的文字（扫描件请先 OCR 并另存）")
+            if self._start_ocr is None:
+                self._notify("文档没有可提取的文字（像是扫描件，可先用「工具 → OCR」识别）")
+                return None
+            ok, _ = self.confirm(
+                "没有可读的文字",
+                "这份文档没有文字层（像是扫描件）。现在用 OCR 识别全部页吗？\n\n"
+                "识别在本机进行；结果直接交给 AI 助读使用，不会改动文件。识别完成后请再提问一次。",
+            )
+            if ok:
+                self._start_ocr()
             return None
         return pages
 

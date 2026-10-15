@@ -230,6 +230,7 @@ class MainWindow(QMainWindow):
             show_panel=lambda: self._set_ai_panel_visible(True),
             notify=self.status_bar.show_message,
             on_annotation_added=self._after_annotation_change,
+            start_ocr=self._on_ocr_all_pages if OCR_AVAILABLE else None,
         )
         self._connect_signals()
         self._theme.changed.connect(self._on_theme_changed)
@@ -1756,6 +1757,7 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_page_done(self, result) -> None:  # type: ignore[no-untyped-def]
         self._ocr_results[result.page_num] = result.text
+        self._ai.add_ocr_text(result.page_num, result.text)
 
     def _on_ocr_progress(self, done: int, total: int) -> None:
         if self._ocr_progress is not None and total > 0:
