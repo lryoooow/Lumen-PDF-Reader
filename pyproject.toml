@@ -42,11 +42,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lryoooow/PDF-Reader"
-Documentation = "https://github.com/lryoooow/PDF-Reader/tree/main/docs"
-Repository = "https://github.com/lryoooow/PDF-Reader"
-Changelog = "https://github.com/lryoooow/PDF-Reader/blob/main/CHANGELOG.md"
-Issues = "https://github.com/lryoooow/PDF-Reader/issues"
+Homepage = "https://github.com/lryoooow/Lumen-PDF-Reader"
+Documentation = "https://github.com/lryoooow/Lumen-PDF-Reader/tree/main/docs"
+Repository = "https://github.com/lryoooow/Lumen-PDF-Reader"
+Changelog = "https://github.com/lryoooow/Lumen-PDF-Reader/blob/main/CHANGELOG.md"
+Issues = "https://github.com/lryoooow/Lumen-PDF-Reader/issues"
 
 [project.gui-scripts]
 pdfreader = "pdfreader.main:main"

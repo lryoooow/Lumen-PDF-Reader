@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/lryoooow/PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.2-6366F1"></a>
+  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.2-6366F1"></a>
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows-0078D4">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/许可证-AGPL--3.0-7C3AED"></a>
   <img alt="免费" src="https://img.shields.io/badge/价格-免费-10B981">
@@ -96,7 +96,7 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 
 ## 下载安装
 
-1. 前往 [Releases](https://github.com/lryoooow/PDF-Reader/releases) 下载最新的 `PDFReader-Setup-<版本>.exe`；
+1. 前往 [Releases](https://github.com/lryoooow/Lumen-PDF-Reader/releases) 下载最新的 `PDFReader-Setup-<版本>.exe`；
 2. 双击运行安装向导，按提示完成安装；
 3. 打开 Lumen，或在任意 PDF 上右键 →「打开方式」选择 Lumen。
 
