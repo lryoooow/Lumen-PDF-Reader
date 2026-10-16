@@ -31,7 +31,7 @@ OUT = Path(__file__).resolve().parent.parent / "src" / "pdfreader" / "resources"
 
 def main() -> int:
     QApplication(sys.argv[:1])
-    renderer = QSvgRenderer(QByteArray(_app_logo_svg("#6366F1", "#7C3AED")))
+    renderer = QSvgRenderer(QByteArray(_app_logo_svg("#C96A49", "#B75B3C")))
     img = QImage(256, 256, QImage.Format.Format_ARGB32)
     img.fill(0)
     painter = QPainter(img)
