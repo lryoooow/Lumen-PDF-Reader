@@ -20,7 +20,8 @@ from pdfreader.engines.types import Rect
 from pdfreader.main import create_application
 
 out = Path(sys.argv[1]); out.mkdir(parents=True, exist_ok=True)
-paper = tmp / "Hierarchical Attention.pdf"
+lib_dir = tmp / "研究论文"; lib_dir.mkdir()
+paper = lib_dir / "Hierarchical Attention.pdf"
 d = pymupdf.open()
 titles = ["Hierarchical Attention for Long-Document Understanding", "2 Related Work", "3 Method", "4 Experiments", "5 Conclusion", "References"]
 for i in range(6):
@@ -33,7 +34,22 @@ d[5].insert_text((72, 220), "[1] Vaswani A., et al. Attention is all you need. N
 w = [x for x in d[0].get_text("words") if x[4] == "[1]."][0]
 d[0].insert_link({"kind": pymupdf.LINK_GOTO, "from": pymupdf.Rect(w[0], w[1], w[2] - 3, w[3]), "page": 5, "to": pymupdf.Point(72, 210)})
 d.set_toc([[1, "摘要", 1], [1, "1 引言", 1], [1, "2 相关工作", 2], [2, "2.1 视觉 Transformer", 2], [1, "3 方法", 3], [2, "3.1 层级注意力", 3], [1, "4 实验", 4], [1, "5 结论", 5], [1, "参考文献", 6]])
+d.set_metadata({"title": titles[0], "author": "Chen, Li, Wang"})
 d.save(str(paper)); d.close()
+
+# 文献库里再放几篇（只有标题页），卡片才有内容
+others = []
+for name, title, author, n in [
+    ("Diffusion Survey.pdf", "Diffusion Models: A Comprehensive Survey", "Yang et al.", 12),
+    ("Sparse Transformers.pdf", "Generating Long Sequences with Sparse Transformers", "Child et al.", 10),
+    ("Retrieval Augmented.pdf", "Retrieval-Augmented Generation for Knowledge-Intensive NLP", "Lewis et al.", 8),
+]:
+    o = pymupdf.open()
+    for _ in range(n):
+        o.new_page().insert_text((72, 90), title, fontsize=15)
+    o.set_metadata({"title": title, "author": author})
+    o.save(str(lib_dir / name)); o.close()
+    others.append(lib_dir / name)
 
 app = create_application([sys.argv[0]])
 motion.set_enabled(True)
@@ -44,11 +60,14 @@ def pump(s=0.9):
         app.processEvents()
 
 win = MainWindow(); win.resize(1360, 860); win.show()
-win.welcome.set_recent([str(paper)])
-win.welcome.showEvent(None) if False else None
-pump(); win.grab().save(str(out / "01_welcome_light.png"))
-
+for o in others:
+    win.open_path(o); pump(0.3)
 win.open_path(paper); pump()
+win._on_favorite_toggled(str(others[0]))
+win._go_home(); pump(1.2)
+win.grab().save(str(out / "01_library_light.png"))
+win._return_to_reader(); pump()
+
 words = win._controller.get_words(0)
 cn = [x for x in words if x.text in "层级注意力"]
 win._on_annot_highlight(0, (Rect(cn[0].rect.x0, cn[0].rect.y0, cn[-1].rect.x1, cn[-1].rect.y1),))

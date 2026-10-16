@@ -287,30 +287,6 @@ QSlider#ZoomSlider::handle:horizontal {
 }
 QSlider#ZoomSlider::handle:horizontal:hover { background: $accent_hover; }
 
-/* ================================================================ 欢迎页 */
-#WelcomeRoot { background-color: $window; }
-QLabel#WelcomeTitle { font-family: $serif_family; font-size: 36px; color: $text; }
-QLabel#WelcomeSubtitle { font-size: 14px; color: $text_muted; }
-QPushButton#DropZone {
-    background: transparent;
-    border: 2px dashed $border_strong;
-    border-radius: 16px;
-    padding: 0px;
-}
-QPushButton#DropZone:hover { border-color: $accent_hover; background-color: $accent_soft; }
-QLabel#DropZoneTitle { font-size: 14px; font-weight: 500; color: $text; }
-QLabel#DropZoneHint { font-size: 12px; color: $text_muted; }
-QLabel#RecentHeader { font-size: 11px; color: $text_muted; }
-QPushButton#RecentRow {
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    padding: 10px 12px;
-    text-align: left;
-    font-size: 13px;
-}
-QPushButton#RecentRow:hover { background-color: $surface_hover; }
-
 /* ================================================================ 文献库首页（Studio） */
 #LibraryRoot, #StudioMain, #StudioScroll, #StudioScrollBody, #StudioContent { background-color: $window; }
 #StudioNav { background-color: $nav; }

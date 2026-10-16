@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.2-6366F1"></a>
+  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.3-C96A49"></a>
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows-0078D4">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/许可证-AGPL--3.0-7C3AED"></a>
   <img alt="免费" src="https://img.shields.io/badge/价格-免费-10B981">
@@ -103,7 +103,7 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 目前支持 **Windows 10 / 11（64 位）**，无需安装 Python 或其他依赖。
 
 <p align="center">
-  <img src="docs/images/welcome.png" alt="Lumen 欢迎页" width="760">
+  <img src="docs/images/library.png" alt="Lumen 文献库首页" width="760">
 </p>
 
 ## 路线图
@@ -116,7 +116,7 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 - [x] 多标签页同时打开多篇文献
 - [ ] 全文对照翻译
 - [ ] 双页 / 书本视图
-- [ ] 文献库：收藏、分类与检索
+- [x] 文献库首页：收藏、按文件夹分组与检索
 
 ## 参与贡献
 
