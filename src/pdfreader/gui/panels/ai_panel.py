@@ -5,17 +5,15 @@
     AI 助读                       [⚙] [清空] [×]
     ● DeepSeek · deepseek-chat（或「本机」）
     [总结全文] [推荐问题] [更多动作 ▾] [框选提问]
-    ┌ 对话记录（Markdown 渲染；[p.N] 可点击跳页；推荐问题可点击直接提问）┐
+    ┌ 对话（气泡：用户在右、AI 在左；引用原文折叠在用户气泡里，见 ai_chat）┐
     └──────────────────────────────────────────────────────────────────┘
-    思考中… / 正在生成…               [复制] [存为批注]
+    ┃ 选中内容 · 第 3 页 · 128 字  ▾ ×   ← 「问 AI…」引用的原文（随下一问发送）
     ┌ 输入问题（Enter 发送，Shift+Enter 换行）            [发送 / 停止] ┐
 
 面板只负责展示与收集输入；请求的组装、隐私确认与线程管理在 :class:`~pdfreader.gui.ai_assistant.AiAssistant`。
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass, field
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QGuiApplication, QKeyEvent, QTextCursor
@@ -25,14 +23,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPlainTextEdit,
-    QPushButton,
-    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from pdfreader.gui.panels.ai_chat import ChatView, ContextCard, Turn
 from pdfreader.gui.theme import get_theme
+from pdfreader.gui.widgets import motion
 from pdfreader.services.ai.context import link_citations
 from pdfreader.services.ai.prompts import PRESET_ACTIONS
 
@@ -41,18 +39,7 @@ __all__ = ["AI_PANEL_WIDTH", "AiPanel"]
 AI_PANEL_WIDTH = 380
 # 流式输出时合并刷新的间隔（毫秒）：逐 token 重排整段 Markdown 太费
 _RENDER_INTERVAL = 80
-
-
-@dataclass
-class _Turn:
-    title: str  # 「你」的提问或动作名
-    quote: str = ""  # 引用的原文（划词翻译 / 解释）
-    answer: str = ""
-    thinking: bool = False  # 只收到思考内容、正文还没开始
-    error: str = ""
-    done: bool = False
-    cancelled: bool = False
-    questions: list[str] = field(default_factory=list)  # 推荐问题（可点击）
+_PLACEHOLDER = "就这篇文档提问…（Enter 发送，Shift+Enter 换行）"
 
 
 class _InputBox(QPlainTextEdit):
@@ -100,7 +87,9 @@ class AiPanel(QFrame):
         self.setObjectName("AiPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._theme = get_theme()
-        self._turns: list[_Turn] = []
+        self._turns: list[Turn] = []
+        self._attachment: ContextCard | None = None
+        self._attachment_label = ""
         self._page_count = 0
         self._busy = False
         self._configured = False
@@ -153,25 +142,19 @@ class AiPanel(QFrame):
         actions.addStretch(1)
         root.addLayout(actions)
 
-        # ---- 对话记录
-        self.transcript = QTextBrowser()
-        self.transcript.setObjectName("AiTranscript")
-        self.transcript.setOpenLinks(False)
-        self.transcript.setOpenExternalLinks(False)
-        self.transcript.anchorClicked.connect(self._on_anchor)
-        root.addWidget(self.transcript, stretch=1)
+        # ---- 对话（气泡）
+        self.chat = ChatView()
+        self.chat.linkClicked.connect(lambda href: self._on_anchor(QUrl(href)))
+        self.chat.questionClicked.connect(lambda i: self._on_anchor(QUrl(f"ask:{i}")))
+        self.chat.copyRequested.connect(self._copy_turn)
+        self.chat.noteRequested.connect(self._save_turn)
+        self.chat.settingsRequested.connect(self.settingsRequested)
+        root.addWidget(self.chat, stretch=1)
 
-        # ---- 状态 + 对最后一条回答的操作
-        foot = QHBoxLayout()
-        foot.setSpacing(6)
-        self.status_label = QLabel()
-        self.status_label.setObjectName("AiStatus")
-        foot.addWidget(self.status_label, stretch=1)
-        self.copy_btn = self._link_button("复制", self._copy_last)
-        self.note_btn = self._link_button("存为批注", self._save_last)
-        foot.addWidget(self.copy_btn)
-        foot.addWidget(self.note_btn)
-        root.addLayout(foot)
+        # ---- 「问 AI…」引用的原文（折叠卡片，随下一问发送）
+        self._attach_slot = QVBoxLayout()
+        self._attach_slot.setContentsMargins(0, 0, 0, 0)
+        root.addLayout(self._attach_slot)
 
         # ---- 输入
         box = QFrame()
@@ -181,7 +164,7 @@ class AiPanel(QFrame):
         box_lay.setSpacing(6)
         self.input = _InputBox()
         self.input.setObjectName("AiInput")
-        self.input.setPlaceholderText("就这篇文档提问…（Enter 发送，Shift+Enter 换行）")
+        self.input.setPlaceholderText(_PLACEHOLDER)
         self.input.setFixedHeight(64)
         self.input.submitted.connect(self._on_send)
         self.send_btn = QToolButton()
@@ -195,8 +178,8 @@ class AiPanel(QFrame):
 
         self._theme.changed.connect(self._on_theme_changed)
         self._refresh_icons()
+        self.chat.set_configured(False)
         self._update_controls()
-        self._render()
 
     # ------------------------------------------------------------------ 构建辅助
     def _icon_button(self, icon: str, tip: str, slot) -> QToolButton:  # type: ignore[no-untyped-def]
@@ -218,16 +201,9 @@ class AiPanel(QFrame):
             btn.clicked.connect(slot)
         return btn
 
-    def _link_button(self, text: str, slot) -> QPushButton:  # type: ignore[no-untyped-def]
-        btn = QPushButton(text)
-        btn.setObjectName("LinkButton")
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(slot)
-        return btn
-
     def _on_theme_changed(self, _name: str) -> None:
         self._refresh_icons()
-        self._render()
+        self.chat.refresh(self._turns, self._page_count)
 
     def _refresh_icons(self) -> None:
         for btn in (self.settings_btn, self.clear_btn, self.close_btn):
@@ -244,7 +220,7 @@ class AiPanel(QFrame):
         return self._busy
 
     @property
-    def turns(self) -> list[_Turn]:
+    def turns(self) -> list[Turn]:
         return self._turns
 
     def set_provider_label(self, text: str) -> None:
@@ -252,24 +228,27 @@ class AiPanel(QFrame):
 
     def set_configured(self, configured: bool) -> None:
         self._configured = configured
+        self.chat.set_configured(configured)
         self._update_controls()
-        self._render()
 
     def set_page_count(self, count: int) -> None:
         """有效页数（超出范围的 [p.N] 不做成链接，防止模型编造的页码乱跳）。"""
         self._page_count = count
 
-    def begin_turn(self, title: str, quote: str = "") -> None:
-        self._turns.append(_Turn(title=title, quote=quote, thinking=False))
+    def begin_turn(
+        self, title: str, quote: str = "", *, label: str = "", image: bytes = b""
+    ) -> None:
+        """新一轮：``title`` 是用户气泡里的话，``quote`` / ``image`` 是折叠显示的引用。"""
+        self._render_timer.stop()
+        turn = Turn(title=title, quote=quote, label=label, image=image)
+        self._turns.append(turn)
         self._set_busy(True)
-        self.status_label.setText("正在请求…")
-        self._render()
+        self.chat.add_turn(turn, self._page_count)
 
     def append_reasoning(self, _text: str) -> None:
         turn = self._current()
-        if turn is not None and not turn.answer:
+        if turn is not None and not turn.answer and not turn.thinking:
             turn.thinking = True
-            self.status_label.setText("模型思考中…")
             self._schedule()
 
     def append_delta(self, text: str) -> None:
@@ -278,7 +257,6 @@ class AiPanel(QFrame):
             return
         turn.thinking = False
         turn.answer += text
-        self.status_label.setText("正在生成…")
         self._schedule()
 
     def finish_turn(self, text: str | None = None, *, questions: list[str] | None = None) -> None:
@@ -291,7 +269,6 @@ class AiPanel(QFrame):
         turn.done = True
         turn.thinking = False
         self._set_busy(False)
-        self.status_label.setText("")
         self._render()
 
     def fail_turn(self, message: str) -> None:
@@ -302,7 +279,6 @@ class AiPanel(QFrame):
         turn.done = True
         turn.thinking = False
         self._set_busy(False)
-        self.status_label.setText("请求失败")
         self._render()
 
     def cancel_turn(self) -> None:
@@ -313,20 +289,50 @@ class AiPanel(QFrame):
         turn.done = True
         turn.thinking = False
         self._set_busy(False)
-        self.status_label.setText("已停止")
         self._render()
 
     def clear(self) -> None:
+        self._render_timer.stop()
         self._turns.clear()
         self._set_busy(False)
-        self.status_label.setText("")
-        self._render()
+        self.chat.clear()
+        self.clear_attachment()
+        self._update_controls()
 
     def prefill(self, text: str) -> None:
-        """把文字放进输入框（右键「问 AI…」引用选中内容），光标置于末尾。"""
+        """把文字放进输入框，光标置于末尾。"""
         self.input.setPlainText(text)
         self.input.moveCursor(QTextCursor.MoveOperation.End)
         self.input.setFocus()
+
+    # ------------------------------------------------------------------ 引用（问 AI…）
+    def attach_context(self, text: str, label: str = "") -> None:
+        """右键「问 AI…」：选中的原文折叠在输入框上方，随下一次提问一起发送。"""
+        self.clear_attachment()
+        text = text.strip()
+        if text:
+            card = ContextCard(text, label, closable=True)
+            card.closed.connect(self.clear_attachment)
+            self._attach_slot.addWidget(card)
+            self._attachment = card
+            self._attachment_label = label
+            self.input.setPlaceholderText("针对引用的内容提问…（Enter 发送）")
+            motion.fade_up(card, duration=220)
+        self.input.setFocus()
+
+    def attachment(self) -> tuple[str, str]:
+        """当前引用（原文, 来源）；没有时为两个空串。"""
+        if self._attachment is None:
+            return "", ""
+        return self._attachment.text, self._attachment_label
+
+    def clear_attachment(self) -> None:
+        card, self._attachment = self._attachment, None
+        self._attachment_label = ""
+        if card is not None:
+            self._attach_slot.removeWidget(card)
+            card.deleteLater()
+        self.input.setPlaceholderText(_PLACEHOLDER)
 
     def last_answer(self) -> str:
         for turn in reversed(self._turns):
@@ -335,10 +341,26 @@ class AiPanel(QFrame):
         return ""
 
     def transcript_markdown(self) -> str:
-        return self._markdown()
+        """整段对话的 Markdown（动作 / 提问、引用、回答与推荐问题）。"""
+        parts: list[str] = []
+        for turn in self._turns:
+            parts.append(f"**{turn.title}**")
+            if turn.quote:
+                parts.append("> " + turn.quote.strip().replace("\n", "\n> "))
+            if turn.questions:
+                parts.append("\n".join(f"- {q}" for q in turn.questions))
+            elif turn.answer:
+                parts.append(link_citations(turn.answer, self._page_count))
+            if turn.error:
+                parts.append(f"⚠ {turn.error}")
+        return "\n\n".join(parts)
+
+    def transcript_text(self) -> str:
+        """当前可见内容的纯文本（空状态说明或全部气泡）。"""
+        return self.chat.plain_text()
 
     # ------------------------------------------------------------------ 内部
-    def _current(self) -> _Turn | None:
+    def _current(self) -> Turn | None:
         if self._turns and not self._turns[-1].done:
             return self._turns[-1]
         return None
@@ -354,63 +376,18 @@ class AiPanel(QFrame):
             btn.setEnabled(enabled)
         self.send_btn.setEnabled(self._configured)
         self.send_btn.setToolTip("停止生成" if self._busy else "发送（Enter）")
-        has_answer = bool(self.last_answer()) and not self._busy
-        self.copy_btn.setEnabled(has_answer)
-        self.note_btn.setEnabled(has_answer)
         self.clear_btn.setEnabled(bool(self._turns) and not self._busy)
 
     def _schedule(self) -> None:
         if not self._render_timer.isActive():
             self._render_timer.start()
 
-    def _markdown(self) -> str:
-        if not self._configured and not self._turns:
-            return (
-                "### 让 AI 帮你读论文\n\n"
-                "- 划词**翻译 / 解释**（右键选中的文字）\n"
-                "- 一键**结构化总结**，要点带 [页码] 可点击回原文\n"
-                "- 就全文**提问**，框选**公式 / 图表**让 AI 讲解\n\n"
-                "支持 DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenAI、Gemini、Ollama（本机）"
-                "等任何 OpenAI 兼容服务。\n\n"
-                "[配置模型 →](action:settings)\n\n"
-                "> AI 是**可选的联网功能**：只有你主动发起时，才会把所选内容发送给你配置的服务；"
-                "API Key 存在系统凭据管理器里。"
-            )
-        if not self._turns:
-            return (
-                "选中文字后右键可**翻译 / 解释**；也可以点上方的「总结全文」「推荐问题」，"
-                "或直接在下方提问。回答里的 [p.N] 可点击跳回原文。"
-            )
-        parts: list[str] = []
-        for turn in self._turns:
-            parts.append(f"**{turn.title}**")
-            if turn.quote:
-                quote = turn.quote.strip().replace("\n", " ")
-                if len(quote) > 280:
-                    quote = quote[:279] + "…"
-                parts.append(f"> {quote}")
-            if turn.questions:
-                parts.append("\n".join(f"- [{q}](ask:{i})" for i, q in enumerate(turn.questions)))
-            elif turn.answer:
-                parts.append(link_citations(turn.answer, self._page_count))
-            if turn.thinking:
-                parts.append("*思考中…*")
-            elif not turn.done and not turn.answer:
-                parts.append("*…*")
-            if turn.error:
-                parts.append(f"⚠ {turn.error}".replace("\n", "  \n"))
-            if turn.cancelled:
-                parts.append("*（已停止）*")
-            parts.append("---")
-        return "\n\n".join(parts)
-
     def _render(self) -> None:
-        bar = self.transcript.verticalScrollBar()
-        at_bottom = bar.value() >= bar.maximum() - 4
-        self.transcript.setMarkdown(self._markdown())
-        if at_bottom or self._busy:
-            self.transcript.moveCursor(QTextCursor.MoveOperation.End)
-            bar.setValue(bar.maximum())
+        """重排最后一轮（流式输出只动正在生成的那个气泡）。"""
+        self._render_timer.stop()
+        if self._turns:
+            index = len(self._turns) - 1
+            self.chat.show_turn(index, self._turns[index], self._page_count, last=True)
         self._update_controls()
 
     def _on_anchor(self, url: QUrl) -> None:
@@ -452,14 +429,13 @@ class AiPanel(QFrame):
         else:
             self._on_send()
 
-    def _copy_last(self) -> None:
-        text = self.last_answer()
+    def _copy_turn(self, index: int) -> None:
+        text = self._turns[index].answer if 0 <= index < len(self._turns) else ""
         clipboard = QGuiApplication.clipboard()
         if text and clipboard is not None:
             clipboard.setText(text)
-            self.status_label.setText("已复制")
+            self.chat.flash_copied(index)
 
-    def _save_last(self) -> None:
-        text = self.last_answer()
-        if text:
-            self.saveNoteRequested.emit(text)
+    def _save_turn(self, index: int) -> None:
+        if 0 <= index < len(self._turns) and self._turns[index].answer and not self._busy:
+            self.saveNoteRequested.emit(self._turns[index].answer)

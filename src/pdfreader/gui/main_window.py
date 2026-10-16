@@ -2066,15 +2066,16 @@ class MainWindow(QMainWindow):
         self._ai.explain(text, page, rect)
 
     def _on_ai_requested(self, kind: str) -> None:
-        """右键菜单：AI 翻译 / 解释 / 问 AI（把选中文字引用进输入框）。"""
+        """右键菜单：AI 翻译 / 解释 / 问 AI（选中文字折叠在输入框上方，随下一问发送）。"""
         if kind == "translate":
             self._on_translate()
         elif kind == "explain":
             self._on_ai_explain()
         elif kind == "ask":
-            text, _page, _rect = self._selection_context()
+            text, page, _rect = self._selection_context()
             self._set_ai_panel_visible(True)
-            self.ai_panel.prefill(f"关于「{text}」：" if text else "")
+            label = f"第 {page + 1} 页" if page is not None else ""
+            self.ai_panel.attach_context(text, label)
 
     def _start_capture(self) -> None:
         if not self._controller.has_document:

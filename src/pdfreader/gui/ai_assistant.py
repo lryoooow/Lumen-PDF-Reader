@@ -38,6 +38,8 @@ _SCANNED_PAGE_CHARS = 20
 # 框选区域渲染：目标最长边像素（够看清公式，又不至于图片过大）
 _CAPTURE_MAX_SIDE = 1600
 _CAPTURE_MAX_ZOOM = 4.0
+# 写进对话历史的引用原文最多这么长（历史每轮都会重发）
+_HISTORY_QUOTE_CHARS = 1500
 
 Message = dict[str, Any]
 
@@ -101,7 +103,7 @@ class AiAssistant(QObject):
         self._worker: AiWorker | None = None
         self._retired: list[AiWorker] = []
         self._kind = "chat"
-        self._question = ""
+        self._remember = ""  # 本轮完成后写进对话历史的「用户这句话」；空 = 不记
         self._history: list[Message] = []
         self._note_anchor: tuple[int, float, float] | None = None
         self._encrypted_ok = False
@@ -241,7 +243,13 @@ class AiAssistant(QObject):
             return
         self._set_anchor(page, rect)
         language = self._settings.target_language
-        self._start(f"翻译 → {language}", text, prompts.translate_messages(text, language))
+        self._start(
+            f"翻译成{language}",
+            text,
+            prompts.translate_messages(text, language),
+            label=_page_label(page),
+            remember=f"请把这段原文翻译成{language}：\n{_clip(text)}",
+        )
 
     def explain(self, text: str, page: int | None = None, rect: Rect | None = None) -> None:
         text = text.strip()
@@ -254,7 +262,13 @@ class AiAssistant(QObject):
             top = max(0.0, rect.y0 - 80) if rect is not None else None
             surrounding = self._controller.text_excerpt(page, top, max_chars=900)
         messages = prompts.explain_messages(text, surrounding, self._settings.target_language)
-        self._start("解释", text, messages)
+        self._start(
+            "解释这段内容",
+            text,
+            messages,
+            label=_page_label(page),
+            remember=f"请解释这段原文：\n{_clip(text)}",
+        )
 
     def run_action(self, key: str) -> None:
         if key == "summary":
@@ -281,7 +295,7 @@ class AiAssistant(QObject):
             context, self._settings.target_language, truncated=truncated
         )
         self._note_anchor = None
-        self._start("总结全文", "", messages)
+        self._start("总结全文", "", messages, remember="请对这篇文档做结构化总结。")
 
     def tldr(self) -> None:
         """三句话以内的全文速览（TL;DR），每句带页码。"""
@@ -293,7 +307,7 @@ class AiAssistant(QObject):
             context, self._settings.target_language, truncated=truncated
         )
         self._note_anchor = None
-        self._start("TL;DR 速览", "", messages)
+        self._start("TL;DR 速览", "", messages, remember="用三句话概括这篇文档（TL;DR）。")
 
     def speed_read(self, page: int | None = None) -> None:
         """速读高亮：让 AI 挑出一页里最值得读的句子，在页面上标出来（不改文件）。"""
@@ -309,7 +323,7 @@ class AiAssistant(QObject):
         count = pick_count(len(sentences))
         messages = prompts.speedread_messages([s.text for s in sentences], count)
         self._note_anchor = None
-        if self._start("速读高亮", f"第 {page + 1} 页", messages, kind="speedread"):
+        if self._start(f"速读高亮 · 第 {page + 1} 页", "", messages, kind="speedread"):
             self._speed_request = (page, sentences)
 
     def clear_marks(self) -> None:
@@ -332,17 +346,21 @@ class AiAssistant(QObject):
         self._start("推荐问题", "", messages, kind="suggest")
 
     def ask(self, question: str, *, title: str | None = None) -> None:
+        """就全文提问；面板上有「问 AI…」引用的原文时一起发送（问题针对它）。"""
         question = question.strip()
         if not question:
             return
         pages = self._doc_pages()
         if pages is None:
             return
-        context, _ = question_context(pages, question)
+        quote, label = self._panel.attachment()
+        context, _ = question_context(pages, f"{question} {quote[:500]}".strip())
         messages = prompts.ask_messages(
-            question, context, self._settings.target_language, self._history
+            question, context, self._settings.target_language, self._history, quote=quote
         )
-        self._start(title or "提问", question, messages, kind="ask", question=question)
+        remember = f"关于这段原文：\n{_clip(quote)}\n\n{question}" if quote else question
+        if self._start(title or question, quote, messages, label=label, remember=remember):
+            self._panel.clear_attachment()
 
     def explain_area(self, page: int, rect: Rect) -> None:
         """框选区域：模型支持图片就发截图，否则退回区域内的文字。"""
@@ -352,15 +370,21 @@ class AiAssistant(QObject):
         provider = self._settings.active()
         hint = self._controller.text_in_rect(page, rect)
         language = self._settings.target_language
-        quote = f"第 {page + 1} 页框选区域"
+        label = _page_label(page)
         if provider is not None and provider.vision:
             png = self._capture_png(page, rect)
             if png:
                 encoded = base64.b64encode(png).decode("ascii")
+                remember = f"请解释{label}框选的图表 / 公式。"
+                if hint.strip():
+                    remember += f"\n区域内的文字：{_clip(hint)}"
                 self._start(
-                    "解释图表 / 公式",
-                    quote,
+                    "解释框选的图表 / 公式",
+                    "",
                     prompts.explain_image_messages(encoded, hint, language),
+                    label=label,
+                    image=png,
+                    remember=remember,
                 )
                 return
         if not hint.strip():
@@ -370,7 +394,13 @@ class AiAssistant(QObject):
             )
             return
         surrounding = self._controller.text_excerpt(page, max(0.0, rect.y0 - 80), max_chars=900)
-        self._start("解释", hint, prompts.explain_messages(hint, surrounding, language))
+        self._start(
+            "解释框选的内容",
+            hint,
+            prompts.explain_messages(hint, surrounding, language),
+            label=label,
+            remember=f"请解释这段原文：\n{_clip(hint)}",
+        )
 
     def stop(self) -> None:
         worker = self._worker
@@ -529,8 +559,11 @@ class AiAssistant(QObject):
         messages: list[Message],
         *,
         kind: str = "chat",
-        question: str = "",
+        label: str = "",
+        image: bytes = b"",
+        remember: str = "",
     ) -> bool:
+        """发起一轮请求。``remember`` 非空时，回答完成后连同它写进对话历史，后续提问可以接着聊。"""
         provider = self._ensure_ready()
         if provider is None:
             return False
@@ -549,10 +582,10 @@ class AiAssistant(QObject):
         worker.finished.connect(self._on_thread_finished)
         self._worker = worker
         self._kind = kind
-        self._question = question
+        self._remember = remember
         self._show_panel()
         self._panel.set_page_count(self._controller.page_count)
-        self._panel.begin_turn(title, quote)
+        self._panel.begin_turn(title, quote, label=label, image=image)
         worker.start()
         return True
 
@@ -591,8 +624,8 @@ class AiAssistant(QObject):
                 self._panel.finish_turn(text)
             return
         self._panel.finish_turn(text)
-        if self._kind == "ask" and text.strip():
-            self._history.append({"role": "user", "content": self._question})
+        if self._remember and text.strip():
+            self._history.append({"role": "user", "content": self._remember})
             self._history.append({"role": "assistant", "content": text})
             del self._history[: -prompts.MAX_HISTORY_MESSAGES]
 
@@ -666,6 +699,15 @@ class AiAssistant(QObject):
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         pixmap.copy(area).save(buffer, "PNG")
         return bytes(QByteArray(buffer.data()).data())
+
+
+def _page_label(page: int | None) -> str:
+    return f"第 {page + 1} 页" if page is not None else ""
+
+
+def _clip(text: str, limit: int = _HISTORY_QUOTE_CHARS) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _md_escape(text: str) -> str:

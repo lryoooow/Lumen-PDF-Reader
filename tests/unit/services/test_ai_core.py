@@ -268,6 +268,9 @@ def test_prompt_builders() -> None:
     assert a[0]["role"] == "system"
     assert len(a) == 1 + prompts.MAX_HISTORY_MESSAGES + 1 - 2  # 末尾两条无效历史被丢弃
     assert "问题：为什么？" in a[-1]["content"]
+    assert "用户引用的原文" not in a[-1]["content"]
+    quoted = prompts.ask_messages("为什么？", "ctx", "中文", quote="  原文一段  ")
+    assert "用户引用的原文（问题针对这段）：\n原文一段\n\n问题：为什么？" in quoted[-1]["content"]
 
     q = prompts.suggest_messages("ctx", "中文")
     assert "5 个" in q[-1]["content"]

@@ -157,7 +157,8 @@ class TestPanel:
         panel = AiPanel()
         qtbot.addWidget(panel)
         panel.set_configured(False)
-        assert "配置模型" in panel.transcript.toPlainText()
+        assert not panel.chat.empty.isHidden() and not panel.chat.empty.setup_btn.isHidden()
+        assert "配置模型" in panel.chat.empty.setup_btn.text()
         assert not panel.summary_btn.isEnabled()
         with qtbot.waitSignal(panel.settingsRequested):
             panel._on_anchor(QUrl("action:settings"))
@@ -178,8 +179,10 @@ class TestPanel:
         with qtbot.waitSignal(panel.citationClicked) as blocker:
             panel._on_anchor(QUrl("cite:2"))
         assert blocker.args == [2]
+        user, ai = panel.chat.bubbles[-1]
+        assert user.context is not None and "什么是注意力？" in user.context.text
         with qtbot.waitSignal(panel.saveNoteRequested):
-            panel.note_btn.click()
+            ai.note_btn.click()
 
     def test_questions_fail_cancel_clear(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         panel = AiPanel()
@@ -192,10 +195,10 @@ class TestPanel:
         assert blocker.args == ["问题二？"]
         panel.begin_turn("x")
         panel.fail_turn("API Key 无效")
-        assert "API Key 无效" in panel.transcript.toPlainText()
+        assert "API Key 无效" in panel.transcript_text()
         panel.begin_turn("y")
         panel.cancel_turn()
-        assert "已停止" in panel.transcript.toPlainText()
+        assert "已停止" in panel.transcript_text()
         panel.clear()
         assert panel.turns == []
 
@@ -339,6 +342,38 @@ class TestAssistant:
         h.panel.citationClicked.emit(2)
         assert h.navigated == [(1, None)]
 
+    def test_ask_sends_attached_quote(self, make, qtbot) -> None:  # type: ignore[no-untyped-def]
+        server = FakeServer("答")
+        h = make(server=server)
+        h.panel.attach_context("quadratic cost of self-attention", "第 2 页")
+        h.ai.ask("为什么是二次方？")
+        h.wait(qtbot)
+        sent = server.last_user()
+        assert "用户引用的原文" in sent and "quadratic cost of self-attention" in sent
+        assert h.panel.attachment() == ("", "")  # 发出后引用收起
+        turn = h.panel.turns[-1]
+        assert turn.title == "为什么是二次方？" and turn.quote.startswith("quadratic")
+        assert turn.label == "第 2 页"
+        h.ai.ask("再举个例子")
+        h.wait(qtbot)
+        messages = server.requests[-1]["body"]["messages"]
+        assert "quadratic cost" in messages[1]["content"]  # 引用写进了历史
+        assert "用户引用的原文" not in messages[-1]["content"]
+
+    def test_translate_then_follow_up(self, make, qtbot) -> None:  # type: ignore[no-untyped-def]
+        server = FakeServer("注意力", "答")
+        h = make(server=server)
+        h.ai.translate("attention", 0, Rect(72, 66, 200, 82))
+        h.wait(qtbot)
+        turn = h.panel.turns[-1]
+        assert turn.title.startswith("翻译成") and turn.quote == "attention"
+        assert turn.label == "第 1 页"
+        h.ai.ask("这个词还有别的译法吗？")
+        h.wait(qtbot)
+        messages = server.requests[-1]["body"]["messages"]
+        assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+        assert "attention" in messages[1]["content"] and messages[2]["content"] == "注意力"
+
     def test_summary_and_preset(self, make, qtbot) -> None:  # type: ignore[no-untyped-def]
         server = FakeServer("**研究问题** …")
         h = make(server=server)
@@ -367,7 +402,7 @@ class TestAssistant:
         h = make(server=FakeServer("译文"))
         h.ai.translate("x", 1, Rect(72, 100, 200, 120))
         h.wait(qtbot)
-        h.panel.note_btn.click()
+        h.panel.chat.bubbles[-1][1].note_btn.click()
         assert h.added == [1]
         notes = [a for a in h.controller.list_annotations(1) if a.content]
         assert notes and notes[0].content.startswith("【AI · ")
@@ -461,7 +496,7 @@ class TestMainWindowWiring:
         window.pdf_view.aiRequested.emit("explain")
         window.pdf_view.aiRequested.emit("ask")
         assert calls == [("t", "attention"), ("e", "attention")]
-        assert window.ai_panel.input.toPlainText() == "关于「attention」："
+        assert window.ai_panel.attachment() == ("attention", "第 1 页")
 
     def test_document_switch_resets_conversation(self, window: MainWindow, tmp_path: Path) -> None:
         window.open_path(_make_doc(tmp_path / "a.pdf"))
@@ -554,7 +589,7 @@ def test_speed_read_marks_page_then_saves_highlights(make, qtbot) -> None:  # ty
     assert "[2] Body text of page 1 about transformers." in sent
 
     turn = h.panel.turns[-1]
-    assert turn.title == "速读高亮" and turn.quote == "第 1 页"
+    assert turn.title == "速读高亮 · 第 1 页" and turn.quote == ""
     assert "标出 1 句要点" in turn.answer and "Body text of page 1" in turn.answer
     assert list(h.marks) == [0] and len(h.marks[0]) == 1
     box = h.marks[0][0]

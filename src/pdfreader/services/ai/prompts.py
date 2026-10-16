@@ -135,16 +135,23 @@ def parse_indices(text: str, total: int) -> list[int]:
 
 
 def ask_messages(
-    question: str, context: str, language: str, history: list[Message] | None = None
+    question: str,
+    context: str,
+    language: str,
+    history: list[Message] | None = None,
+    *,
+    quote: str = "",
 ) -> list[Message]:
+    """全文问答；``quote`` 是用户引用的原文（问题针对它），``history`` 是之前几轮对话。"""
     messages = [_system(language)]
     for item in (history or [])[-MAX_HISTORY_MESSAGES:]:
         if item.get("role") in ("user", "assistant") and isinstance(item.get("content"), str):
             messages.append({"role": item["role"], "content": item["content"]})
+    cited = f"\n\n用户引用的原文（问题针对这段）：\n{quote.strip()}" if quote.strip() else ""
     messages.append(
         {
             "role": "user",
-            "content": f"{_CITE_RULES}\n\n文档片段：\n{context}\n\n问题：{question}",
+            "content": (f"{_CITE_RULES}\n\n文档片段：\n{context}{cited}\n\n问题：{question}"),
         }
     )
     return messages

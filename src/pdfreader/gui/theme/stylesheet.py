@@ -601,7 +601,6 @@ QPushButton#LinkButton:hover { text-decoration: underline; }
 }
 QLabel#AiTitle { font-size: 14px; font-weight: 600; }
 QLabel#AiProvider { font-size: 11px; color: $text_muted; }
-QLabel#AiStatus { font-size: 11px; color: $text_muted; }
 QToolButton#AiChip {
     background-color: $surface_hover;
     border: none;
@@ -613,13 +612,56 @@ QToolButton#AiChip {
 QToolButton#AiChip:hover { background-color: $accent_soft; color: $accent_text; }
 QToolButton#AiChip:disabled { color: $border_strong; }
 QToolButton#AiChip::menu-indicator { image: none; width: 0; }
-QTextBrowser#AiTranscript {
+QScrollArea#AiChat, QWidget#AiChatBody { background: transparent; border: none; }
+#AiUserBubble {
+    background-color: $accent_soft;
+    border-radius: 14px;
+    border-top-right-radius: 4px;
+}
+QLabel#AiUserText { font-size: 13px; color: $text; }
+#AiBotBubble {
     background-color: $popover;
     border: 1px solid $border;
-    border-radius: 12px;
-    padding: 6px 8px;
-    font-size: 13px;
+    border-radius: 14px;
+    border-top-left-radius: 4px;
 }
+QLabel#AiAnswer { font-size: 13px; color: $text; }
+QLabel#AiWaitText { font-size: 12px; color: $text_muted; }
+QLabel#AiError { font-size: 12px; color: $danger; }
+QLabel#AiQuestion {
+    background-color: $window;
+    border: 1px solid $border;
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: $text_secondary;
+}
+QLabel#AiQuestion:hover { border-color: $accent; color: $accent_text; background-color: $accent_soft; }
+QToolButton#AiBubbleAction {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 11px;
+    color: $text_muted;
+}
+QToolButton#AiBubbleAction:hover { background-color: $surface_hover; color: $accent_text; }
+#AiContext { background-color: $popover; border-radius: 10px; }
+#AiContext[attached="true"] { background-color: $surface_hover; }
+#AiContextBar { background-color: $accent; border-radius: 1px; margin: 8px 0px 8px 8px; }
+QLabel#AiContextInfo { font-size: 11px; color: $accent_text; }
+QLabel#AiContextText { font-family: $serif_family; font-size: 12px; color: $text_secondary; }
+QToolButton#AiContextButton {
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    min-width: 20px; max-width: 20px; min-height: 20px; max-height: 20px;
+}
+QToolButton#AiContextButton:hover { background-color: $surface_hover; }
+#AiEmptyIcon { background-color: $accent_soft; border-radius: 16px; }
+QLabel#AiEmptyTitle { font-family: $serif_family; font-size: 15px; color: $text; }
+QLabel#AiEmptyText { font-size: 12px; color: $text_muted; }
+QLabel#AiEmptyNote { font-size: 11px; color: $text_muted; padding-top: 8px; }
 #AiInputBox {
     background-color: $popover;
     border: 1px solid $border_strong;
