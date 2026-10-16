@@ -1,8 +1,9 @@
 """主窗口（Lumen 设计稿）。
 
-- 顶部：标题栏（品牌 / 文档名 · 选项卡 · 主题切换 · 关于）+ 按组标题分组的功能区
+- 外层两页：文献库首页（``LibraryHome``，无文档或点品牌 / 网格按钮时显示）⇄ 阅读器
+- 阅读器顶部：标题栏（品牌 · 选项卡 · 主题切换 · 文献库）+ 按组标题分组的功能区
   + 文档标签栏（多文档：每个标签独立持有文档 / 视图 / AI 对话，见 ``document_tab``）
-- 中部：左侧边栏（目录 / 批注 / 缩略图，宽度动画显隐）+ 欢迎页 ⇄ 阅读区；
+- 阅读器中部：左侧边栏（目录 / 批注 / 缩略图，宽度动画显隐）+ 阅读区；
   阅读区上叠加搜索浮层、工具提示胶囊，点击引用弹出参考文献预览卡
 - 底部：状态栏（翻页 · 阅读进度 · 自动消失的消息 · 阅读模式标签 · 缩放滑杆）
 
@@ -16,6 +17,7 @@ import contextlib
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from uuid import uuid4
@@ -51,7 +53,13 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from pdfreader.config.settings import Bookmark, ReadingPosition, SettingsStore
+from pdfreader.config.settings import (
+    MAX_LIBRARY_FILES,
+    Bookmark,
+    DocMeta,
+    ReadingPosition,
+    SettingsStore,
+)
 from pdfreader.controllers import (
     AnnotationController,
     AnnotationMode,
@@ -75,12 +83,14 @@ from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import (
     DocumentTabBar,
+    LibraryEntry,
+    LibraryHome,
     PdfView,
     Ribbon,
     StatusBar,
-    WelcomeWidget,
     motion,
 )
+from pdfreader.gui.widgets.library import display_title
 from pdfreader.gui.widgets.overlays import CitePopover, ToolHint
 from pdfreader.gui.widgets.pdf_view import ReadingMode
 from pdfreader.services.ai.provider import AiSettings
@@ -205,7 +215,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._theme = get_theme()
         self._annotation_controller = AnnotationController()
-        # 文档标签：至少一个；没有打开文档时只剩一个空标签（显示欢迎页）
+        # 文档标签：至少一个；没有打开文档时只剩一个空标签（显示文献库）
         self._tabs: list[DocumentTab] = []
         self._parked_tabs: list[DocumentTab] = []  # 已关闭、AI 请求线程还没停下的标签
         self._shutting_down = False
@@ -221,6 +231,8 @@ class MainWindow(QMainWindow):
         self._snapshot_paths: list[Path] = []
         self._temp_files: list[Path] = []  # 其他本进程生成的临时文件（如手绘签名）
         self._last_open_failure: str = ""
+        # 文献库显示时暂存的阅读器快捷键（否则 Ctrl+W 等会作用在看不见的文档上）
+        self._parked_shortcuts: dict[QAction, list[QKeySequence]] = {}
 
         # 设置持久化（主题、窗口尺寸、最近文件、阅读位置……）
         self._settings_store = SettingsStore()
@@ -237,8 +249,8 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._theme.changed.connect(self._on_theme_changed)
 
-        self.welcome.set_recent(self._settings.recent_files)
         self._set_document_state(False)
+        self._show_library(animate=False)
 
         if self._settings.window_maximized:
             QTimer.singleShot(0, self.showMaximized)
@@ -456,6 +468,7 @@ class MainWindow(QMainWindow):
         """切回一个已打开文档的标签：共用的侧边栏 / 功能区 / 状态栏按它重新填充。"""
         controller = tab.controller
         count = controller.page_count
+        self._show_reader()
         self._stack.setCurrentWidget(tab.view)
         visible = self._settings.sidebar_visible
         self.sidebar_action.setChecked(visible)
@@ -507,6 +520,7 @@ class MainWindow(QMainWindow):
         finally:
             bar.blockSignals(False)
         bar.setVisible(bool(shown))
+        self._tab_strip.setVisible(bool(shown))
 
     def _refresh_tab_labels(self) -> None:
         shown = [t for t in self._tabs if t.has_document]
@@ -561,7 +575,7 @@ class MainWindow(QMainWindow):
         self._on_document_opened(page_count)
 
     def _on_tab_closed(self, tab: DocumentTab) -> None:
-        """某个标签的文档关闭了：还有别的标签就移除它，最后一个则回到欢迎页。"""
+        """某个标签的文档关闭了：还有别的标签就移除它，最后一个则回到文献库。"""
         if self._shutting_down:
             return
         others = [t for t in self._tabs if t is not tab]
@@ -967,8 +981,16 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 布局
     def _setup_ui(self) -> None:
+        # 外层：文献库首页 ⇄ 阅读器（功能区 + 标签栏 + 内容区 + 状态栏）
+        self._shell = QStackedWidget()
+        self._shell.setObjectName("Shell")
+        self.library = LibraryHome(self._theme)
+        self.library.set_view_mode(self._settings.library_view)
+        self._shell.addWidget(self.library)
         root = QWidget()
         root.setObjectName("MainRoot")
+        self._reader = root
+        self._shell.addWidget(root)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -1063,7 +1085,6 @@ class MainWindow(QMainWindow):
                 ("模型", [self.ai_settings_action]),
             ],
         )
-        self.ribbon.add_trailing_action(self.about_action)
         self.ribbon.finish()
         layout.addWidget(self.ribbon)
 
@@ -1082,12 +1103,29 @@ class MainWindow(QMainWindow):
         self.ribbon.set_menu(self.reading_mode_action, self._mode_menu)
         self.ribbon.set_menu(self.color_action, self._build_swatch_menu())
 
-        # 文档标签栏（有文档时显示）
+        # 文档标签栏（有文档时显示）+ 右侧「+」打开更多文档
         self.tab_bar = DocumentTabBar()
         self.tab_bar.setVisible(False)
-        layout.addWidget(self.tab_bar)
+        self._tab_strip = QWidget()
+        self._tab_strip.setObjectName("DocTabStrip")
+        self._tab_strip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        strip = QHBoxLayout(self._tab_strip)
+        strip.setContentsMargins(8, 4, 8, 0)
+        strip.setSpacing(2)
+        strip.addWidget(self.tab_bar, 0, Qt.AlignmentFlag.AlignBottom)
+        self._tab_add_button = QToolButton()
+        self._tab_add_button.setObjectName("DocTabAdd")
+        self._tab_add_button.setToolTip("打开 PDF  (Ctrl+O)")
+        self._tab_add_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tab_add_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._tab_add_button.clicked.connect(self._on_open)
+        strip.addWidget(self._tab_add_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        strip.addStretch(1)
+        self._tab_strip.setVisible(False)
+        layout.addWidget(self._tab_strip)
+        self._refresh_tab_icons()
 
-        # 内容区：侧边栏（宽度动画）| 欢迎页 / 阅读区
+        # 内容区：侧边栏（宽度动画）| 阅读区
         self._content = _ContentArea()
         content_layout = QHBoxLayout(self._content)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -1095,10 +1133,8 @@ class MainWindow(QMainWindow):
         self.sidebar = SidePanel()
         self.sidebar.setMaximumWidth(0)
         self.sidebar.setVisible(False)
-        # 阅读区：欢迎页 + 每个标签自己的阅读视图（切换标签 = 切换显示哪一个）
+        # 阅读区：每个标签自己的阅读视图（切换标签 = 切换显示哪一个）
         self._stack = QStackedWidget()
-        self.welcome = WelcomeWidget(self._theme)
-        self._stack.addWidget(self.welcome)
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self._stack, stretch=1)
         # AI 面板区：每个标签自己的 AI 面板（对话互不相干），整体做宽度动画
@@ -1126,7 +1162,7 @@ class MainWindow(QMainWindow):
         self.status_bar = StatusBar(self._theme)
         layout.addWidget(self.status_bar)
 
-        self.setCentralWidget(root)
+        self.setCentralWidget(self._shell)
 
     def _mode_setter(self, mode: str) -> Callable[[], None]:
         return lambda: self._set_reading_mode(mode)
@@ -1172,8 +1208,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 信号
     def _connect_signals(self) -> None:
         # 每个标签自己的控制器 / 视图 / AI 面板信号在 _wire_tab 里接
-        self.welcome.openRequested.connect(self._on_open)
-        self.welcome.openRecentRequested.connect(self._on_open_recent)
+        lib = self.library
+        lib.openRequested.connect(self._on_open)
+        lib.openRecentRequested.connect(self._on_open_recent)
+        lib.favoriteToggled.connect(self._on_favorite_toggled)
+        lib.themeToggleRequested.connect(self._toggle_theme)
+        lib.aboutRequested.connect(self._on_about)
+        lib.exploreAiRequested.connect(self._on_explore_ai)
+        lib.returnRequested.connect(self._return_to_reader)
+        lib.viewModeChanged.connect(self._on_library_view_changed)
+        self.ribbon.homeRequested.connect(self._go_home)
 
         self.tab_bar.currentChanged.connect(self._on_tab_bar_current)
         self.tab_bar.tabMoved.connect(self._on_tab_bar_moved)
@@ -1213,9 +1257,15 @@ class MainWindow(QMainWindow):
         """标题栏的浅 / 深色切换（设计稿只有这一个开关）。"""
         self._theme.set_mode("light" if self._theme.is_dark else "dark")
 
+    def _refresh_tab_icons(self) -> None:
+        p = self._theme.palette
+        self.tab_bar.set_tab_icon(self._theme.colored_icon("file", p.text_muted, size=13))
+        self._tab_add_button.setIcon(self._theme.colored_icon("plus", p.text_muted, size=14))
+
     def _on_theme_changed(self, _name: str) -> None:
         for tab in self._tabs:
             tab.view.apply_palette(self._theme.palette)
+        self._refresh_tab_icons()
         self.setWindowIcon(self._theme.app_icon())
         # 持久化"模式"（含 system），而非解析后的具体配色
         self._settings.theme = self._theme.mode
@@ -1631,7 +1681,7 @@ class MainWindow(QMainWindow):
             self._after_saved()
             if old_marks:  # 书签跟着新文件走（原文件的保留）
                 self._settings.set_bookmarks(Path(path), old_marks)
-            self._settings.add_recent_file(Path(path))
+            self._settings.add_recent_file(Path(path), max_count=MAX_LIBRARY_FILES)
             self._save_settings()
             return True
         QMessageBox.warning(self, "保存失败", self._controller.last_error or "保存失败")
@@ -1641,6 +1691,8 @@ class MainWindow(QMainWindow):
         doc = self._controller.document
         if doc is not None:
             self.status_bar.show_message(f"已保存到 {doc.path}")
+            self._record_meta(self._tab, opened=False)
+            self._save_settings()
         self._update_title()
 
     def _maybe_save(self) -> bool:
@@ -1671,8 +1723,9 @@ class MainWindow(QMainWindow):
             self.ribbon.set_document_title("")
             return
         dirty = doc.is_modified
-        self.setWindowTitle(f"{'* ' if dirty else ''}{doc.path.name} — Lumen")
-        self.ribbon.set_document_title(f"{doc.path.name}{' *' if dirty else ''}")
+        if not self._library_visible():
+            self.setWindowTitle(f"{'* ' if dirty else ''}{doc.path.name} — Lumen")
+        self.ribbon.set_document_title(doc.path.name, dirty=dirty)
         self._refresh_tab_labels()
 
     def _refresh_after_edit(self, keep: tuple[int, float] | None = None) -> None:
@@ -1871,7 +1924,9 @@ class MainWindow(QMainWindow):
             and self.sidebar.isVisible()
             and (small_doc or self.sidebar.tabs.currentIndex() == SidePanel.TAB_ANNOTATIONS)
         ):
-            self.sidebar.set_annotations(self._controller.list_all_annotations())
+            annots = self._controller.list_all_annotations()
+            self.sidebar.set_annotations(annots)
+            self._tab.annotation_count = len(annots)
             self._annotations_stale = False
 
     def _on_annotation_activated(self, annot: Annotation) -> None:
@@ -2436,12 +2491,13 @@ class MainWindow(QMainWindow):
         if not target.exists():
             QMessageBox.warning(self, "文件不存在", f"找不到文件：\n{target}")
             self._settings.remove_recent_file(target)
-            self.welcome.set_recent(self._settings.recent_files)
+            self._refresh_library()
             self._save_settings()
             return False
         existing = self._find_tab(target)
         if existing is not None:
             self._activate(existing)
+            self._show_reader()
             self.status_bar.show_message(f"“{target.name}”已经打开，已切换到它的标签")
             return True
         if self._tab.has_document:
@@ -2493,7 +2549,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _on_close_document(self) -> None:
-        """关闭当前标签（Ctrl+W）；最后一个标签关闭后回到欢迎页。"""
+        """关闭当前标签（Ctrl+W）；最后一个标签关闭后回到文献库。"""
         self._close_tab(self._tab)
 
     def _reset_document_session(self) -> None:
@@ -2524,10 +2580,12 @@ class MainWindow(QMainWindow):
         self._forward_stack.clear()
         self.sidebar.clear()
         self._annotations_stale = True
+        self._tab.annotation_count = None
         self._ai.reset_document()
 
     def _on_document_opened(self, page_count: int) -> None:
         self._reset_document_session()
+        self._show_reader()
         self._stack.setCurrentWidget(self.pdf_view)
         self._update_title()
 
@@ -2573,8 +2631,8 @@ class MainWindow(QMainWindow):
         self._refresh_annotations_if_shown()
 
         if doc is not None:
-            self._settings.add_recent_file(doc.path)
-            self.welcome.set_recent(self._settings.recent_files)
+            self._settings.add_recent_file(doc.path, max_count=MAX_LIBRARY_FILES)
+            self._record_meta(self._tab, opened=True)
             self._save_settings()
         self._sync_tab_bar()
 
@@ -2643,13 +2701,12 @@ class MainWindow(QMainWindow):
         self.sidebar.setMaximumWidth(0)
         self.sidebar.setVisible(False)
         self.tool_hint.hide()
-        self._stack.setCurrentWidget(self.welcome)
-        self.welcome.set_recent(self._settings.recent_files)
         self._update_title()
         self._set_document_state(False)
         self._update_undo_actions()
         self._sync_tab_bar()
         self.status_bar.show_message("")
+        self._show_library()
 
     def _on_open_failed(self, result: str, message: str) -> None:
         self._last_open_failure = result
@@ -2674,13 +2731,154 @@ class MainWindow(QMainWindow):
         )
         self._save_settings()
 
+    # ------------------------------------------------------------------ 文献库首页
+    def _library_visible(self) -> bool:
+        return self._shell.currentWidget() is self.library
+
+    def _show_library(self, *, animate: bool = True) -> None:
+        """切到文献库首页（数据按最近文件 / 摘要 / 阅读位置 / 打开的标签重建）。"""
+        was_visible = self._library_visible()
+        self.cite_popover.hide()
+        self._refresh_library()
+        self._set_reader_shortcuts(False)
+        self._shell.setCurrentWidget(self.library)
+        self.setWindowTitle("Lumen")
+        if animate and not was_visible:
+            self.library.animate_in()
+
+    def _show_reader(self) -> None:
+        if not self._library_visible():
+            return
+        self._set_reader_shortcuts(True)
+        self._shell.setCurrentWidget(self._reader)
+        if self._tab.has_document:
+            self._update_title()
+            motion.fade_up(self._stack)
+
+    def _set_reader_shortcuts(self, enabled: bool) -> None:
+        """文献库显示时停用阅读器快捷键（「打开」照常可用），回到阅读器时恢复。"""
+        if enabled:
+            for act, keys in self._parked_shortcuts.items():
+                act.setShortcuts(keys)
+            self._parked_shortcuts.clear()
+            return
+        for act in self.actions():
+            if act is self.open_action or act in self._parked_shortcuts or not act.shortcuts():
+                continue
+            self._parked_shortcuts[act] = act.shortcuts()
+            act.setShortcuts([])
+
+    def _go_home(self) -> None:
+        """功能区品牌 / 网格按钮：回文献库（标签与文档都保留，可「返回阅读」）。"""
+        if self._library_visible():
+            return
+        self._remember_reading_position()
+        self._show_library()
+
+    def _return_to_reader(self) -> None:
+        if self._tab.has_document:
+            self._show_reader()
+            self._tab.view.setFocus()
+
+    def _refresh_library(self) -> None:
+        """按最新设置重建文献库卡片，并更新「返回阅读」。"""
+        self.library.set_entries(self._library_entries())
+        doc = self._controller.document
+        if doc is not None:
+            self.library.set_can_return(True, f"回到 {doc.path.name}")
+        else:
+            self.library.set_can_return(False)
+
+    def _library_entries(self) -> list[LibraryEntry]:
+        """最近文件（按最近打开排序）→ 文献库卡片；找不到的文件不列出（设置里仍保留）。"""
+        open_tabs = {
+            os.path.normcase(str(t.path)): t
+            for t in self._tabs
+            if t.has_document and t.path is not None
+        }
+        entries: list[LibraryEntry] = []
+        for raw in self._settings.recent_files:
+            path = Path(raw)
+            tab = open_tabs.get(os.path.normcase(raw))
+            if tab is None and not path.exists():
+                continue
+            meta = self._settings.meta_for(raw) or DocMeta()
+            pages = meta.pages
+            if tab is not None:
+                pages = tab.controller.page_count or pages
+                page = self._page_of(tab)
+            else:
+                position = self._settings.position_for(raw)
+                page = position.page if position is not None else -1
+            progress = min(1.0, (page + 1) / pages) if pages > 0 and page >= 0 else 0.0
+            entries.append(
+                LibraryEntry(
+                    path=raw,
+                    title=display_title(meta.title, path),
+                    author=meta.author,
+                    pages=pages,
+                    annotations=meta.annotations,
+                    progress=progress,
+                    opened_at=meta.opened_at,
+                    favorite=self._settings.is_favorite(raw),
+                    is_open=tab is not None,
+                )
+            )
+        return entries
+
+    def _record_meta(self, tab: DocumentTab, *, opened: bool) -> None:
+        """记下文献库卡片要用的摘要（页数 / 批注数 / 标题 / 作者 / 打开时间）。"""
+        doc = tab.controller.document
+        if doc is None:
+            return
+        old = self._settings.meta_for(doc.path) or DocMeta()
+        count = tab.annotation_count
+        self._settings.remember_meta(
+            doc.path,
+            DocMeta(
+                pages=tab.controller.page_count,
+                annotations=count if count is not None else old.annotations,
+                title=doc.meta.title,
+                author=doc.meta.author,
+                opened_at=time.time() if opened or old.opened_at <= 0 else old.opened_at,
+            ),
+        )
+
+    def _on_favorite_toggled(self, path: str) -> None:
+        # 反馈就是卡片星标本身（状态栏在阅读器里，首页看不到）
+        self._settings.toggle_favorite(path)
+        self._save_settings()
+        self._refresh_library()
+
+    def _on_library_view_changed(self, mode: str) -> None:
+        self._settings.library_view = mode
+        self._save_settings()
+
+    def _on_explore_ai(self) -> None:
+        """「探索 AI 助读」：有文档就回去打开 AI 面板，否则先打开最近一篇（或选文件）。"""
+        if not self._tab.has_document:
+            entries = self.library.entries()
+            if entries:
+                self.open_path(entries[0].path)
+            else:
+                self._on_open()
+        if self._tab.has_document:
+            self._show_reader()
+            self._set_ai_panel_visible(True)
+
     # ------------------------------------------------------------------ 拖放打开
     def dragEnterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         mime = event.mimeData()
         if mime.hasUrls() and any(u.toLocalFile().lower().endswith(".pdf") for u in mime.urls()):
             event.acceptProposedAction()
+            self.library.set_dragging(True)
+
+    def dragLeaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().dragLeaveEvent(event)
+        self.library.set_dragging(False)
 
     def dropEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.library.set_dragging(False)
         paths = [
             u.toLocalFile()
             for u in event.mimeData().urls()

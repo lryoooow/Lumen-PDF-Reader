@@ -70,8 +70,10 @@ def _check_invariants(window: MainWindow) -> None:
     assert window.tab_bar.isVisibleTo(window) == bool(shown)
     if not tab.has_document:
         assert shown == [] and len(window.tabs) == 1
-        assert window._stack.currentWidget() is window.welcome
+        assert window._shell.currentWidget() is window.library
+        assert not window.library.return_button.isVisibleTo(window.library)
         return
+    assert window._shell.currentWidget() is window._reader
     assert window._stack.currentWidget() is tab.view
     assert window.tab_bar.currentIndex() == shown.index(tab)
     for i, t in enumerate(shown):
@@ -269,7 +271,7 @@ def test_pulse_then_switch_immediately(window: MainWindow, docs: list[Path], qtb
 
 
 # ---------------------------------------------------------------- 关闭
-def test_close_current_activates_neighbor_then_welcome(
+def test_close_current_activates_neighbor_then_library(
     window: MainWindow, docs: list[Path]
 ) -> None:
     for p in docs[:3]:

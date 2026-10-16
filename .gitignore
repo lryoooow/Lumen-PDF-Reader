@@ -86,3 +86,6 @@ config/user_settings.json
 
 # 本地分析记录、排查报告、复现脚本与探针（见 AGENTS.md）
 memory/
+
+# 设计稿原型（React，本地对照用，不入库；见 docs/04）
+/UI/

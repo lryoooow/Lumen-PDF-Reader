@@ -17,6 +17,7 @@ from pathlib import Path
 
 __all__ = [
     "Bookmark",
+    "DocMeta",
     "ReadingPosition",
     "Settings",
     "SettingsStore",
@@ -27,6 +28,10 @@ __all__ = [
 MAX_READING_POSITIONS = 200
 # 有书签的文件数上限（超出淘汰最久未改动的）
 MAX_BOOKMARKED_FILES = 500
+# 文献库记住的文档摘要数上限（与阅读位置一致）
+MAX_DOC_META = 200
+# 文献库最多列出的文档数（最近文件列表的长度）
+MAX_LIBRARY_FILES = 40
 
 
 def default_settings_path() -> Path:
@@ -52,6 +57,26 @@ class Bookmark:
     title: str = ""
 
 
+@dataclass(frozen=True)
+class DocMeta:
+    """文献库卡片用的文档摘要（打开 / 保存时记录，不必为了列表重新打开 PDF）。"""
+
+    pages: int = 0
+    annotations: int = 0
+    title: str = ""
+    author: str = ""
+    opened_at: float = 0.0  # 上次打开时间（epoch 秒）
+
+
+_META_FIELDS: dict[str, type] = {
+    "pages": int,
+    "annotations": int,
+    "title": str,
+    "author": str,
+    "opened_at": float,
+}
+
+
 @dataclass
 class Settings:
     """用户设置。"""
@@ -68,6 +93,10 @@ class Settings:
     reading_positions: dict[str, list[float]] = field(default_factory=dict)
     # 文件路径 → [[页, 页内偏移, 标题], ...]（按页序）
     bookmarks: dict[str, list[list[object]]] = field(default_factory=dict)
+    # 文献库：收藏的文件、网格 / 列表视图、文档摘要（路径 → DocMeta 字段）
+    favorites: list[str] = field(default_factory=list)
+    library_view: str = "grid"  # "grid" | "list"
+    doc_meta: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def add_recent_file(self, path: str | Path, *, max_count: int = 10) -> None:
         """添加最近文件（去重、置顶、限制数量）。"""
@@ -82,6 +111,31 @@ class Settings:
         p = str(path)
         if p in self.recent_files:
             self.recent_files.remove(p)
+
+    def toggle_favorite(self, path: str | Path) -> bool:
+        """收藏 / 取消收藏，返回切换后是否已收藏。"""
+        p = str(path)
+        if p in self.favorites:
+            self.favorites.remove(p)
+            return False
+        self.favorites.append(p)
+        return True
+
+    def is_favorite(self, path: str | Path) -> bool:
+        return str(path) in self.favorites
+
+    def remember_meta(self, path: str | Path, meta: DocMeta) -> None:
+        key = str(path)
+        self.doc_meta.pop(key, None)
+        self.doc_meta[key] = asdict(meta)
+        while len(self.doc_meta) > MAX_DOC_META:
+            self.doc_meta.pop(next(iter(self.doc_meta)))
+
+    def meta_for(self, path: str | Path) -> DocMeta | None:
+        raw = self.doc_meta.get(str(path))
+        if not isinstance(raw, dict):
+            return None
+        return DocMeta(**{k: raw[k] for k in _META_FIELDS if k in raw})  # type: ignore[arg-type]
 
     def remember_position(self, path: str | Path, position: ReadingPosition) -> None:
         key = str(path)
@@ -142,10 +196,37 @@ def _coerce_bookmarks(value: object) -> dict[str, list[list[object]]]:
     return result
 
 
+def _coerce_doc_meta(value: object) -> dict[str, dict[str, object]]:
+    """逐项校验文档摘要：类型不对的字段丢弃（缺省值兜底），整项不是字典的跳过。"""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for key, raw in value.items():
+        if not isinstance(raw, dict):
+            continue
+        good: dict[str, object] = {}
+        for name, kind in _META_FIELDS.items():
+            item = raw.get(name)
+            if isinstance(item, bool):
+                continue
+            if kind is float and isinstance(item, (int, float)):
+                good[name] = float(item)
+            elif kind is int and isinstance(item, int):
+                good[name] = max(0, item)
+            elif kind is str and isinstance(item, str):
+                good[name] = item[:300]
+        result[str(key)] = good
+    return result
+
+
 def _coerce(name: str, value: object, default: object) -> object:
     """把 JSON 里的值校正为字段默认值的类型；不合法时返回默认值。"""
     if name == "bookmarks":
         return _coerce_bookmarks(value)
+    if name == "doc_meta":
+        return _coerce_doc_meta(value)
+    if name == "library_view":
+        return value if value in ("grid", "list") else default
     if isinstance(default, bool):
         return value if isinstance(value, bool) else default
     if isinstance(default, int):

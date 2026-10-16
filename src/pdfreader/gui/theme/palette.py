@@ -1,6 +1,6 @@
-"""设计令牌与配色板（Lumen 视觉，2026-10 重设计）。
+"""设计令牌与配色板（Lumen 视觉，2026-10 第二版设计稿：暖纸底 + 赤陶强调色）。
 
-色值取自设计稿（Tailwind：zinc 中性色 + indigo 强调色 + 暖灰纸感底色）。设计稿里的
+色值取自设计稿 ``UI/src/index.css``（暖灰中性色 + 赤陶 #c96a49 强调色 + 矿物色封面）。设计稿里的
 半透明叠色（如 ``bg-black/[.045]``、``bg-white/[.06]``）在这里预先与底色合成为不透明色，
 因为 Qt 样式表对 rgba 叠加的表现与浏览器不一致。
 
@@ -38,7 +38,7 @@ class Palette:
     text_secondary: str
     text_muted: str
 
-    # 强调色（indigo）
+    # 强调色（赤陶 terracotta）
     accent: str
     accent_hover: str
     accent_pressed: str
@@ -46,7 +46,7 @@ class Palette:
     accent_text: str  # 强调色文字（选中按钮、链接）
     on_accent: str
 
-    # 品牌渐变（logo 方块：indigo → violet）
+    # 品牌色（logo 方块：赤陶，略带纵深）
     brand_from: str
     brand_to: str
 
@@ -62,6 +62,31 @@ class Palette:
 
     # 阴影
     shadow: str
+
+    # ---- 文献库（Studio）：墨绿导航栏 + 矿物色封面 + 主推卡片 ----
+    nav: str = "#282D29"
+    nav_text: str = "#C2C7BD"
+    nav_muted: str = "#7D877B"
+    nav_active: str = "#3B423A"
+    nav_bright: str = "#EFF1E7"  # 选中项文字 / 品牌字
+    nav_icon_active: str = "#DCA27B"
+    import_button: str = "#CF7855"
+    import_button_hover: str = "#DF8864"
+    hero: str = "#EAECE2"  # 「从上次的思考继续」卡片
+    hero_ink: str = "#3B493B"
+    hero_button: str = "#3E4B3B"
+    hero_button_hover: str = "#53634F"
+    insight: str = "#EEE6DA"  # 「AI 助读」卡片
+    insight_ink: str = "#9E6B46"
+    cream: str = "#EDECE4"  # 视图切换选中底
+    soft_shadow: str = "rgba(48, 58, 48, 0.07)"
+    # 封面（底色, 墨色）：sage / sand / rose / blue，按文件路径稳定取一种
+    covers: tuple[tuple[str, str], ...] = (
+        ("#DCE4D7", "#475C48"),
+        ("#ECE3D2", "#746047"),
+        ("#EADBD4", "#80594C"),
+        ("#DCE3E6", "#49616B"),
+    )
 
     @property
     def is_dark(self) -> bool:
@@ -102,36 +127,36 @@ TOKENS = Tokens()
 
 
 # ----------------------------------------------------------------------------
-# 浅色：暖灰纸感底 #f4f4f1 + 白色面板 + zinc 文字 + indigo 强调
+# 浅色：暖纸底 #f6f5f1 + 米白面板 + 暖灰文字 + 赤陶强调
 # ----------------------------------------------------------------------------
 LIGHT = Palette(
     name="light",
-    window="#F4F4F1",
-    surface="#FCFCFB",
-    surface_hover="#ECECE9",
+    window="#F6F5F1",
+    surface="#FCFBF8",
+    surface_hover="#EFEDE7",
     surface_active="#FFFFFF",
-    canvas="#F4F4F1",
+    canvas="#F6F5F1",
     popover="#FFFFFF",
     card="#FFFFFF",
-    border="#E6E6E2",
-    border_strong="#D4D4CF",
-    text="#27272A",
-    text_secondary="#52525B",
-    text_muted="#71717A",
-    accent="#6366F1",
-    accent_hover="#4F46E5",
-    accent_pressed="#4338CA",
-    accent_soft="#EEF2FF",
-    accent_text="#4F46E5",
+    border="#E8E5DE",
+    border_strong="#D6D2C9",
+    text="#30312E",
+    text_secondary="#686A63",
+    text_muted="#92938A",
+    accent="#C96A49",
+    accent_hover="#B75B3C",
+    accent_pressed="#A44F33",
+    accent_soft="#F5E9DF",
+    accent_text="#B75B3C",
     on_accent="#FFFFFF",
-    brand_from="#6366F1",
-    brand_to="#7C3AED",
+    brand_from="#C96A49",
+    brand_to="#B75B3C",
     danger="#F43F5E",
     danger_soft="#FDE8EC",
     success="#10B981",
     mark="#FCD34D",
     icon="#3F3F46",
-    icon_active="#4F46E5",
+    icon_active="#B75B3C",
     shadow="rgba(0, 0, 0, 0.18)",
 )
 
@@ -153,21 +178,29 @@ DARK = Palette(
     text="#E4E4E7",
     text_secondary="#A1A1AA",
     text_muted="#71717A",
-    accent="#6366F1",
-    accent_hover="#818CF8",
-    accent_pressed="#4F46E5",
-    accent_soft="#252846",
-    accent_text="#A5B4FC",
+    accent="#C96A49",
+    accent_hover="#E28D69",
+    accent_pressed="#B75B3C",
+    accent_soft="#3B2E28",
+    accent_text="#E8A17E",
     on_accent="#FFFFFF",
-    brand_from="#6366F1",
-    brand_to="#7C3AED",
+    brand_from="#C96A49",
+    brand_to="#B75B3C",
     danger="#FB7185",
     danger_soft="#3A1F27",
     success="#10B981",
     mark="#B45309",
     icon="#D4D4D8",
-    icon_active="#A5B4FC",
+    icon_active="#E8A17E",
     shadow="rgba(0, 0, 0, 0.55)",
+    hero="#303A30",
+    hero_ink="#D8E2D2",
+    hero_button="#4A5A46",
+    hero_button_hover="#5B6D56",
+    insight="#3C352D",
+    insight_ink="#E0A47A",
+    cream="#33362E",
+    soft_shadow="rgba(0, 0, 0, 0.35)",
 )
 
 

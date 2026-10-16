@@ -3,7 +3,7 @@
 内置一套线性 SVG 图标（路径取自设计稿），运行时按主题色渲染为 :class:`QIcon`，
 支持"常态 / 勾选"双色（勾选态用强调色）。
 
-设计：24×24 视框、1.7 描边、圆角端点。
+设计：24×24 视框、1.6 描边、圆角端点。
 """
 
 from __future__ import annotations
@@ -76,6 +76,8 @@ _PATHS: dict[str, str] = {
     "settings": '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4"/>',
     "send": '<path d="M5 12h14M13 6l6 6-6 6"/>',
     "stop": '<path d="M7 7h10v10H7z"/>',
+    "plus": '<path d="M12 5v14M5 12h14"/>',
+    "check": '<path d="M5 12l5 5 9-10"/>',
     "question": '<path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.5V14M12 17.5v.5M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z"/>',
 }
 
@@ -103,7 +105,7 @@ def _svg(name: str, color: str, stroke: float) -> bytes:
     return doc.encode("utf-8")
 
 
-def render_pixmap(name: str, color: str, size: int = 22, *, stroke: float = 1.7) -> QPixmap:
+def render_pixmap(name: str, color: str, size: int = 22, *, stroke: float = 1.6) -> QPixmap:
     """把某个图标按指定颜色渲染为 :class:`QPixmap`（考虑高 DPI）。"""
     dpr = _device_pixel_ratio()
     key = (name, color, size, dpr, stroke)
@@ -130,7 +132,7 @@ def render_icon(
     *,
     on_color: str | None = None,
     size: int = 22,
-    stroke: float = 1.7,
+    stroke: float = 1.6,
 ) -> QIcon:
     """渲染图标为 :class:`QIcon`。
 
@@ -152,22 +154,25 @@ def render_icon(
 # 应用图标（窗口 / 任务栏 / 欢迎页 logo）
 # ---------------------------------------------------------------------------
 def _app_logo_svg(accent: str, accent_dark: str) -> bytes:
-    """Lumen 标志：左上 → 右下渐变的圆角方块，中间一个白色「L」（与设计稿一致）。"""
+    """Lumen 标志：赤陶圆角方块里一个白色衬线「l.」（设计稿 ``.reader-logo``）。
+
+    字形用路径画（不依赖系统是否装了衬线字体）：带上下衬线的竖笔 + 右下圆点。
+    """
     doc = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="{accent}"/>
       <stop offset="1" stop-color="{accent_dark}"/>
     </linearGradient>
   </defs>
   <rect x="2" y="2" width="44" height="44" rx="11" fill="url(#g)"/>
-  <path d="M19 14v20h12" fill="none" stroke="#ffffff" stroke-width="4.2"
-        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M16.5 11.5h6.2v22.3h3.1v2.7h-9.6v-2.7h3.1V14.2h-2.8z" fill="#ffffff"/>
+  <circle cx="30.6" cy="34" r="2.7" fill="#ffffff"/>
 </svg>"""
     return doc.encode("utf-8")
 
 
-def app_icon(accent: str = "#6366F1", accent_dark: str = "#7C3AED") -> QIcon:
+def app_icon(accent: str = "#C96A49", accent_dark: str = "#B75B3C") -> QIcon:
     """应用 logo（用于窗口图标、欢迎页）。多尺寸渲染保证清晰。"""
     data = QByteArray(_app_logo_svg(accent, accent_dark))
     icon = QIcon()

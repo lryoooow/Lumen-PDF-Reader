@@ -433,10 +433,11 @@ def window(qtbot, monkeypatch):  # type: ignore[no-untyped-def]
 
 class TestMainWindowWiring:
     def test_panel_toggle_and_capture_mode(self, window: MainWindow, tmp_path: Path) -> None:
+        window.open_path(_make_doc(tmp_path / "w.pdf"))
         window.ai_panel_action.trigger()
         assert window.ai_panel.isVisible() and window.ai_panel_action.isChecked()
         window.ai_panel.closeRequested.emit()
-        window.open_path(_make_doc(tmp_path / "w.pdf"))
+        assert not window.ai_panel_action.isChecked()
         assert window.capture_action.isEnabled()
         window.ai_panel.captureRequested.emit()
         assert window._annotation_controller.mode == AnnotationMode.CAPTURE

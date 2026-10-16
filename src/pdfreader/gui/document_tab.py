@@ -35,6 +35,7 @@ class DocumentTab:
         self.ocr_worker: OcrWorker | None = None
         self.ocr_results: dict[int, str] = {}
         self.annotations_stale = True
+        self.annotation_count: int | None = None  # 最近一次全文扫描到的批注数（文献库卡片用）
 
     @property
     def has_document(self) -> bool:

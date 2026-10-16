@@ -152,3 +152,59 @@ def test_bookmarks_round_trip_and_tolerate_bad_data(tmp_path: Path) -> None:
     )
     assert store.load().bookmarks_for("x.pdf") == [Bookmark(1, 0.2, "ok")]
     assert store.load().bookmarks_for("y") == []
+
+
+def test_favorites_toggle_and_round_trip(tmp_path: Path) -> None:
+    store = SettingsStore(tmp_path / "s.json")
+    settings = Settings()
+    assert settings.toggle_favorite("a.pdf") is True
+    assert settings.is_favorite("a.pdf")
+    assert settings.toggle_favorite(Path("b.pdf")) is True
+    assert settings.toggle_favorite("a.pdf") is False
+    assert not settings.is_favorite("a.pdf")
+    settings.library_view = "list"
+    store.save(settings)
+    loaded = store.load()
+    assert loaded.favorites == ["b.pdf"]
+    assert loaded.library_view == "list"
+
+
+def test_doc_meta_remember_evict_and_tolerate_bad_data(tmp_path: Path) -> None:
+    import json
+
+    from pdfreader.config.settings import MAX_DOC_META, DocMeta
+
+    settings = Settings()
+    assert settings.meta_for("a.pdf") is None
+    meta = DocMeta(pages=12, annotations=3, title="综述", author="Lin", opened_at=100.0)
+    settings.remember_meta("a.pdf", meta)
+    assert settings.meta_for("a.pdf") == meta
+    for i in range(MAX_DOC_META + 5):
+        settings.remember_meta(f"{i}.pdf", DocMeta(pages=i))
+    assert len(settings.doc_meta) == MAX_DOC_META
+    assert settings.meta_for("a.pdf") is None  # 最旧的被淘汰
+    settings.remember_meta("0.pdf", DocMeta(pages=1))  # 已淘汰的重新记录后排在最新
+    assert list(settings.doc_meta)[-1] == "0.pdf"
+
+    store = SettingsStore(tmp_path / "s.json")
+    (tmp_path / "s.json").write_text(
+        json.dumps(
+            {
+                "library_view": "cards",
+                "doc_meta": {
+                    "x.pdf": {"pages": 5, "annotations": -2, "title": 7, "opened_at": 3},
+                    "y.pdf": "bad",
+                    "z.pdf": {"pages": True, "author": "A" * 400},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = store.load()
+    assert loaded.library_view == "grid"
+    assert loaded.meta_for("x.pdf") == DocMeta(pages=5, annotations=0, opened_at=3.0)
+    assert loaded.meta_for("y.pdf") is None
+    z = loaded.meta_for("z.pdf")
+    assert z is not None and z.pages == 0 and len(z.author) == 300
+    (tmp_path / "s.json").write_text(json.dumps({"doc_meta": [1, 2]}), encoding="utf-8")
+    assert store.load().doc_meta == {}

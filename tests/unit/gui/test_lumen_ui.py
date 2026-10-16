@@ -60,14 +60,36 @@ def window(qtbot, monkeypatch):  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------- 标题栏 / 功能区
 class TestHeaderAndRibbon:
     def test_brand_and_document_title(self, window: MainWindow, tmp_path: Path) -> None:
-        assert window.ribbon._brand.text() == "Lumen"
-        assert window.ribbon._doc_label.text() == ""
+        assert window.ribbon._brand.text() == "lumen."
+        assert window.ribbon.home_tooltip() == "文献库"
         window.open_path(_make_paper(tmp_path / "paper.pdf"))
-        assert window.ribbon._doc_label.text() == " / paper.pdf"
+        assert window.ribbon.home_tooltip() == "paper.pdf"
+        assert window.ribbon._home_btn.toolTip() == "paper.pdf"
         window._controller.add_highlight(0, Rect(72, 100, 200, 125))
         window._update_title()
-        assert window.ribbon._doc_label.text() == " / paper.pdf *"
+        assert window.ribbon.home_tooltip() == "未保存 · paper.pdf"
         assert window.windowTitle() == "* paper.pdf — Lumen"
+
+    def test_brand_and_grid_button_go_home(self, window: MainWindow, tmp_path: Path) -> None:
+        window.open_path(_make_paper(tmp_path / "home.pdf"))
+        assert window._shell.currentWidget() is window._reader
+        window.ribbon._brand.click()
+        assert window._shell.currentWidget() is window.library
+        assert window.library.return_button.isVisibleTo(window.library)
+        window.library.return_button.click()
+        assert window._shell.currentWidget() is window._reader
+        window.ribbon._home_btn.click()
+        assert window._shell.currentWidget() is window.library
+
+    def test_ribbon_button_checked_fill(self, window: MainWindow, tmp_path: Path) -> None:
+        window.open_path(_make_paper(tmp_path / "fill.pdf"))
+        btn = window.ribbon.button_for(window.highlight_action)
+        assert btn is not None and btn.fill == 0.0  # type: ignore[attr-defined]
+        window.highlight_action.trigger()
+        assert btn.fill == 1.0  # type: ignore[attr-defined]
+        btn.grab()  # 自绘底色不出错
+        window.select_action.trigger()
+        assert btn.fill == 0.0  # type: ignore[attr-defined]
 
     def test_ribbon_groups_follow_design(self, window: MainWindow) -> None:
         titles = [
@@ -100,6 +122,22 @@ class TestHeaderAndRibbon:
         tab = window.ribbon._tab_group.button(3)
         ind = window.ribbon._indicator.geometry()
         assert tab.geometry().left() <= ind.left() <= tab.geometry().right()
+        assert ind.right() <= tab.geometry().right()
+        assert window.ribbon.current_index() == 3
+
+    def test_tab_indicator_elastic_motion(self, window: MainWindow, qtbot) -> None:  # type: ignore[no-untyped-def]
+        motion.set_enabled(True)
+        try:
+            window.ribbon._tab_group.button(4).click()
+            tab = window.ribbon._tab_group.button(4)
+            target = tab.geometry().right() - 12
+            qtbot.waitUntil(
+                lambda: abs(window.ribbon._indicator.geometry().right() + 1 - target) <= 1,
+                timeout=3000,
+            )
+            assert window.ribbon._indicator.geometry().left() >= tab.geometry().left()
+        finally:
+            motion.set_enabled(False)
 
 
 # ---------------------------------------------------------------- 批注工具 / 提示胶囊 / 颜色
@@ -198,8 +236,8 @@ class TestReadingModeAndStatusBar:
         qtbot.waitUntil(lambda: bar.message() == "", timeout=2000)
 
 
-# ---------------------------------------------------------------- 侧边栏 / 引用预览 / 欢迎页
-class TestSidebarCiteWelcome:
+# ---------------------------------------------------------------- 侧边栏 / 引用预览 / 文献库
+class TestSidebarCiteLibrary:
     def test_sidebar_width_animation(self, window: MainWindow, tmp_path: Path, qtbot) -> None:  # type: ignore[no-untyped-def]
         window.open_path(_make_paper(tmp_path / "sb.pdf"))
         motion.set_enabled(True)
@@ -230,14 +268,16 @@ class TestSidebarCiteWelcome:
         window.cite_popover.jump_btn.click()
         assert window.pdf_view.current_page_num == 3
 
-    def test_welcome_title_and_recent(self, window: MainWindow, tmp_path: Path) -> None:
-        assert "安静" in window.welcome._title.text()
+    def test_library_lists_recent_files(self, window: MainWindow, tmp_path: Path) -> None:
+        assert window._shell.currentWidget() is window.library
+        assert "都有回响" in window.library._title.text()
         path = _make_paper(tmp_path / "recent.pdf")
-        window.welcome.set_recent([str(path), str(tmp_path / "gone.pdf")])
-        assert window.welcome.recent_paths() == [str(path)]
+        window._settings.recent_files = [str(path), str(tmp_path / "gone.pdf")]
+        window._refresh_library()
+        assert window.library.entry_paths() == [str(path)]
         got: list[str] = []
-        window.welcome.openRecentRequested.connect(got.append)
-        window.welcome._rows[0].click()
+        window.library.openRecentRequested.connect(got.append)
+        window.library._cards[0].cover.click()
         assert got == [str(path)]
 
 
@@ -306,8 +346,8 @@ class TestReadingAreaVisuals:
 
 
 def test_palette_matches_design_tokens() -> None:
-    assert LIGHT.window == "#F4F4F1" and DARK.window == "#0F1115"
-    assert LIGHT.accent == DARK.accent == "#6366F1"
+    assert LIGHT.window == "#F6F5F1" and DARK.window == "#0F1115"
+    assert LIGHT.accent == DARK.accent == "#C96A49"
     assert DARK.surface == "#16181D" and DARK.popover == "#1D2027"
     assert [c for _n, c in _HIGHLIGHT_COLORS] == [
         "#FACC15",
