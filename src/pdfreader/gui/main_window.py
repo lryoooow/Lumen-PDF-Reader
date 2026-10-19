@@ -77,8 +77,8 @@ from pdfreader.engines.types import (
 from pdfreader.gui.ai_assistant import AiAssistant
 from pdfreader.gui.document_tab import DocumentTab
 from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
-from pdfreader.gui.panels.ai_panel import AI_PANEL_WIDTH
-from pdfreader.gui.panels.sidebar import SIDEBAR_WIDTH
+from pdfreader.gui.panels.ai_panel import AI_PANEL_MAX_WIDTH, AI_PANEL_MIN_WIDTH, AI_PANEL_WIDTH
+from pdfreader.gui.panels.sidebar import SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH
 from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import (
@@ -92,6 +92,7 @@ from pdfreader.gui.widgets import (
 )
 from pdfreader.gui.widgets.library import display_title
 from pdfreader.gui.widgets.overlays import CitePopover, ToolHint
+from pdfreader.gui.widgets.panel_grip import PanelGrip
 from pdfreader.gui.widgets.pdf_view import ReadingMode
 from pdfreader.services.ai.provider import AiSettings
 from pdfreader.services.ocr import OCR_AVAILABLE
@@ -176,6 +177,10 @@ def free_text_rect(
     x0 = min(max(page.x0 + 4, point.x), page.x1 - width - 4)
     y0 = min(max(page.y0 + 4, point.y), page.y1 - height - 4)
     return Rect(x0, y0, x0 + width, y0 + height)
+
+
+# 拖宽侧栏时阅读区至少留这么宽
+_MIN_READING_WIDTH = 360
 
 
 class _ContentArea(QWidget):
@@ -472,7 +477,7 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentWidget(tab.view)
         visible = self._settings.sidebar_visible
         self.sidebar_action.setChecked(visible)
-        self.sidebar.setMaximumWidth(SIDEBAR_WIDTH if visible else 0)
+        self.sidebar.setMaximumWidth(self._sidebar_width() if visible else 0)
         self.sidebar.setVisible(visible)
         self.sidebar.clear()
         self.sidebar.set_toc(controller.get_toc())
@@ -1144,6 +1149,14 @@ class MainWindow(QMainWindow):
         self._ai_dock.setVisible(False)
         content_layout.addWidget(self._ai_dock)
         layout.addWidget(self._content, stretch=1)
+        # 两侧栏内侧边缘的宽度拖动条（浮在面板上，不占布局）
+        self.sidebar.set_panel_width(self._sidebar_width())
+        self._sidebar_grip = PanelGrip(self.sidebar, "left", self._resize_sidebar, self._content)
+        self._sidebar_grip.released.connect(self._save_settings)
+        self._sidebar_grip.resetRequested.connect(lambda: self._reset_panel_width("sidebar"))
+        self._ai_grip = PanelGrip(self._ai_dock, "right", self._resize_ai_panel, self._content)
+        self._ai_grip.released.connect(self._save_settings)
+        self._ai_grip.resetRequested.connect(lambda: self._reset_panel_width("ai"))
 
         # 浮层：搜索卡片、工具提示胶囊、参考文献预览卡
         self.search_panel = SearchPanel("搜索", self._content)
@@ -1984,7 +1997,7 @@ class MainWindow(QMainWindow):
             self._settings.sidebar_visible = visible
             self._save_settings()
         start = self.sidebar.width() if self.sidebar.isVisible() else 0
-        end = SIDEBAR_WIDTH if visible else 0
+        end = self._sidebar_width() if visible else 0
         if visible:
             self.sidebar.setVisible(True)
         if not motion.enabled() or start == end:
@@ -2094,20 +2107,66 @@ class MainWindow(QMainWindow):
         if visible:
             self._ai.refresh_panel()
         start = dock.width() if dock.isVisible() else 0
-        end = AI_PANEL_WIDTH if visible else 0
+        end = self._ai_panel_width() if visible else 0
         if visible:
             dock.setVisible(True)
+        dock.setMinimumWidth(0)  # 动画期间放开下限，到位后再钉住宽度
         if not motion.enabled() or start == end:
             dock.setMaximumWidth(end)
+            dock.setMinimumWidth(end)
             dock.setVisible(visible)
         else:
             anim = motion.animate_property(
                 dock, b"maximumWidth", start, end, TOKENS.anim_sidebar, owner=dock
             )
-            if anim is not None and not visible:
-                anim.finished.connect(lambda: dock.setVisible(self.ai_panel_action.isChecked()))
+            if anim is not None:
+                anim.finished.connect(lambda: self._settle_ai_dock(visible))
         if visible:
             self.ai_panel.input.setFocus()
+
+    def _settle_ai_dock(self, visible: bool) -> None:
+        dock = self._ai_dock
+        if visible and self.ai_panel_action.isChecked():
+            dock.setMinimumWidth(dock.maximumWidth())
+        else:
+            dock.setVisible(self.ai_panel_action.isChecked())
+
+    # ------------------------------------------------------------------ 侧栏宽度（拖动调整）
+    def _reading_room(self, other: int) -> int:
+        """另一侧占 ``other`` 时，当前这一侧最多能拿多宽（阅读区至少留 _MIN_READING_WIDTH）。"""
+        return self._content.width() - other - _MIN_READING_WIDTH
+
+    def _sidebar_width(self) -> int:
+        return max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, self._settings.sidebar_width))
+
+    def _ai_panel_width(self) -> int:
+        return max(AI_PANEL_MIN_WIDTH, min(AI_PANEL_MAX_WIDTH, self._settings.ai_panel_width))
+
+    def _resize_sidebar(self, width: int) -> None:
+        other = self._ai_dock.width() if self._ai_dock.isVisible() else 0
+        limit = min(SIDEBAR_MAX_WIDTH, self._reading_room(other))
+        width = max(SIDEBAR_MIN_WIDTH, min(limit, width))
+        self._settings.sidebar_width = width
+        self.sidebar.set_panel_width(width)
+        if self.sidebar.isVisible():
+            self.sidebar.setMaximumWidth(width)
+
+    def _resize_ai_panel(self, width: int) -> None:
+        other = self.sidebar.width() if self.sidebar.isVisible() else 0
+        limit = min(AI_PANEL_MAX_WIDTH, self._reading_room(other))
+        width = max(AI_PANEL_MIN_WIDTH, min(limit, width))
+        self._settings.ai_panel_width = width
+        if self._ai_dock.isVisible():
+            self._ai_dock.setMinimumWidth(width)
+            self._ai_dock.setMaximumWidth(width)
+
+    def _reset_panel_width(self, which: str) -> None:
+        """双击拖动条：恢复默认宽度。"""
+        if which == "sidebar":
+            self._resize_sidebar(SIDEBAR_WIDTH)
+        else:
+            self._resize_ai_panel(AI_PANEL_WIDTH)
+        self._save_settings()
 
     # ------------------------------------------------------------------ 撤销 / 橡皮擦 / 放置
     def _on_undo(self) -> None:
@@ -2593,7 +2652,7 @@ class MainWindow(QMainWindow):
         # 先定侧边栏宽度再布局：否则「适应宽度」按没有侧边栏的宽度算，随后视口变窄
         # 又要重排一次（中间还会闪出横向滚动条）。打开时直接到位，不做宽度动画。
         self.sidebar_action.setChecked(self._settings.sidebar_visible)
-        self.sidebar.setMaximumWidth(SIDEBAR_WIDTH if self._settings.sidebar_visible else 0)
+        self.sidebar.setMaximumWidth(self._sidebar_width() if self._settings.sidebar_visible else 0)
         self.sidebar.setVisible(self._settings.sidebar_visible)
         content_layout = self._content.layout()
         if content_layout is not None:

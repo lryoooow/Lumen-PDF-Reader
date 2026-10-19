@@ -33,10 +33,13 @@ from pdfreader.gui.theme import get_theme
 from pdfreader.gui.widgets import motion
 from pdfreader.services.ai.context import link_citations
 from pdfreader.services.ai.prompts import PRESET_ACTIONS
+from pdfreader.services.ai.textfix import tidy_markdown
 
-__all__ = ["AI_PANEL_WIDTH", "AiPanel"]
+__all__ = ["AI_PANEL_MAX_WIDTH", "AI_PANEL_MIN_WIDTH", "AI_PANEL_WIDTH", "AiPanel"]
 
-AI_PANEL_WIDTH = 380
+AI_PANEL_WIDTH = 380  # 默认宽度；用户可拖动调整
+AI_PANEL_MIN_WIDTH = 320
+AI_PANEL_MAX_WIDTH = 760
 # 流式输出时合并刷新的间隔（毫秒）：逐 token 重排整段 Markdown 太费
 _RENDER_INTERVAL = 80
 _PLACEHOLDER = "就这篇文档提问…（Enter 发送，Shift+Enter 换行）"
@@ -430,7 +433,7 @@ class AiPanel(QFrame):
             self._on_send()
 
     def _copy_turn(self, index: int) -> None:
-        text = self._turns[index].answer if 0 <= index < len(self._turns) else ""
+        text = tidy_markdown(self._turns[index].answer) if 0 <= index < len(self._turns) else ""
         clipboard = QGuiApplication.clipboard()
         if text and clipboard is not None:
             clipboard.setText(text)
@@ -438,4 +441,4 @@ class AiPanel(QFrame):
 
     def _save_turn(self, index: int) -> None:
         if 0 <= index < len(self._turns) and self._turns[index].answer and not self._busy:
-            self.saveNoteRequested.emit(self._turns[index].answer)
+            self.saveNoteRequested.emit(tidy_markdown(self._turns[index].answer))

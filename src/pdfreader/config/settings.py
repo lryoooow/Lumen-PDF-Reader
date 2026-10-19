@@ -89,6 +89,9 @@ class Settings:
     reading_mode: str = "normal"  # "normal" | "night" | "sepia"
     highlight_color: str = "#F5D64E"  # 高亮颜色（十六进制）
     sidebar_visible: bool = True
+    # 左侧边栏 / 右侧 AI 面板的宽度（用户拖动调整；界面按可用范围再夹一次）
+    sidebar_width: int = 280
+    ai_panel_width: int = 380
     # 文件路径 → [页, 页内偏移, 缩放]，插入顺序即最近使用顺序
     reading_positions: dict[str, list[float]] = field(default_factory=dict)
     # 文件路径 → [[页, 页内偏移, 标题], ...]（按页序）

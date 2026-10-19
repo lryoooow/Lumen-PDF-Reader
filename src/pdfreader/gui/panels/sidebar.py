@@ -47,9 +47,11 @@ from pdfreader.gui.theme.manager import serif_font
 from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import motion
 
-__all__ = ["SidePanel"]
+__all__ = ["SIDEBAR_MAX_WIDTH", "SIDEBAR_MIN_WIDTH", "SIDEBAR_WIDTH", "SidePanel"]
 
-SIDEBAR_WIDTH = 280
+SIDEBAR_WIDTH = 280  # 默认宽度；用户可拖动调整
+SIDEBAR_MIN_WIDTH = 220
+SIDEBAR_MAX_WIDTH = 520
 _THUMB_SIZE = QSize(92, 120)  # 约 1:1.3（设计稿 aspect-[1/1.3]）
 _ROLE = Qt.ItemDataRole.UserRole
 _ANNOT_ROLE = Qt.ItemDataRole.UserRole + 1  # 卡片绘制所需的结构化数据
@@ -380,13 +382,22 @@ class SidePanel(QWidget):
         self._thumb_timer.timeout.connect(self._emit_visible_thumbnails)
         self._build()
 
+    @property
+    def panel_width(self) -> int:
+        """内容宽度（显隐动画只改外层的 maximumWidth，这个值不变）。"""
+        return self._inner.width()
+
+    def set_panel_width(self, width: int) -> None:
+        self._inner.setFixedWidth(width)
+
     # ------------------------------------------------------------------ 构建
     def _build(self) -> None:
         inner = QWidget()
         inner.setFixedWidth(SIDEBAR_WIDTH)
+        self._inner = inner
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        # 外层宽度做 0 ↔ 280 的显隐动画，内层固定 280 被裁剪（设计稿 overflow-hidden）
+        # 外层宽度做 0 ↔ 宽度 的显隐动画，内层固定宽度被裁剪（设计稿 overflow-hidden）
         outer.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         outer.addWidget(inner, alignment=Qt.AlignmentFlag.AlignLeft)
         self.setMinimumWidth(0)

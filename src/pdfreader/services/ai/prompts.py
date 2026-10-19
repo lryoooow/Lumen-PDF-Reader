@@ -38,7 +38,12 @@ def _system(language: str) -> Message:
         "role": "system",
         "content": (
             "你是 Lumen PDF 阅读器里的论文阅读助手。请用"
-            f"{language}回答，语言准确、简洁，使用 Markdown（可用小标题、列表、加粗，数学公式用 $…$）。"
+            f"{language}回答，语言准确、简洁，使用 Markdown（可用小标题、列表、加粗）。\n"
+            "排版要求：\n"
+            "- 中文内容使用全角标点（，。：；？！“”（）），中英文之间不必加空格；\n"
+            "- 数学公式直接用 Unicode 书写（如 O(n²)、QKᵀ/√d、α、∑、≤），不要用 LaTeX 或 $ 符号；\n"
+            "- 小标题或关键要点前可以加一个贴切的 emoji（如 🎯 📌 💡 🔍 📊 ⚠️ ✅），"
+            "每个小标题最多一个，正文句子里不要用，不要堆砌。"
         ),
     }
 
@@ -87,7 +92,8 @@ def summary_messages(context: str, language: str, *, truncated: bool) -> list[Me
             "role": "user",
             "content": (
                 "请对这篇文档做结构化总结，依次给出以下小节（文档不是论文时可按内容调整）：\n"
-                "**研究问题**、**方法**、**主要结果**、**局限**、**可借鉴之处**。\n"
+                "🎯 **研究问题**、🛠️ **方法**、📊 **主要结果**、⚠️ **局限**、💡 **可借鉴之处**"
+                "（每个小节用这个 emoji 开头）。\n"
                 f"{_CITE_RULES}\n\n{note}文档片段：\n{context}"
             ),
         },

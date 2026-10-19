@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPixmap,
     QResizeEvent,
+    QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
@@ -49,6 +50,7 @@ from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.palette import Palette
 from pdfreader.gui.widgets import motion
 from pdfreader.services.ai.context import link_citations
+from pdfreader.services.ai.textfix import DISPLAY_MATH_MARK, bold_to_html, tidy_markdown
 
 __all__ = ["ChatView", "ContextCard", "Turn", "markdown_html"]
 
@@ -80,14 +82,30 @@ def markdown_html(text: str, palette: Palette, font: QFont) -> str:
     """Markdown → 富文本：链接用强调色、``cite:`` 页码做成淡底小标签、标题不过分放大。"""
     doc = QTextDocument()
     doc.setDefaultFont(font)
-    doc.setMarkdown(text, QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
+    # 中文里以标点开头 / 结尾的 **加粗** CommonMark 不认，先改写成 <b>
+    doc.setMarkdown(bold_to_html(text), QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
     base = font.pixelSize() if font.pixelSize() > 0 else round(font.pointSizeF() * 4 / 3)
     links: list[tuple[int, int, bool]] = []
     heads: list[tuple[int, int]] = []
+    cursor = QTextCursor(doc)
     block = doc.begin()
     while block.isValid():
+        # 段落疏密：小标题上方留白，段落之间留一点；行间公式居中
+        spacing = QTextBlockFormat()
+        first = block.previous().isValid() is False
         if block.blockFormat().headingLevel() > 0:
             heads.append((block.position(), block.length() - 1))
+            spacing.setTopMargin(0 if first else 10)
+            spacing.setBottomMargin(3)
+        elif block.textList() is None:
+            spacing.setTopMargin(0)
+            spacing.setBottomMargin(6)
+        if block.text().startswith(DISPLAY_MATH_MARK):
+            spacing.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            spacing.setTopMargin(4)
+            spacing.setBottomMargin(10)
+        cursor.setPosition(block.position())
+        cursor.mergeBlockFormat(spacing)
         it = block.begin()
         while not it.atEnd():
             frag = it.fragment()
@@ -96,7 +114,6 @@ def markdown_html(text: str, palette: Palette, font: QFont) -> str:
                 links.append((frag.position(), frag.length(), fmt.anchorHref().startswith("cite:")))
             it += 1
         block = block.next()
-    cursor = QTextCursor(doc)
     heading = QFont(font)
     heading.setPixelSize(base + 1)
     heading.setWeight(QFont.Weight.DemiBold)
@@ -492,7 +509,11 @@ class _AiBubble(QFrame):
         if text:
             self.body.ensurePolished()  # 字号来自样式表
             self.body.setText(
-                markdown_html(link_citations(text, page_count), theme.palette, self.body.font())
+                markdown_html(
+                    link_citations(tidy_markdown(text, mark_display=True), page_count),
+                    theme.palette,
+                    self.body.font(),
+                )
             )
         if len(turn.questions) != self._question_count:
             while self._q_lay.count():
@@ -501,7 +522,7 @@ class _AiBubble(QFrame):
                 if widget is not None:
                     widget.deleteLater()
             if turn.questions:
-                hint = QLabel("可以接着问：")
+                hint = QLabel("💡 可以接着问：")
                 hint.setObjectName("AiWaitText")
                 self._q_lay.addWidget(hint)
             for i, question in enumerate(turn.questions):
@@ -510,7 +531,7 @@ class _AiBubble(QFrame):
                 self._q_lay.addWidget(label)
             self._question_count = len(turn.questions)
         self.questions.setVisible(bool(turn.questions))
-        self.error.setText(f"⚠ {turn.error}" if turn.error else "")
+        self.error.setText(f"⚠️ {turn.error}" if turn.error else "")
         self.error.setVisible(bool(turn.error))
         self.note.setVisible(turn.cancelled)
         has_answer = turn.done and bool(turn.answer) and not turn.error
@@ -697,7 +718,7 @@ class ChatView(QScrollArea):
             if ai.body.isVisibleTo(ai):
                 doc = QTextDocument()
                 doc.setHtml(ai.body.text())
-                lines.append(doc.toPlainText())
+                lines.append(doc.toPlainText().replace(DISPLAY_MATH_MARK, ""))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ 内部
