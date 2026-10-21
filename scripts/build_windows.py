@@ -32,6 +32,8 @@ APP_NAME = "PDFReader"
 ROOT = Path(__file__).resolve().parent.parent
 ENTRY = ROOT / "src" / "pdfreader" / "__main__.py"
 ICON = ROOT / "src" / "pdfreader" / "resources" / "icons" / "app.ico"
+# 查词卡用的离线词典（scripts/build_dictionary.py 生成，随程序发布）
+DICT_DIR = ROOT / "src" / "pdfreader" / "resources" / "dict"
 # 解释器自带的扩展模块 DLL（_ssl.pyd 依赖的 libssl / libcrypto 就在这里）
 PY_DLLS = Path(sys.base_prefix) / "DLLs"
 # 必须与解释器自带版本逐字节一致的 DLL：PATH 上常有同名不同版的副本（如 Git 的 mingw64\bin），
@@ -103,6 +105,8 @@ def build() -> int:
         cmd.extend(["--collect-all", pkg])
     if ICON.exists():
         cmd.extend(["--icon", str(ICON)])
+    if DICT_DIR.is_dir():
+        cmd.extend(["--add-data", f"{DICT_DIR}{os.pathsep}pdfreader/resources/dict"])
     cmd.append(str(ENTRY))
 
     print("执行打包命令:\n" + " ".join(cmd) + "\n")
@@ -118,7 +122,7 @@ def build() -> int:
 
 
 def _verify(dist: Path) -> int:
-    """校验 onedir 产物：exe 存在 + OCR 模型已打包。"""
+    """校验 onedir 产物：exe 存在 + OCR 模型与离线词典已打包。"""
     app_dir = dist / APP_NAME
     exe = app_dir / f"{APP_NAME}.exe"
     if not exe.exists():
@@ -130,6 +134,7 @@ def _verify(dist: Path) -> int:
     models = internal / "rapidocr_onnxruntime" / "models"
     onnx_files = list(models.glob("*.onnx")) if models.exists() else []
     ort_dlls = list(internal.glob("onnxruntime*/**/*.dll")) if internal.exists() else []
+    dictionary = internal / "pdfreader" / "resources" / "dict" / "ecdict-lite.db"
 
     mismatched = _mismatched_dlls(internal)
     if mismatched:
@@ -146,6 +151,7 @@ def _verify(dist: Path) -> int:
     print(f"   OCR 模型: {len(onnx_files)} 个 .onnx {'✓' if onnx_files else '✗（OCR 可能失效）'}")
     print(f"   onnx DLL: {'✓' if ort_dlls else '（依赖 PyInstaller hook）'}")
     print("   OpenSSL:  ✓ 与解释器自带版本一致")
+    print(f"   词典:     {'✓' if dictionary.is_file() else '✗（查词卡将只能用 AI）'}")
     if not onnx_files:
         print("   ⚠️  未检测到 OCR 模型文件，OCR 功能可能不可用。")
     return 0

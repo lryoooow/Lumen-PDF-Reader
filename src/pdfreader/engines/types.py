@@ -23,6 +23,7 @@ __all__ = [
     "InkStroke",
     "LinkInfo",
     "PageText",
+    "PdfSpaceAnnotation",
     "PixmapData",
     "Point",
     "Rect",
@@ -199,6 +200,27 @@ class InkStroke:
     """手写笔迹的一条线（点序列）。"""
 
     points: tuple[Point, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PdfSpaceAnnotation:
+    """要导入的外部批注（如 Zotero）：坐标为 **PDF 用户空间**（原点在页面左下，未旋转），
+    与本项目其余接口的「可见帧」不同，只由引擎在写入时折算。
+
+    Attributes:
+        page_num: 页码（0 起）
+        kind: highlight / underline / note / text / image / ink
+        rects: (x0, y0, x1, y1) 列表；墨迹用 ``paths``（每笔 x, y, x, y, …）
+        comment: 批注笔记；text 类型是框里显示的文字
+        color: RGB（0–1）
+    """
+
+    page_num: int
+    kind: str
+    rects: tuple[tuple[float, float, float, float], ...] = ()
+    paths: tuple[tuple[float, ...], ...] = ()
+    comment: str = ""
+    color: tuple[float, float, float] = (1.0, 0.83, 0.0)
 
 
 @dataclass(frozen=True, slots=True)

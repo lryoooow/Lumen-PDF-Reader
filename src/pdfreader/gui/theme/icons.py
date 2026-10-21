@@ -78,7 +78,13 @@ _PATHS: dict[str, str] = {
     "stop": '<path d="M7 7h10v10H7z"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "check": '<path d="M5 12l5 5 9-10"/>',
+    "pin": '<path d="M9 3h6l-1 6 3 3H7l3-3zM12 15v6"/>',
+    "chain": (
+        '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1'
+        'M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'
+    ),
     "question": '<path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.5V14M12 17.5v.5M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z"/>',
+    "zotero": '<path d="M4 5h6l2 3h8v11H4zM8 12h8M8 15h5"/>',
 }
 
 ICON_NAMES = tuple(_PATHS.keys())

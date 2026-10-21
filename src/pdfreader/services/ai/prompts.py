@@ -24,7 +24,9 @@ __all__ = [
     "suggest_messages",
     "summary_messages",
     "tldr_messages",
+    "translate_image_messages",
     "translate_messages",
+    "word_messages",
 ]
 
 Message = dict[str, Any]
@@ -56,7 +58,14 @@ _CITE_RULES = (
 )
 
 
-def translate_messages(text: str, language: str) -> list[Message]:
+def translate_messages(
+    text: str, language: str, glossary: Sequence[tuple[str, str]] = ()
+) -> list[Message]:
+    """翻译。``glossary`` 是用户术语库里原文出现了的条目 [(术语, 译名)]，要求按它统一译法。"""
+    terms = ""
+    if glossary:
+        lines = "\n".join(f"- {term} → {target}" for term, target in glossary)
+        terms = f"\n术语表（原文出现这些术语时，必须按表中译名翻译）：\n{lines}"
     return [
         {
             "role": "system",
@@ -64,9 +73,49 @@ def translate_messages(text: str, language: str) -> list[Message]:
                 f"你是专业的学术翻译。把用户给出的文本翻译成{language}："
                 "忠实、通顺，保留术语的准确性（首次出现的专业术语可在括号里保留原文），"
                 "保留公式与符号；只输出译文，不要解释。若原文已是目标语言，则润色并只输出结果。"
+                + terms
             ),
         },
         {"role": "user", "content": text},
+    ]
+
+
+def translate_image_messages(png_base64: str, language: str) -> list[Message]:
+    """截图翻译：PDF 文字层是乱码时，让视觉模型直接读图翻译。"""
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"你是专业的学术翻译。用户给出论文里截取的一块区域，请读出其中的文字并翻译成{language}："
+                "忠实、通顺，保留术语、公式与符号；只输出译文，不要解释，不要复述原文。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "请翻译图中的文字。"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_base64}"}},
+            ],
+        },
+    ]
+
+
+def word_messages(word: str, sentence: str, language: str) -> list[Message]:
+    """查词：结合所在句子解释一个英文单词（词典没收录，或想知道它在本句里的确切含义）。"""
+    context = f"\n\n它所在的句子：\n{sentence}" if sentence.strip() else ""
+    return [
+        _system(language),
+        {
+            "role": "user",
+            "content": (
+                f"请解释英文单词「{word}」，按下面的格式简洁回答（不要多余的开场白）：\n"
+                "**音标**：英式音标\n"
+                "**释义**：常见词性与中文意思（一两行）\n"
+                "**本句中**：结合句子说明它在这里的确切含义（没有句子就省略这一项）\n"
+                "**学术搭配**：两三个论文里常见的搭配\n"
+                "**例句**：一句学术风格的英文例句并附译文" + context
+            ),
+        },
     ]
 
 

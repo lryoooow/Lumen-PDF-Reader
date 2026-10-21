@@ -30,9 +30,13 @@ def _no_write_settings(
     ``~/.pdfreader/settings.json``（最近文件 / 阅读位置），还会读入开发者的设置影响结果。
     """
     from pdfreader.config import settings as settings_module
+    from pdfreader.services import materials as materials_module
 
-    path = tmp_path_factory.mktemp("settings") / "settings.json"
+    folder = tmp_path_factory.mktemp("settings")
+    path = folder / "settings.json"
     monkeypatch.setattr(settings_module, "default_settings_path", lambda: path)
+    # 写作素材库同理：不碰开发者真实的 ~/.pdfreader/materials.db
+    monkeypatch.setattr(materials_module, "default_materials_path", lambda: folder / "m.db")
     yield
 
 

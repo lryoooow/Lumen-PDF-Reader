@@ -25,6 +25,7 @@ from PySide6.QtCore import (
     QAbstractAnimation,
     QPointF,
     QPropertyAnimation,
+    QRect,
     QRectF,
     Qt,
     QTimer,
@@ -59,7 +60,7 @@ from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import motion
 from pdfreader.utils.cache import LRUCache
 from pdfreader.utils.qt_bridge import pixmap_to_qimage
-from pdfreader.utils.text import clean_copied_text, join_words
+from pdfreader.utils.text import clean_copied_text, join_words, normalize_pdf_text
 
 __all__ = ["MAX_ZOOM", "MIN_ZOOM", "PAGE_GAP", "PdfView", "ReadingMode"]
 
@@ -155,6 +156,9 @@ class PdfView(QGraphicsView):
     markupRequested = Signal(int, object, str)  # page, tuple[Rect, ...], kind
     areaCaptured = Signal(int, object)  # 框选工具松开：page, Rect（可见帧 PDF 点）
     aiRequested = Signal(str)  # 右键选中文字 → AI：translate / explain / ask
+    selectionFinished = Signal()  # 拖选松开且选中了文字（划词翻译据此出现）
+    materialRequested = Signal(str)  # 右键「加入语料 / 引文 / 术语」：corpus / quote / term
+    scrolled = Signal()  # 视口滚动（浮在选区旁的小按钮据此收起）
 
     def __init__(  # type: ignore[no-untyped-def]
         self,
@@ -424,6 +428,8 @@ class PdfView(QGraphicsView):
                 if link is not None and page_num is not None:
                     self._clear_selection()
                     self.linkActivated.emit(page_num, link)
+            elif self._selected_text:
+                self.selectionFinished.emit()
             return
         super().mouseReleaseEvent(event)
 
@@ -495,6 +501,21 @@ class PdfView(QGraphicsView):
             return None
         return self._sel_page, tuple(self._line_rects(self._sel_words))
 
+    def selection_view_rect(self, *, last_word: bool = False) -> QRect | None:
+        """当前选区在本控件坐标里的外接矩形（给贴在选区旁的浮窗定位）；无选区返回 None。
+
+        ``last_word=True`` 只取最后一个词（选区末尾的小按钮贴着它）。
+        """
+        if not self._sel_items:
+            return None
+        items = self._sel_items[-1:] if last_word else self._sel_items
+        scene = QRectF()
+        for item in items:
+            scene = scene.united(item.sceneBoundingRect())
+        box = QRect(self.mapFromScene(scene).boundingRect())
+        box.translate(self.viewport().pos())
+        return box
+
     def clear_selection(self) -> None:
         """清除当前文本选择（切换到批注模式、缩放、换文档时调用）。"""
         self._clear_selection()
@@ -507,7 +528,8 @@ class PdfView(QGraphicsView):
         if not self._selected_text:
             return 0
         merge = bool(merge_lines)
-        text = clean_copied_text(self._selected_text) if merge else self._selected_text
+        raw = self._selected_text
+        text = clean_copied_text(raw) if merge else normalize_pdf_text(raw)
         clipboard = QGuiApplication.clipboard()
         if clipboard is not None:
             clipboard.setText(text)
@@ -884,6 +906,13 @@ class PdfView(QGraphicsView):
                 ("问 AI…", "ask"),
             ):
                 menu.addAction(label, lambda k=kind: self.aiRequested.emit(k))
+            menu.addSeparator()
+            for label, kind in (
+                ("加入语料", "corpus"),
+                ("加入引文", "quote"),
+                ("加入术语…", "term"),
+            ):
+                menu.addAction(label, lambda k=kind: self.materialRequested.emit(k))
             menu.exec(event.globalPos())
             return
         super().contextMenuEvent(event)
@@ -1216,6 +1245,7 @@ class PdfView(QGraphicsView):
         super().scrollContentsBy(dx, dy)
         self._update_current_page()
         self._request_visible_pages()
+        self.scrolled.emit()
 
     def _update_current_page(self) -> None:
         """当前页 = 视口中露出高度最大的页（并列取靠前者）；无文档时为 None。"""

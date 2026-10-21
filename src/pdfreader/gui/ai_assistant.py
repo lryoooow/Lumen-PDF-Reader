@@ -58,6 +58,7 @@ class AiAssistant(QObject):
         on_annotation_added: AI 笔记存为便签后通知主窗口刷新该页
         start_ocr: 扫描件没有文字时启动全文 OCR（None = 不可用）
         show_marks: 在页面上显示 / 清除（空序列）速读标记
+        glossary: 给一段原文返回其中出现的术语 [(术语, 译名)]（翻译时统一译法；None = 不用）
 
     多标签时每个文档标签一个实例（对话、缓存、请求线程各归各的）；模型设置在实例间共享，
     任一实例保存设置后发 ``settingsApplied``，主窗口再用 :meth:`adopt_settings` 同步给其他实例。
@@ -81,6 +82,7 @@ class AiAssistant(QObject):
         on_annotation_added: Callable[[int], None],
         start_ocr: Callable[[], None] | None = None,
         show_marks: Callable[[int, Sequence[Rect]], None] | None = None,
+        glossary: Callable[[str], list[tuple[str, str]]] | None = None,
         store: AiSettingsStore | None = None,
         keystore: KeyStore | None = None,
         client_factory: ClientFactory | None = None,
@@ -96,11 +98,14 @@ class AiAssistant(QObject):
         self._on_annotation_added = on_annotation_added
         self._start_ocr = start_ocr
         self._show_marks = show_marks
+        self._glossary = glossary or (lambda _text: [])
         self._store = store or AiSettingsStore()
         self._keystore = keystore or default_keystore()
         self._client_factory: ClientFactory = client_factory or (lambda b, k: ChatClient(b, k))
         self._settings = self._store.load()
         self._worker: AiWorker | None = None
+        # 划词翻译浮窗的请求：与面板对话互不干扰（各自取消），不进对话历史
+        self._quick: AiWorker | None = None
         self._retired: list[AiWorker] = []
         self._kind = "chat"
         self._remember = ""  # 本轮完成后写进对话历史的「用户这句话」；空 = 不记
@@ -147,7 +152,7 @@ class AiAssistant(QObject):
         return self._client_factory
 
     def workers(self) -> list[AiWorker]:
-        return [w for w in (self._worker, *self._retired) if w is not None]
+        return [w for w in (self._worker, self._quick, *self._retired) if w is not None]
 
     def is_ready(self) -> bool:
         provider = self._settings.active()
@@ -202,6 +207,7 @@ class AiAssistant(QObject):
     def reset_document(self) -> None:
         """切换 / 关闭文档：停掉请求，清空对话与缓存。"""
         self.stop()
+        self.stop_quick()
         self._history.clear()
         self._note_anchor = None
         self._encrypted_ok = False
@@ -246,7 +252,7 @@ class AiAssistant(QObject):
         self._start(
             f"翻译成{language}",
             text,
-            prompts.translate_messages(text, language),
+            prompts.translate_messages(text, language, self._glossary(text)),
             label=_page_label(page),
             remember=f"请把这段原文翻译成{language}：\n{_clip(text)}",
         )
@@ -408,6 +414,65 @@ class AiAssistant(QObject):
             return
         self._retire(worker)
         self._panel.cancel_turn()
+
+    # ------------------------------------------------------------------ 划词翻译浮窗
+    def quick_translate(self, text: str = "", *, image: bytes = b"") -> AiWorker | None:
+        """划词翻译浮窗用的单独请求：不进 AI 面板与对话历史，发送前同样检查配置与隐私确认。
+
+        ``image`` 非空时发截图让视觉模型读图翻译。返回已启动的线程（调用方连接它的
+        ``delta`` / ``finished_text`` / ``failed`` 信号）；未配置或用户取消返回 None。
+        同时只保留一个浮窗请求，新请求会取消旧的。
+        """
+        language = self._settings.target_language
+        if image:
+            encoded = base64.b64encode(image).decode("ascii")
+            return self._start_quick(prompts.translate_image_messages(encoded, language))
+        return self._start_quick(prompts.translate_messages(text, language, self._glossary(text)))
+
+    def quick_word(
+        self, word: str, page: int | None = None, rect: Rect | None = None
+    ) -> AiWorker | None:
+        """查词浮窗：让 AI 结合所在句子解释一个单词（词典没收录 / 想看本句含义时）。"""
+        sentence = ""
+        if page is not None and rect is not None and self._controller.has_document:
+            sentence = self._controller.text_excerpt(page, max(0.0, rect.y0 - 24), max_chars=400)
+        return self._start_quick(
+            prompts.word_messages(word, sentence, self._settings.target_language)
+        )
+
+    def _start_quick(self, messages: list[Message]) -> AiWorker | None:
+        provider = self._ensure_ready()
+        if provider is None:
+            return None
+        if not self._allowed(provider, _message_chars(messages)):
+            return None
+        self.stop_quick()
+        worker = AiWorker(self)
+        worker.setup_chat(
+            self._client_factory(provider.base_url, self._key(provider)),
+            messages,
+            model=provider.model,
+            temperature=provider.temperature,
+        )
+        worker.finished.connect(self._on_thread_finished)
+        self._quick = worker
+        worker.start()
+        return worker
+
+    def stop_quick(self) -> None:
+        """取消浮窗的翻译请求（没有则什么也不做）。"""
+        if self._quick is not None:
+            self._retire(self._quick)
+
+    @property
+    def supports_image(self) -> bool:
+        """当前模型是否标记为支持图片输入（截图翻译能否直接交给模型）。"""
+        provider = self._settings.active()
+        return provider is not None and provider.vision
+
+    def capture_png(self, page: int, rect: Rect) -> bytes:
+        """把页面上一块区域渲染成 PNG（截图翻译 / 截图 OCR 用；失败返回空字节）。"""
+        return self._capture_png(page, rect)
 
     def clear(self) -> None:
         self.stop()
@@ -593,6 +658,8 @@ class AiAssistant(QObject):
         worker.shutdown()
         if worker is self._worker:
             self._worker = None
+        if worker is self._quick:
+            self._quick = None
         if worker.isRunning():
             self._retired.append(worker)
         else:
@@ -667,6 +734,8 @@ class AiAssistant(QObject):
             return
         if worker in self._retired:
             self._retired.remove(worker)
+        if worker is self._quick:  # 浮窗请求正常结束（结果已经由信号交给浮窗）
+            self._quick = None
         if worker is self._worker:  # 线程结束却没发任何结果信号（理论上不会）
             self._worker = None
             if self._panel.busy:

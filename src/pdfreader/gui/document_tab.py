@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from pdfreader.controllers import DocumentController
     from pdfreader.gui.ai_assistant import AiAssistant
     from pdfreader.gui.panels.ai_panel import AiPanel
+    from pdfreader.gui.selection_translator import SelectionTranslator
     from pdfreader.gui.widgets.pdf_view import PdfView
     from pdfreader.workers import OcrWorker
 
@@ -29,6 +30,7 @@ class DocumentTab:
         self.view = view
         self.panel = panel
         self.ai: AiAssistant  # 主窗口随后创建（回调要引用本标签）
+        self.translator: SelectionTranslator  # 划词翻译（同上，在 AI 会话之后创建）
         # 导航历史（链接 / 目录 / 搜索结果跳转后可「后退」）：(页, 页内偏移)
         self.back_stack: list[tuple[int, float]] = []
         self.forward_stack: list[tuple[int, float]] = []

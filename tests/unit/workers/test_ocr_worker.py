@@ -321,3 +321,38 @@ def test_engine_png_encode_used_by_worker() -> None:
         assert engine.pixmap_to_png(data)[:8] == PNG_MAGIC
     finally:
         engine.close(doc)
+
+
+class TestImageOcrWorker:
+    """截图 OCR（划词翻译遇到乱码时）：图片在主线程截好，线程里只跑识别。"""
+
+    def test_recognized(self, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import pdfreader.workers.ocr_worker as mod
+
+        monkeypatch.setattr(mod, "OCR_AVAILABLE", True)
+        fake = _FakeOcr()
+        w = mod.ImageOcrWorker(PNG_MAGIC + b"data", service=fake)  # type: ignore[arg-type]
+        got: list[str] = []
+        w.recognized.connect(got.append)
+        w.run()
+        assert got == ["page-0"] and fake.calls[0][0].startswith(PNG_MAGIC)
+
+    def test_ocr_error_reported(self, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import pdfreader.workers.ocr_worker as mod
+
+        monkeypatch.setattr(mod, "OCR_AVAILABLE", True)
+        w = mod.ImageOcrWorker(b"x", service=_FakeOcr(OcrError("识别失败")))  # type: ignore[arg-type]
+        failed: list[str] = []
+        w.failed.connect(failed.append)
+        w.run()
+        assert failed == ["识别失败"]
+
+    def test_unavailable(self, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import pdfreader.workers.ocr_worker as mod
+
+        monkeypatch.setattr(mod, "OCR_AVAILABLE", False)
+        w = mod.ImageOcrWorker(b"x")
+        failed: list[str] = []
+        w.failed.connect(failed.append)
+        w.run()
+        assert failed and "不可用" in failed[0]

@@ -1,4 +1,4 @@
-"""左侧边栏：目录 / 批注 / 缩略图（Lumen 设计稿，宽 280）。
+"""左侧边栏：目录 / 批注 / 缩略图 / 素材（Lumen 设计稿，宽 280）。
 
 * 顶部**分段切换**：滑块随页签滑动（400ms OutExpo），「批注」带数量角标。
 * **目录**：上方「我的书签」（Ctrl+D 添加，右键重命名 / 删除）；下方文档目录——扁平缩进列表
@@ -6,6 +6,8 @@
 * **批注**：顶部搜索框 + 类型 / 颜色筛选；卡片——左侧色条、「第 N 页 · 类型」、衬线引文、
   📝笔记；单击跳转、双击编辑、右键更多；底部虚线按钮「导出笔记 (.md)」。
 * **缩略图**：两列网格，当前页带强调色描边，只为可见条目请求渲染（大文档不卡）。
+* **素材**：跨文档的写作素材库（单词本 / 语料 / 引文 / 术语）——类型下拉 + 搜索 + 卡片
+  （原文、备注、来源「文档 · 第 N 页」）；单击跳回原文、右键复制 / 编辑 / 删除，底部导出。
 
 本面板只负责展示与发信号，不直接访问文档；数据由主窗口经控制器提供。
 """
@@ -46,6 +48,7 @@ from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.manager import serif_font
 from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import motion
+from pdfreader.services.materials import KIND_LABELS, KINDS, Material
 
 __all__ = ["SIDEBAR_MAX_WIDTH", "SIDEBAR_MIN_WIDTH", "SIDEBAR_WIDTH", "SidePanel"]
 
@@ -55,6 +58,9 @@ SIDEBAR_MAX_WIDTH = 520
 _THUMB_SIZE = QSize(92, 120)  # 约 1:1.3（设计稿 aspect-[1/1.3]）
 _ROLE = Qt.ItemDataRole.UserRole
 _ANNOT_ROLE = Qt.ItemDataRole.UserRole + 1  # 卡片绘制所需的结构化数据
+# 分段按钮窄于这个宽度时只显示文字（四个页签挤在 280px 里，图标 + 角标会盖住「批注」二字）
+_SEGMENT_ICON_MIN_WIDTH = 74
+_BADGE_ROOM = 16  # 带角标的按钮右内边距比左边多出的部分（与样式表 badged 一致：20 - 4）
 
 
 class _Segmented(QWidget):
@@ -119,6 +125,11 @@ class _Segmented(QWidget):
     def set_badge(self, button_index: int, text: str) -> None:
         self._badge.setText(text)
         self._badge.adjustSize()
+        if getattr(self, "_badge_index", None) != button_index:
+            for i, btn in enumerate(self._buttons):
+                btn.setProperty("badged", "true" if i == button_index else "false")
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
         self._badge_index = button_index
         self._place_badge()
 
@@ -142,13 +153,18 @@ class _Segmented(QWidget):
             return
         btn = self._buttons[index]
         geo = btn.geometry()
-        self._badge.move(
-            geo.right() - self._badge.width() - 6, geo.center().y() - self._badge.height() // 2
-        )
+        # 紧跟在「图标 + 文字」之后（样式表给这颗按钮加了右内边距，内容整体左移 _BADGE_ROOM / 2）
+        content = btn.fontMetrics().horizontalAdvance(btn.text())
+        if not btn.icon().isNull():
+            content += btn.iconSize().width() + 4
+        center = geo.center().x() - _BADGE_ROOM // 2
+        x = min(center + content // 2 + 3, geo.right() - self._badge.width() - 1)
+        self._badge.move(x, geo.center().y() - self._badge.height() // 2)
         self._badge.raise_()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
+        self._refresh_icons()
         self._move_thumb(animate=False)
         self._place_badge()
 
@@ -159,8 +175,10 @@ class _Segmented(QWidget):
 
     def _refresh_icons(self) -> None:
         p = self._theme.palette
+        roomy = self.width() >= _SEGMENT_ICON_MIN_WIDTH * len(self._buttons)
         for btn, name in zip(self._buttons, self._icons, strict=True):
-            btn.setIcon(self._theme.colored_icon(name, p.text_secondary, size=13))
+            icon = self._theme.colored_icon(name, p.text_secondary, size=13) if roomy else QIcon()
+            btn.setIcon(icon)
 
 
 class _AnnotationCardDelegate(QStyledItemDelegate):
@@ -235,7 +253,7 @@ class _AnnotationCardDelegate(QStyledItemDelegate):
             painter.setPen(QColor(p.text))
             fm = QFontMetrics(quote)
             box = QRect(x, y, w, 2 * fm.lineSpacing())
-            text = f"“{data['quote']}”"
+            text = data["quote"] if data.get("plain") else f"“{data['quote']}”"
             elided = _elide_lines(text, fm, w, 2)
             painter.drawText(
                 box, int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap), elided
@@ -350,6 +368,10 @@ class SidePanel(QWidget):
         exportNotesRequested(): 导出笔记为 Markdown
         thumbnailActivated(int): 点击缩略图 → 页码
         thumbnailsNeeded(list): 这些页的缩略图需要渲染（只含当前可见、尚未渲染的）
+        materialKindChanged(str): 素材页换了类型（主窗口据此重新 set_materials）
+        materialActivated(object): 单击素材 → Material（跳回原文）
+        materialEditRequested(object) / materialDeleteRequested(object): 右键编辑备注 / 删除
+        materialsExportRequested(str): 导出某类素材（类型）
     """
 
     tocActivated = Signal(int, object)
@@ -363,10 +385,16 @@ class SidePanel(QWidget):
     exportNotesRequested = Signal()
     thumbnailActivated = Signal(int)
     thumbnailsNeeded = Signal(list)
+    materialKindChanged = Signal(str)
+    materialActivated = Signal(object)
+    materialEditRequested = Signal(object)
+    materialDeleteRequested = Signal(object)
+    materialsExportRequested = Signal(str)
 
     TAB_TOC = 0
     TAB_ANNOTATIONS = 1
     TAB_THUMBNAILS = 2
+    TAB_MATERIALS = 3
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -374,6 +402,7 @@ class SidePanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._theme = get_theme()
         self._annotations: list[Annotation] = []
+        self._materials: list[Material] = []
         self._thumb_done: set[int] = set()
         self._current_page = 0
         self._thumb_timer = QTimer(self)
@@ -405,7 +434,9 @@ class SidePanel(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        self.tabs = _Segmented([("目录", "list"), ("批注", "pen"), ("缩略图", "grid")])
+        self.tabs = _Segmented(
+            [("目录", "list"), ("批注", "pen"), ("缩略图", "grid"), ("素材", "bookmark")]
+        )
         layout.addWidget(self.tabs)
         self._pages = QStackedWidget()
         layout.addWidget(self._pages, stretch=1)
@@ -528,10 +559,60 @@ class SidePanel(QWidget):
             lambda _v: self._thumb_timer.start()
         )
         self._pages.addWidget(self.thumb_list)
+        self._pages.addWidget(self._build_materials())
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.set_annotations(())
         self.set_bookmarks(())
+
+    def _build_materials(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.material_kind = QComboBox()
+        self.material_kind.setToolTip("素材类型")
+        for kind in KINDS:
+            self.material_kind.addItem(_MATERIAL_TITLES[kind], kind)
+        self.material_kind.currentIndexChanged.connect(self._on_material_kind)
+        self.material_search = QLineEdit()
+        self.material_search.setObjectName("AnnotSearch")
+        self.material_search.setPlaceholderText("搜索")
+        self.material_search.setClearButtonEnabled(True)
+        self.material_search.textChanged.connect(lambda _t: self._apply_material_filter())
+        head.addWidget(self.material_kind)
+        head.addWidget(self.material_search, stretch=1)
+        lay.addLayout(head)
+        self.material_list = QListWidget()
+        self.material_list.setObjectName("AnnotList")
+        self.material_list.setItemDelegate(_AnnotationCardDelegate(self.material_list))
+        self.material_list.setMouseTracking(True)
+        self.material_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.material_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.material_list.customContextMenuRequested.connect(self._on_material_menu)
+        self.material_list.itemClicked.connect(self._on_material_clicked)
+        self.material_list.setToolTip("单击跳回原文 · 右键更多")
+        lay.addWidget(self.material_list, stretch=1)
+        self.material_empty = QLabel()
+        self.material_empty.setProperty("variant", "muted")
+        self.material_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.material_empty.setWordWrap(True)
+        lay.addWidget(self.material_empty, stretch=1)
+        self.material_no_match = QLabel("没有符合搜索的素材")
+        self.material_no_match.setProperty("variant", "muted")
+        self.material_no_match.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.material_no_match)
+        self.material_export_btn = QPushButton()
+        self.material_export_btn.setObjectName("ExportNotesButton")
+        self.material_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.material_export_btn.clicked.connect(
+            lambda: self.materialsExportRequested.emit(self.material_kind_key)
+        )
+        lay.addWidget(self.material_export_btn)
+        self.set_materials(())
+        return page
 
     @staticmethod
     def _flat_tree(name: str) -> QTreeWidget:
@@ -803,6 +884,106 @@ class SidePanel(QWidget):
         menu.addAction("删除批注", lambda: self.annotationDeleteRequested.emit(annot))
         menu.exec(self.annot_list.viewport().mapToGlobal(pos))
 
+    # ------------------------------------------------------------------ 素材
+    @property
+    def material_kind_key(self) -> str:
+        return str(self.material_kind.currentData() or KINDS[0])
+
+    def set_material_kind(self, kind: str) -> None:
+        """切到某类素材（会发 materialKindChanged，由主窗口填数据）。"""
+        index = self.material_kind.findData(kind)
+        if index >= 0:
+            self.material_kind.setCurrentIndex(index)
+
+    def _on_material_kind(self, _index: int) -> None:
+        self.material_search.clear()
+        self.materialKindChanged.emit(self.material_kind_key)
+
+    def set_materials(self, items: Sequence[Material]) -> None:
+        """刷新当前类型的素材卡片（最新的在前）。"""
+        kind = self.material_kind_key
+        self._materials = list(items)
+        self.material_list.clear()
+        for i, m in enumerate(self._materials):
+            if m.kind == "word":
+                phonetic = m.extra.get("phonetic", "")
+                quote = f"{m.text}  /{phonetic}/" if phonetic else m.text
+            elif m.kind == "term":
+                quote = f"{m.text} → {m.note}" if m.note else m.text
+            else:
+                quote = m.text
+            note = "" if m.kind == "term" else m.note
+            meta = m.source_label or KIND_LABELS[m.kind]
+            item = QListWidgetItem("\n".join(x for x in (meta, quote, note) if x))
+            item.setToolTip(m.text if len(m.text) > 60 else "")
+            item.setData(_ROLE, i)
+            item.setData(
+                _ANNOT_ROLE,
+                {
+                    "meta": meta,
+                    "quote": quote,
+                    "note": note,
+                    "color": _MATERIAL_COLORS[m.kind],
+                    "plain": m.kind in ("word", "term"),
+                },
+            )
+            self.material_list.addItem(item)
+        count = len(self._materials)
+        self.material_empty.setText(_MATERIAL_HINTS[kind])
+        self.material_empty.setVisible(count == 0)
+        self.material_search.setVisible(count > 0)
+        self.material_export_btn.setText(f"导出{_MATERIAL_TITLES[kind]} (.md / .csv)")
+        self.material_export_btn.setEnabled(count > 0)
+        self._apply_material_filter()
+
+    def _apply_material_filter(self) -> None:
+        needle = self.material_search.text().strip().casefold()
+        shown = 0
+        for row in range(self.material_list.count()):
+            item = self.material_list.item(row)
+            m = self._material_for(item)
+            if m is None:
+                continue
+            ok = not needle or needle in f"{m.text} {m.note} {m.doc_title}".casefold()
+            item.setHidden(not ok)
+            shown += int(ok)
+        self.material_list.setVisible(shown > 0)
+        self.material_no_match.setVisible(bool(self._materials) and shown == 0)
+
+    def visible_materials(self) -> list[Material]:
+        return [
+            m
+            for row in range(self.material_list.count())
+            if (m := self._material_for(self.material_list.item(row))) is not None
+            and not self.material_list.item(row).isHidden()
+        ]
+
+    def _material_for(self, item: QListWidgetItem | None) -> Material | None:
+        if item is None:
+            return None
+        idx = item.data(_ROLE)
+        if isinstance(idx, int) and 0 <= idx < len(self._materials):
+            return self._materials[idx]
+        return None
+
+    def _on_material_clicked(self, item: QListWidgetItem) -> None:
+        m = self._material_for(item)
+        if m is not None:
+            self.materialActivated.emit(m)
+
+    def _on_material_menu(self, pos: QPoint) -> None:
+        m = self._material_for(self.material_list.itemAt(pos))
+        if m is None:
+            return
+        menu = QMenu(self)
+        if m.doc_path:
+            menu.addAction("跳回原文", lambda: self.materialActivated.emit(m))
+        menu.addAction("复制", lambda: _copy_text(_material_copy_text(m)))
+        menu.addAction(_MATERIAL_EDIT_LABELS[m.kind], lambda: self.materialEditRequested.emit(m))
+        menu.addSeparator()
+        menu.addAction("删除", lambda: self.materialDeleteRequested.emit(m))
+        menu.exec(self.material_list.viewport().mapToGlobal(pos))
+
     # ------------------------------------------------------------------ 缩略图
     def set_page_count(self, count: int) -> None:
         """重建缩略图占位（换文档 / 增删页后调用），缩略图随后按可见性按需渲染。"""
@@ -867,6 +1048,38 @@ class SidePanel(QWidget):
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
         self._thumb_timer.start()
+
+
+_MATERIAL_TITLES = {"word": "单词本", "corpus": "语料库", "quote": "引文库", "term": "术语库"}
+_MATERIAL_COLORS = {"word": "#C96A49", "corpus": "#5B8DB8", "quote": "#7A9E6E", "term": "#B48A3C"}
+_MATERIAL_EDIT_LABELS = {
+    "word": "编辑释义…",
+    "corpus": "编辑备注…",
+    "quote": "编辑转述…",
+    "term": "编辑译名…",
+}
+_MATERIAL_HINTS = {
+    "word": "单词本还是空的。\n选中一个英文单词，在词卡上点「收藏」。",
+    "corpus": "语料库还是空的。\n选中值得借鉴的句子，右键「加入语料」。",
+    "quote": "引文库还是空的。\n选中原文，右键「加入引文」，会附一句可改写的转述。",
+    "term": "术语库还是空的。\n选中术语，右键「加入术语」并填写译名；翻译时按它统一译法。",
+}
+
+
+def _material_copy_text(m: Material) -> str:
+    if m.kind == "term":
+        return f"{m.text}\t{m.note}"
+    if m.kind == "quote" and m.note:
+        return m.note
+    return m.text
+
+
+def _copy_text(text: str) -> None:
+    from PySide6.QtGui import QGuiApplication
+
+    clipboard = QGuiApplication.clipboard()
+    if clipboard is not None:
+        clipboard.setText(text)
 
 
 def _swatch(color: str) -> QIcon:

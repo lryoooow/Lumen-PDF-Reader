@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pdfreader.workers.ai_worker import AiWorker
 from pdfreader.workers.convert_worker import ConvertWorker
-from pdfreader.workers.ocr_worker import OcrWorker
+from pdfreader.workers.ocr_worker import ImageOcrWorker, OcrWorker
 from pdfreader.workers.search_worker import SearchWorker
 
-__all__ = ["AiWorker", "ConvertWorker", "OcrWorker", "SearchWorker"]
+__all__ = ["AiWorker", "ConvertWorker", "ImageOcrWorker", "OcrWorker", "SearchWorker"]

@@ -29,6 +29,7 @@ TOOL_HINTS = {
     "signature": "点击页面放置签名",
     "timestamp": "点击页面放置时间",
     "capture": "拖框选取公式 / 图表，交给 AI 解释",
+    "capture_translate": "拖框选取要翻译的文字（截图识别）",
 }
 
 

@@ -41,6 +41,7 @@ from pdfreader.engines.types import (
     InkStroke,
     LinkInfo,
     PageText,
+    PdfSpaceAnnotation,
     PixmapData,
     Point,
     Rect,
@@ -259,6 +260,46 @@ def _add_free_text(
     annot.set_info(content=text)
     annot.update()
     return annot
+
+
+def _import_one(page: pymupdf.Page, item: PdfSpaceAnnotation) -> bool:
+    """写入一条 PDF 用户空间坐标的外部批注；无法表示的返回 False。"""
+    to_page = page.transformation_matrix
+    rects = [
+        pymupdf.Rect(*r).normalize() * to_page for r in item.rects if r[2] != r[0] or r[3] != r[1]
+    ]
+    rects = [r.normalize() for r in rects]
+    kind = item.kind
+    annot: pymupdf.Annot | None = None
+    if kind in ("highlight", "underline") and rects:
+        method = "add_highlight_annot" if kind == "highlight" else "add_underline_annot"
+        annot = getattr(page, method)(rects)
+        annot.set_colors(stroke=item.color)
+    elif kind == "note" and rects:
+        annot = page.add_text_annot(rects[0].tl, item.comment or " ")
+        annot.set_colors(stroke=item.color)
+    elif kind == "text" and rects and item.comment.strip():
+        visible = rects[0] * page.rotation_matrix
+        rect = Rect(float(visible.x0), float(visible.y0), float(visible.x1), float(visible.y1))
+        _add_free_text(page, rect, item.comment)
+        return True
+    elif kind == "image" and rects:
+        annot = page.add_rect_annot(rects[0])
+        annot.set_colors(stroke=item.color)
+        annot.set_border(width=1.2)
+    elif kind == "ink" and item.paths:
+        lines = [
+            [pymupdf.Point(path[i], path[i + 1]) * to_page for i in range(0, len(path) - 1, 2)]
+            for path in item.paths
+        ]
+        annot = page.add_ink_annot([[(p.x, p.y) for p in line] for line in lines if line])
+        annot.set_colors(stroke=item.color)
+    if annot is None:
+        return False
+    if item.comment and kind != "note":
+        annot.set_info(content=item.comment)
+    annot.update()
+    return True
 
 
 def _visible_rect(page: pymupdf.Page, rect: pymupdf.Rect) -> Rect:
@@ -1138,6 +1179,29 @@ class PyMuPdfEngine:
                     annot.update()
         except Exception as exc:
             raise PdfEngineError(f"修改批注失败：{exc}") from exc
+
+    def import_pdf_space_annotations(
+        self, doc: EngineDocument, items: Sequence[PdfSpaceAnnotation]
+    ) -> int:
+        """批量导入外部批注（坐标为 PDF 用户空间），整批一次撤销；返回实际添加的条数。
+
+        ``page.transformation_matrix`` 把 PDF 用户空间（左下原点，含 MediaBox 偏移）折算到
+        未旋转帧——正是 PyMuPDF 写批注要的坐标系，旋转页无需再处理。超出页数、没有区域的条目跳过。
+        """
+        handle = self._require(doc)
+        native = handle.native
+        added = 0
+        try:
+            with self._op(handle, "import_annots"):
+                for item in items:
+                    if not 0 <= item.page_num < native.page_count:
+                        continue
+                    page = handle.get_page(item.page_num)
+                    if _import_one(page, item):
+                        added += 1
+        except Exception as exc:
+            raise PdfEngineError(f"导入批注失败：{exc}") from exc
+        return added
 
     def add_ink(self, doc: EngineDocument, page_num: int, strokes: tuple[InkStroke, ...]) -> None:
         handle = self._require(doc)

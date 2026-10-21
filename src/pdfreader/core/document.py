@@ -24,6 +24,7 @@ from pdfreader.engines.types import (
     DocumentMeta,
     InkStroke,
     LinkInfo,
+    PdfSpaceAnnotation,
     PixmapData,
     Point,
     Rect,
@@ -298,6 +299,12 @@ class Document:
             lambda h: self._engine.add_markup(h, page_num, rects, kind=kind, color=color),
             page_num,
         )
+
+    def import_pdf_space_annotations(self, items: Sequence[PdfSpaceAnnotation]) -> int:
+        """批量导入外部批注（Zotero 等，PDF 用户空间坐标），一次撤销；返回添加条数。"""
+        added: list[int] = []
+        self._edit(lambda h: added.append(self._engine.import_pdf_space_annotations(h, items)))
+        return added[0] if added else 0
 
     def add_ink(self, page_num: int, strokes: tuple[InkStroke, ...]) -> None:
         """添加手写笔迹批注。"""

@@ -117,6 +117,8 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 - [ ] 全文对照翻译
 - [ ] 双页 / 书本视图
 - [x] 文献库首页：收藏、按文件夹分组与检索
+- [x] 划词翻译浮窗、离线查词卡与写作素材库
+- [x] 从 Zotero 导入批注（只读本机库）
 
 ## 参与贡献
 
@@ -125,3 +127,5 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 ## 许可证
 
 Lumen 基于 [GNU AGPL-3.0](LICENSE) 开源发布，可以免费使用、学习与修改。
+
+查词卡使用的离线词典精简自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT 许可，许可文本见 `src/pdfreader/resources/dict/LICENSE`）。

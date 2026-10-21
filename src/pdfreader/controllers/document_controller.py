@@ -27,6 +27,7 @@ from pdfreader.engines.types import (
     Annotation,
     InkStroke,
     LinkInfo,
+    PdfSpaceAnnotation,
     PixmapData,
     Point,
     Rect,
@@ -350,6 +351,12 @@ class DocumentController(QObject):
         return self._run(
             "添加标记", lambda d: d.add_markup(page_num, rects, kind=kind, color=color)
         )
+
+    def import_pdf_space_annotations(self, items: Sequence[PdfSpaceAnnotation]) -> int:
+        """导入外部批注（Zotero 等）；返回添加条数，失败返回 0（原因见 last_error）。"""
+        added: list[int] = []
+        ok = self._run("导入批注", lambda d: added.append(d.import_pdf_space_annotations(items)))
+        return added[0] if ok and added else 0
 
     def add_ink(self, page_num: int, strokes: tuple[InkStroke, ...]) -> bool:
         return self._run("添加手写", lambda d: d.add_ink(page_num, strokes))
