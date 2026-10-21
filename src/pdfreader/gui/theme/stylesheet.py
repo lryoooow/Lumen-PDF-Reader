@@ -187,6 +187,8 @@ QToolButton#SegmentButton {
     color: $text_muted;
 }
 QToolButton#SegmentButton:checked { color: $text; }
+/* 带数量角标的那颗：文字左移，给角标让出位置（四个页签时按钮很窄） */
+QToolButton#SegmentButton[badged="true"] { padding-right: 20px; }
 QLabel#CountBadge {
     background-color: $accent_soft;
     color: $accent_text;
@@ -593,6 +595,40 @@ QPushButton#LinkButton {
     font-size: 12px;
 }
 QPushButton#LinkButton:hover { text-decoration: underline; }
+
+/* ================================================================ 划词翻译浮窗 */
+QToolButton#TranslatePill {
+    background-color: $popover;
+    border: 1px solid $border;
+    border-radius: 11px;
+    padding: 2px 8px 2px 6px;
+    font-size: 12px;
+    color: $accent_text;
+}
+QToolButton#TranslatePill:hover { background-color: $accent_soft; border-color: $accent; }
+#TranslatePopup {
+    background-color: $popover;
+    border: 1px solid $border;
+    border-radius: 12px;
+}
+QLabel#TranslateTitle { color: $accent_text; font-size: 11px; }
+QLabel#TranslateSource { font-family: $serif_family; font-size: 12px; color: $text_muted; }
+QLabel#TranslateText { font-size: 13px; color: $text; background: transparent; }
+QScrollArea#TranslateScroll { background: transparent; border: none; }
+QScrollArea#TranslateScroll > QWidget > QWidget { background: transparent; }
+QLabel#TranslateNotice { font-size: 12px; color: $text_secondary; }
+QToolButton#TranslateTool {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px;
+}
+QToolButton#TranslateTool:hover { background-color: $surface_hover; }
+QToolButton#TranslateTool:checked { background-color: $accent_soft; }
+QLabel#WordTitle { font-family: $serif_family; font-size: 18px; font-weight: 600; color: $text; }
+QLabel#WordPhonetic { font-size: 12px; color: $text_muted; }
+QLabel#WordNote { font-size: 11px; color: $text_muted; }
+QLabel#WordSenses { font-size: 13px; color: $text; }
 
 /* ================================================================ AI 助读面板（右侧抽屉） */
 #AiPanel {

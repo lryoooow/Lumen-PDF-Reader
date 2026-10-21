@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from pdfreader.utils.text import clean_copied_text, has_cjk, is_cjk_char, join_words
+from pdfreader.utils.text import (
+    clean_copied_text,
+    has_cjk,
+    is_cjk_char,
+    join_words,
+    looks_garbled,
+    normalize_pdf_text,
+)
 
 
 @pytest.mark.parametrize(
@@ -66,3 +73,50 @@ class TestCleanCopiedText:
 
     def test_empty(self) -> None:
         assert clean_copied_text("") == ""
+
+    def test_ligatures_expanded(self) -> None:
+        assert clean_copied_text("ﬁne-tuning is eﬃcient") == "fine-tuning is efficient"
+
+    def test_soft_hyphen_line_break_joined(self) -> None:
+        assert clean_copied_text("inter­\nnational") == "international"
+
+
+class TestNormalizePdfText:
+    def test_every_ligature_replaced(self) -> None:
+        # 所有出现都要替换（不能只换第一个）
+        assert normalize_pdf_text("ﬁrst ﬁx ﬂow ﬀ ﬃ ﬄ") == "first fix flow ff ffi ffl"
+
+    def test_invisible_characters_removed(self) -> None:
+        assert normalize_pdf_text("trans­former​ mo﻿del") == "transformer model"
+
+    def test_line_breaks_untouched(self) -> None:
+        assert normalize_pdf_text("a\nb  c") == "a\nb  c"
+
+
+class TestLooksGarbled:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Attention is all you need.",
+            "深度学习在自然语言处理中的应用",
+            "Let ∂L/∂θ = −∑ᵢ yᵢ log pᵢ, where θ ∈ ℝᵈ.",
+            "Table 2: accuracy (%) ± std.",
+            "(1)",
+            "α, β",
+            "ﬁne-tuning",
+        ],
+    )
+    def test_normal_text(self, text: str) -> None:
+        assert not looks_garbled(text)
+
+    def test_private_use_glyphs(self) -> None:
+        assert looks_garbled("  ab")
+
+    def test_replacement_characters(self) -> None:
+        assert looks_garbled("���� model")
+
+    def test_ascii_symbol_soup(self) -> None:
+        assert looks_garbled("!\"#$ %&'( )*+, -./: ;<=>")
+
+    def test_short_symbols_are_not_judged(self) -> None:
+        assert not looks_garbled("+-*/")

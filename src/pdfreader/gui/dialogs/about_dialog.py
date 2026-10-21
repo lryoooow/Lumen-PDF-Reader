@@ -64,6 +64,14 @@ class AboutDialog(QDialog):
         tech.setProperty("variant", "muted")
         tech.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(tech)
+        credit = QLabel(
+            '查词词典：<a href="https://github.com/skywind3000/ECDICT">ECDICT</a>'
+            "（skywind3000，MIT 许可）"
+        )
+        credit.setProperty("variant", "muted")
+        credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        credit.setOpenExternalLinks(True)
+        layout.addWidget(credit)
         layout.addSpacing(10)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)

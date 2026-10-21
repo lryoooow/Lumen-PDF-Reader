@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 __all__ = [
+    "SELECTION_TRANSLATE_MODES",
     "Bookmark",
     "DocMeta",
     "ReadingPosition",
@@ -32,6 +33,8 @@ MAX_BOOKMARKED_FILES = 500
 MAX_DOC_META = 200
 # 文献库最多列出的文档数（最近文件列表的长度）
 MAX_LIBRARY_FILES = 40
+# 划词翻译的触发方式（见 Settings.selection_translate）
+SELECTION_TRANSLATE_MODES = ("button", "auto", "off")
 
 
 def default_settings_path() -> Path:
@@ -100,6 +103,14 @@ class Settings:
     favorites: list[str] = field(default_factory=list)
     library_view: str = "grid"  # "grid" | "list"
     doc_meta: dict[str, dict[str, object]] = field(default_factory=dict)
+    # 划词翻译：选中文字后 "button" 在选区旁显示「译」按钮 / "auto" 直接翻译 / "off" 不出现
+    selection_translate: str = "button"
+    # 连翻：新选中的文字接在上一段后面一起翻译（跨栏 / 跨页的句子）
+    translate_continuous: bool = False
+    # 翻译时按术语库统一译法（原文出现了库里的术语才附带）
+    translate_use_glossary: bool = True
+    # Zotero 数据目录（含 zotero.sqlite）；空 = 自动查找（Zotero 设置里的数据目录 / ~/Zotero）
+    zotero_data_dir: str = ""
 
     def add_recent_file(self, path: str | Path, *, max_count: int = 10) -> None:
         """添加最近文件（去重、置顶、限制数量）。"""
@@ -230,6 +241,8 @@ def _coerce(name: str, value: object, default: object) -> object:
         return _coerce_doc_meta(value)
     if name == "library_view":
         return value if value in ("grid", "list") else default
+    if name == "selection_translate":
+        return value if value in SELECTION_TRANSLATE_MODES else default
     if isinstance(default, bool):
         return value if isinstance(value, bool) else default
     if isinstance(default, int):

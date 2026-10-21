@@ -280,6 +280,15 @@ def test_prompt_builders() -> None:
     assert parts[1]["image_url"]["url"] == "data:image/png;base64,QUJD"
     assert "附近文字" in parts[0]["text"]
 
+    plain = prompts.translate_messages("x", "中文")
+    assert "术语表" not in plain[0]["content"]
+    glossed = prompts.translate_messages("attention", "中文", [("attention", "注意力")])
+    assert "术语表" in glossed[0]["content"] and "- attention → 注意力" in glossed[0]["content"]
+
+    shot = prompts.translate_image_messages("QUJD", "简体中文")
+    assert "简体中文" in shot[0]["content"] and "只输出译文" in shot[0]["content"]
+    assert shot[-1]["content"][1]["image_url"]["url"] == "data:image/png;base64,QUJD"
+
 
 def test_parse_questions() -> None:
     text = "1. 作者的方法是什么？\n- 有哪些局限？\n\n2）实验数据集？\n短\n1. 作者的方法是什么？\n• 第四个问题？\n五？？？\n第六个问题会被截断？"

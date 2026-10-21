@@ -16,7 +16,7 @@ from pdfreader.engines import PyMuPdfEngine
 from pdfreader.engines.exceptions import PdfEngineError, RenderError
 from pdfreader.services.ocr import OCR_AVAILABLE, OcrError, OcrResult, OcrService
 
-__all__ = ["OcrWorker"]
+__all__ = ["ImageOcrWorker", "OcrWorker"]
 
 # OCR 渲染 DPI(越高越准但越慢,200 是精度/速度平衡点)
 OCR_DPI = 200
@@ -144,3 +144,37 @@ class OcrWorker(QThread):
         if longest > 0:
             zoom = min(zoom, OCR_MAX_EDGE / longest)
         return zoom
+
+
+class ImageOcrWorker(QThread):
+    """识别一张截图（框选区域）里的文字：乱码 PDF 划词翻译时用截图代替文字层。
+
+    图片在主线程渲染好再交进来（PyMuPDF 非线程安全），这里只跑 OCR。
+
+    Signals:
+        recognized(str): 识别出的文字（可能为空串）
+        failed(str): 失败原因
+    """
+
+    recognized = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, png: bytes, parent=None, service: OcrService | None = None) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(parent)
+        self._png = png
+        self._ocr = service or OcrService()
+
+    def run(self) -> None:
+        if not OCR_AVAILABLE:
+            self.failed.emit("OCR 功能不可用：未安装 rapidocr-onnxruntime")
+            return
+        try:
+            result = self._ocr.ocr_image(self._png)
+        except OcrError as exc:
+            self.failed.emit(str(exc))
+            return
+        except Exception as exc:  # 防御：线程不能静默死掉
+            _logger.warning("截图 OCR 失败：%s", exc)
+            self.failed.emit(f"识别失败：{type(exc).__name__}")
+            return
+        self.recognized.emit(result.text)

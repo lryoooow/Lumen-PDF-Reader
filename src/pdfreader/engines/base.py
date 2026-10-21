@@ -22,6 +22,7 @@ from pdfreader.engines.types import (
     InkStroke,
     LinkInfo,
     PageText,
+    PdfSpaceAnnotation,
     PixmapData,
     Point,
     Rect,
@@ -277,6 +278,12 @@ class PdfEngine(Protocol):
 
     def list_annotations(self, doc: EngineDocument, page_num: int) -> list[Annotation]:
         """列出指定页的所有批注（可见帧坐标；文字标记类附带被标记的原文）。"""
+        ...
+
+    def import_pdf_space_annotations(
+        self, doc: EngineDocument, items: Sequence[PdfSpaceAnnotation]
+    ) -> int:
+        """批量导入外部批注（PDF 用户空间坐标），整批一次撤销；返回实际添加的条数。"""
         ...
 
     def delete_annotation(self, doc: EngineDocument, page_num: int, index: int) -> bool:

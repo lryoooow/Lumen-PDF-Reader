@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import tempfile
@@ -79,6 +80,7 @@ from pdfreader.gui.document_tab import DocumentTab
 from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
 from pdfreader.gui.panels.ai_panel import AI_PANEL_MAX_WIDTH, AI_PANEL_MIN_WIDTH, AI_PANEL_WIDTH
 from pdfreader.gui.panels.sidebar import SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH
+from pdfreader.gui.selection_translator import SelectionTranslator
 from pdfreader.gui.theme import get_theme
 from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import (
@@ -95,11 +97,27 @@ from pdfreader.gui.widgets.overlays import CitePopover, ToolHint
 from pdfreader.gui.widgets.panel_grip import PanelGrip
 from pdfreader.gui.widgets.pdf_view import ReadingMode
 from pdfreader.services.ai.provider import AiSettings
+from pdfreader.services.materials import (
+    KIND_LABELS,
+    MAX_TERM_CHARS,
+    Material,
+    MaterialError,
+    MaterialStore,
+    quote_template,
+)
 from pdfreader.services.ocr import OCR_AVAILABLE
-from pdfreader.utils.text import is_cjk_char
+from pdfreader.services.zotero import (
+    ZoteroError,
+    ZoteroLibrary,
+    find_data_dir,
+    to_pdf_space_annotations,
+)
+from pdfreader.utils.text import clean_copied_text, is_cjk_char
 from pdfreader.workers import OcrWorker, SearchWorker
 
 __all__ = ["MainWindow"]
+
+_logger = logging.getLogger("pdfreader")
 
 _PDF_FILTER = "PDF 文件 (*.pdf);;所有文件 (*.*)"
 # 打开加密文档时允许输错密码的次数
@@ -232,6 +250,9 @@ class MainWindow(QMainWindow):
         self._ocr_progress_owner: DocumentTab | None = None
         self._tab: DocumentTab  # 当前标签（由 _activate 设定）
         self._pending_link: tuple[int, float | None] | None = None  # 引用预览卡待跳转的目标
+        self._capture_translate = False  # 本次框选是划词翻译的截图识别（否则交给 AI 解释）
+        # 写作素材库（单词本 / 语料 / 引文 / 术语）：跨文档共用，首次用到时才建库
+        self._materials = MaterialStore()
         self._snapshot_dir = Path(tempfile.gettempdir()) / f"pdfreader_snapshots_{os.getpid()}"
         self._snapshot_paths: list[Path] = []
         self._temp_files: list[Path] = []  # 其他本进程生成的临时文件（如手绘签名）
@@ -367,6 +388,7 @@ class MainWindow(QMainWindow):
             on_annotation_added=annotation_added,
             start_ocr=start_ocr if OCR_AVAILABLE else None,
             show_marks=view.set_marks,
+            glossary=self._glossary_for,
             store=template.store if template is not None else None,
             keystore=template.keystore if template is not None else None,
             client_factory=template.client_factory if template is not None else None,
@@ -374,6 +396,18 @@ class MainWindow(QMainWindow):
         if template is not None:
             tab.ai.adopt_settings(template.settings)
         tab.ai.settingsApplied.connect(lambda settings: self._share_ai_settings(tab, settings))
+        tab.translator = SelectionTranslator(
+            view,
+            tab.ai,
+            mode=self._settings.selection_translate,
+            continuous=self._settings.translate_continuous,
+            notify=notify,
+            materials=self._materials,
+            doc_info=lambda: self._doc_info(tab),
+        )
+        tab.translator.continuousChanged.connect(self._set_translate_continuous)
+        tab.translator.materialsChanged.connect(self._refresh_materials)
+        tab.translator.captureRequested.connect(self._for_tab(tab, self._start_translate_capture))
         self._wire_tab(tab)
         return tab
 
@@ -404,6 +438,7 @@ class MainWindow(QMainWindow):
         view.markupRequested.connect(on(tab, self._on_markup_requested))
         view.placementFinished.connect(on(tab, self._on_placement_finished))
         view.aiRequested.connect(on(tab, self._on_ai_requested))
+        view.materialRequested.connect(on(tab, self._on_material_requested))
         view.areaCaptured.connect(on(tab, self._on_area_captured))
         # 批注提交由视图在松开鼠标后发出（拖拽时已实时预览）
         view.annotationHighlight.connect(on(tab, self._on_annot_highlight))
@@ -627,6 +662,7 @@ class MainWindow(QMainWindow):
             self._close_ocr_progress()
         tab.ai.stop()
         tab.ai.clear_marks()
+        tab.translator.reset()
         tab.view.clear()
         self._stack.removeWidget(tab.view)
         tab.view.deleteLater()
@@ -637,7 +673,7 @@ class MainWindow(QMainWindow):
 
     def _release_parked_tabs(self) -> None:
         for tab in list(self._parked_tabs):
-            if any(w.isRunning() for w in tab.ai.workers()):
+            if any(w.isRunning() for w in tab.ai.workers()) or tab.translator.busy():
                 continue
             self._parked_tabs.remove(tab)
             tab.ai.deleteLater()
@@ -732,6 +768,13 @@ class MainWindow(QMainWindow):
             self._on_print,
             shortcut=QKeySequence.StandardKey.Print,
             enabled=False,
+        )
+        self.zotero_action = self._act(
+            "zotero",
+            "Zotero 批注",
+            self._on_import_zotero,
+            enabled=False,
+            tooltip="把这份 PDF 在 Zotero 里的批注导入当前文档（可撤销）",
         )
 
         # 视图
@@ -914,6 +957,21 @@ class MainWindow(QMainWindow):
         self.translate_action = self._act(
             "translate", "翻译", self._on_translate, enabled=False, tooltip="AI 翻译选中的文字"
         )
+        self.selection_translate_action = self._act(
+            "select",
+            "划词翻译",
+            None,
+            tooltip="选中文字后：在选区旁显示「译」按钮 / 选中即翻译 / 关闭",
+        )
+        self.translate_continuous_action = self._act(
+            "chain",
+            "连翻",
+            lambda: self._set_translate_continuous(self.translate_continuous_action.isChecked()),
+            shortcut="Ctrl+Shift+L",
+            checkable=True,
+            tooltip="接着选的文字拼在一起翻译（跨栏 / 跨页断开的句子）",
+        )
+        self.translate_continuous_action.setChecked(self._settings.translate_continuous)
 
         # AI 助读
         self.ai_panel_action = self._act(
@@ -1012,6 +1070,7 @@ class MainWindow(QMainWindow):
                         self.save_action,
                         self.save_as_action,
                         self.print_action,
+                        self.zotero_action,
                         self.close_doc_action,
                     ],
                 ),
@@ -1085,7 +1144,13 @@ class MainWindow(QMainWindow):
                 ("速读", [self.ai_tldr_action, self.ai_speedread_action]),
                 (
                     "划词与框选",
-                    [self.translate_action, self.ai_explain_action, self.capture_action],
+                    [
+                        self.translate_action,
+                        self.selection_translate_action,
+                        self.translate_continuous_action,
+                        self.ai_explain_action,
+                        self.capture_action,
+                    ],
                 ),
                 ("模型", [self.ai_settings_action]),
             ],
@@ -1106,6 +1171,23 @@ class MainWindow(QMainWindow):
             act.setIcon(_dot_icon(dot))
             self._mode_actions[mode] = act
         self.ribbon.set_menu(self.reading_mode_action, self._mode_menu)
+        selection_menu = QMenu(self)
+        self._selection_translate_actions: dict[str, QAction] = {}
+        for mode, label in (
+            ("button", "选中后显示「译」按钮"),
+            ("auto", "选中即翻译"),
+            ("off", "关闭"),
+        ):
+            act = selection_menu.addAction(label, lambda m=mode: self._set_selection_translate(m))
+            act.setCheckable(True)
+            act.setChecked(mode == self._settings.selection_translate)
+            self._selection_translate_actions[mode] = act
+        selection_menu.addSeparator()
+        self.glossary_action = selection_menu.addAction("翻译时使用术语库", self._toggle_glossary)
+        self.glossary_action.setCheckable(True)
+        self.glossary_action.setChecked(self._settings.translate_use_glossary)
+        self.glossary_action.setToolTip("原文出现术语库里的术语时，按你填写的译名翻译")
+        self.ribbon.set_menu(self.selection_translate_action, selection_menu)
         self.ribbon.set_menu(self.color_action, self._build_swatch_menu())
 
         # 文档标签栏（有文档时显示）+ 右侧「+」打开更多文档
@@ -1260,6 +1342,12 @@ class MainWindow(QMainWindow):
         self.sidebar.annotationEditRequested.connect(self._on_annotation_edit)
         self.sidebar.annotationDeleteRequested.connect(self._on_annotation_delete)
         self.sidebar.exportNotesRequested.connect(self._on_export_notes)
+        self.sidebar.materialKindChanged.connect(lambda _kind: self._refresh_materials())
+        self.sidebar.materialActivated.connect(self._on_material_activated)
+        self.sidebar.materialEditRequested.connect(self._on_material_edit)
+        self.sidebar.materialDeleteRequested.connect(self._on_material_delete)
+        self.sidebar.materialsExportRequested.connect(self._on_materials_export)
+        self.sidebar.tabs.currentChanged.connect(self._on_sidebar_tab)
         self.sidebar.tabs.currentChanged.connect(lambda _i: self._refresh_annotations_if_shown())
 
     # ------------------------------------------------------------------ 主题
@@ -1780,6 +1868,7 @@ class MainWindow(QMainWindow):
     def _on_annot_mode_changed(self, mode: str) -> None:
         previous = getattr(self, "_last_mode", AnnotationMode.NONE)
         self._last_mode = mode
+        self._capture_translate = False  # 换了工具：框选回到「交给 AI 解释」
         if mode == AnnotationMode.PAN:
             # 抓手：ScrollHandDrag 自带开手/抓手光标
             self.pdf_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -1986,6 +2075,230 @@ class MainWindow(QMainWindow):
             return
         self.status_bar.show_message(f"已导出 {len(annotations)} 条批注到 {Path(path).name}")
 
+    # ------------------------------------------------------------------ Zotero
+    def _zotero_data_dir(self) -> Path | None:
+        """Zotero 数据目录：设置里指定的优先，否则按 Zotero 的配置自动找，最后请用户选。"""
+        saved = self._settings.zotero_data_dir.strip()
+        if saved:
+            folder = Path(saved)
+            if (folder / "zotero.sqlite").is_file():
+                return folder
+            self.status_bar.show_message(f"设置里的 Zotero 数据目录没有 zotero.sqlite：{folder}")
+        found = find_data_dir()
+        if found is not None:
+            return found
+        chosen = QFileDialog.getExistingDirectory(
+            self, "选择 Zotero 数据目录（里面有 zotero.sqlite）", str(Path.home())
+        )
+        if not chosen:
+            return None
+        picked = Path(chosen)
+        if not (picked / "zotero.sqlite").is_file():
+            QMessageBox.warning(
+                self, "Zotero", "这个目录里没有 zotero.sqlite，请选 Zotero 的数据目录。"
+            )
+            return None
+        self._settings.zotero_data_dir = str(picked)
+        self._save_settings()
+        return picked
+
+    def _on_import_zotero(self) -> None:
+        """把当前文档在 Zotero 里的批注导入进来（只读 Zotero 库，整批一次撤销）。"""
+        tab = self._tab
+        path = tab.path
+        if path is None or not self._controller.has_document:
+            self.status_bar.show_message("先打开一份 PDF")
+            return
+        folder = self._zotero_data_dir()
+        if folder is None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            found = ZoteroLibrary(folder).annotations_for(path)
+        except ZoteroError as exc:
+            QMessageBox.warning(self, "从 Zotero 导入批注", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not found:
+            QMessageBox.information(
+                self,
+                "从 Zotero 导入批注",
+                "Zotero 里没有这份 PDF 的批注。\n\n"
+                "这里只读 Zotero 本机数据库，文件要能被 Zotero 对应到同一个附件（路径一致）。",
+            )
+            return
+        items, skipped = to_pdf_space_annotations(found)
+        added = tab.controller.import_pdf_space_annotations(items) if items else 0
+        if added == 0:
+            if items:
+                reason = tab.controller.last_error or "原因未知"
+                QMessageBox.warning(self, "从 Zotero 导入批注", f"导入失败：{reason}")
+            else:
+                QMessageBox.information(
+                    self,
+                    "从 Zotero 导入批注",
+                    f"找到 {len(found)} 条批注，但都没有能写进这份 PDF 的（页码或类型不支持）。",
+                )
+            return
+        for page_num in sorted({item.page_num for item in items}):
+            self.pdf_view.invalidate_page(page_num)
+        self.pdf_view.request_visible()
+        self._mark_annotations_changed()
+        self._update_title()
+        self._update_undo_actions()
+        missed = skipped + max(0, len(items) - added)
+        suffix = f"，跳过 {missed} 条无法表示的" if missed else ""
+        self.status_bar.show_message(f"已从 Zotero 导入 {added} 条批注{suffix} · Ctrl+Z 撤销")
+
+    # ------------------------------------------------------------------ 写作素材
+    def _glossary_for(self, text: str) -> list[tuple[str, str]]:
+        """翻译用：原文里出现的术语（关掉「使用术语库」或库读不了时为空，不影响翻译）。"""
+        if not self._settings.translate_use_glossary:
+            return []
+        try:
+            return self._materials.glossary_for(text)
+        except MaterialError as exc:
+            _logger.warning("读取术语库失败：%s", exc)
+            return []
+
+    def _toggle_glossary(self) -> None:
+        on = self.glossary_action.isChecked()
+        self._settings.translate_use_glossary = on
+        self._save_settings()
+        self.status_bar.show_message("翻译时将按术语库统一译法" if on else "翻译时不再使用术语库")
+
+    def _on_material_requested(self, kind: str) -> None:
+        """右键「加入语料 / 引文 / 术语」：把选中的文字存进素材库（记下来源与页码）。"""
+        text = clean_copied_text(self.pdf_view.selected_text)
+        if not text:
+            self.status_bar.show_message("请先用「选择」工具选中文字")
+            return
+        picked = self.pdf_view.selection_rects()
+        page = picked[0] if picked is not None else None
+        note = ""
+        if kind == "term":
+            if len(text) > MAX_TERM_CHARS:
+                QMessageBox.information(
+                    self, "加入术语", f"术语最多 {MAX_TERM_CHARS} 个字，请只选中术语本身。"
+                )
+                return
+            existing = self._find_material("term", text)
+            note, ok = QInputDialog.getText(
+                self,
+                "加入术语",
+                f"「{text}」的译名（翻译时按它统一译法）：",
+                text=existing.note if existing is not None else "",
+            )
+            if not ok or not note.strip():
+                return
+        elif kind == "quote":
+            note = quote_template(text)
+        path, title = self._doc_info(self._tab)
+        try:
+            self._materials.add(kind, text, note, doc_path=path, doc_title=title, page=page)
+        except MaterialError as exc:
+            QMessageBox.warning(self, "加入失败", str(exc))
+            return
+        self._refresh_materials()
+        hints = {
+            "corpus": "已加入语料库",
+            "quote": "已加入引文库（附了一句转述，可在侧栏「素材」里编辑）",
+            "term": f"已加入术语库：{text} → {note.strip()}",
+        }
+        self.status_bar.show_message(hints.get(kind, "已加入素材库"))
+
+    def _find_material(self, kind: str, text: str) -> Material | None:
+        try:
+            return self._materials.find(kind, text)
+        except MaterialError:
+            return None
+
+    def _doc_info(self, tab: DocumentTab) -> tuple[str, str]:
+        """(路径, 标题)：收藏素材时记下来源。"""
+        path = tab.path
+        if path is None:
+            return "", ""
+        return str(path), display_title(tab.controller.title, path)
+
+    def _on_sidebar_tab(self, index: int) -> None:
+        if index == SidePanel.TAB_MATERIALS:
+            self._refresh_materials()
+
+    def _refresh_materials(self) -> None:
+        """重新读当前类型的素材（素材页没打开时不读，免得无谓建库）。"""
+        if self.sidebar.tabs.currentIndex() != SidePanel.TAB_MATERIALS:
+            return
+        try:
+            items = self._materials.items(self.sidebar.material_kind_key)
+        except MaterialError as exc:
+            self.status_bar.show_message(f"素材库：{exc}")
+            items = []
+        self.sidebar.set_materials(items)
+
+    def _on_material_activated(self, m: Material) -> None:
+        """跳回素材的原文：文档已打开就切过去，否则打开它，再翻到那一页。"""
+        if not m.doc_path:
+            self.status_bar.show_message("这条素材没有记录来源文档")
+            return
+        path = Path(m.doc_path)
+        if self._find_tab(path) is None and not path.is_file():
+            self.status_bar.show_message(f"找不到原文档：{path.name}")
+            return
+        if not self.open_path(path):
+            return
+        if m.page is not None and m.page < self._controller.page_count:
+            self._navigate_to(m.page, None)
+
+    def _on_material_edit(self, m: Material) -> None:
+        labels = {"word": "释义", "corpus": "备注", "quote": "转述", "term": "译名"}
+        label = labels.get(m.kind, "备注")
+        if m.kind in ("word", "term"):
+            text, ok = QInputDialog.getText(self, f"编辑{label}", f"{m.text}：", text=m.note)
+        else:
+            text, ok = QInputDialog.getMultiLineText(self, f"编辑{label}", m.text[:200], m.note)
+        if not ok:
+            return
+        try:
+            self._materials.update_note(m.id, text)
+        except MaterialError as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return
+        self._refresh_materials()
+
+    def _on_material_delete(self, m: Material) -> None:
+        try:
+            self._materials.remove(m.id)
+        except MaterialError as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+            return
+        self._refresh_materials()
+        self.status_bar.show_message(f"已从{KIND_LABELS.get(m.kind, '素材')}里删除")
+
+    def _on_materials_export(self, kind: str) -> None:
+        names = {"word": "单词本", "corpus": "语料库", "quote": "引文库", "term": "术语库"}
+        name = names.get(kind, "素材")
+        default = Path.home() / "Documents" / f"Lumen_{name}.md"
+        path, chosen = QFileDialog.getSaveFileName(
+            self, f"导出{name}", str(default), "Markdown (*.md);;CSV 表格 (*.csv)"
+        )
+        if not path:
+            return
+        target = Path(path)
+        as_csv = target.suffix.lower() == ".csv" or (chosen.startswith("CSV") and not target.suffix)
+        try:
+            if as_csv:
+                # 带 BOM：Excel 直接双击打开不乱码
+                text = self._materials.export_csv(kind)
+                target.with_suffix(".csv").write_text(text, encoding="utf-8-sig", newline="")
+                target = target.with_suffix(".csv")
+            else:
+                target.write_text(self._materials.export_markdown(kind), encoding="utf-8")
+        except (OSError, MaterialError) as exc:
+            QMessageBox.warning(self, "导出失败", f"无法导出：{exc}")
+            return
+        self.status_bar.show_message(f"已导出{name}到 {target.name}")
+
     # ------------------------------------------------------------------ 侧边栏 / 阅读模式 / 复制
     def _set_sidebar_visible(self, visible: bool, *, persist: bool = True) -> None:
         """侧边栏宽度动画显隐（设计稿 transition-[width,opacity] 500ms）。"""
@@ -2050,7 +2363,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ AI 助读
     def _selection_context(self) -> tuple[str, int | None, Rect | None]:
-        text = self.pdf_view.selected_text.strip()
+        # 发给 AI 前合并排版换行、展开连字（「ﬁ」会让模型把一个词当成两个）
+        text = clean_copied_text(self.pdf_view.selected_text)
         picked = self.pdf_view.selection_rects()
         if picked is None or not picked[1]:
             return text, None, None
@@ -2094,11 +2408,51 @@ class MainWindow(QMainWindow):
         if not self._controller.has_document:
             self.status_bar.show_message("请先打开文档")
             return
+        self._capture_translate = False
         self._annotation_controller.set_mode(AnnotationMode.CAPTURE)
 
+    def _start_translate_capture(self) -> None:
+        """划词翻译遇到乱码：框选那段文字，截图识别后在浮窗里翻译。"""
+        if not self._controller.has_document:
+            return
+        self._annotation_controller.set_mode(AnnotationMode.CAPTURE)
+        self._capture_translate = True  # 在 set_mode 之后：模式变化回调会清掉它
+        self.tool_hint.show_tool("capture_translate")
+        self._content.reposition_overlay()
+
     def _on_area_captured(self, page_num: int, rect: Rect) -> None:
+        translate, self._capture_translate = self._capture_translate, False
         self._annotation_controller.set_mode(AnnotationMode.NONE)
-        self._ai.explain_area(page_num, rect)
+        if translate:
+            self._tab.translator.translate_area(page_num, rect)
+        else:
+            self._ai.explain_area(page_num, rect)
+
+    # ------------------------------------------------------------------ 划词翻译
+    def _set_selection_translate(self, mode: str) -> None:
+        """选中文字后：显示「译」按钮 / 直接翻译 / 不出现（全局偏好，所有标签一致）。"""
+        self._settings.selection_translate = mode
+        self._save_settings()
+        for tab in self._tabs:
+            tab.translator.set_mode(mode)
+        for key, act in self._selection_translate_actions.items():
+            act.setChecked(key == mode)
+        labels = {"button": "选中后显示「译」按钮", "auto": "选中即翻译", "off": "已关闭"}
+        self.status_bar.show_message(f"划词翻译：{labels.get(mode, mode)}")
+
+    def _set_translate_continuous(self, on: bool) -> None:
+        """连翻开关（功能区 / Ctrl+Shift+L / 浮窗上的按钮）。"""
+        changed = self._settings.translate_continuous != on
+        self._settings.translate_continuous = on
+        if changed:
+            self._save_settings()
+        for tab in self._tabs:
+            tab.translator.set_continuous(on)
+        self.translate_continuous_action.setChecked(on)
+        if self.sender() is self.translate_continuous_action:
+            self.status_bar.show_message(
+                "连翻已开启：接着选的文字会拼在一起翻译" if on else "连翻已关闭"
+            )
 
     def _set_ai_panel_visible(self, visible: bool) -> None:
         """右侧 AI 面板：与左侧边栏同样的宽度动画。"""
@@ -2380,6 +2734,7 @@ class MainWindow(QMainWindow):
                 workers.append(w)
         for tab in (*self._tabs, *self._parked_tabs):
             tab.ai.shutdown()
+            tab.translator.shutdown()
         running = [w for w in workers if w.isRunning()]
         if not running:
             return
@@ -2642,6 +2997,7 @@ class MainWindow(QMainWindow):
         self._annotations_stale = True
         self._tab.annotation_count = None
         self._ai.reset_document()
+        self._tab.translator.reset()
 
     def _on_document_opened(self, page_count: int) -> None:
         self._reset_document_session()
@@ -2703,6 +3059,7 @@ class MainWindow(QMainWindow):
             self.save_action,
             self.save_as_action,
             self.print_action,
+            self.zotero_action,
             self.zoom_in_action,
             self.zoom_out_action,
             self.fit_action,
@@ -2974,6 +3331,7 @@ class MainWindow(QMainWindow):
             if tab.has_document:
                 tab.controller.close_document()
         self._wait_for_background_workers()
+        self._materials.close()
         self._cleanup_snapshots()
         super().closeEvent(event)
 
