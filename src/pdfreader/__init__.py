@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 __license__ = "AGPL-3.0-or-later"
 
 __all__ = ["__license__", "__version__"]
