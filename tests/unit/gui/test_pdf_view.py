@@ -332,7 +332,12 @@ def test_text_selection_and_copy(qtbot) -> None:  # type: ignore[no-untyped-def]
     view._select_range(0, QPointF(12, 15), QPointF(78, 15))
     assert view.has_selection
     assert view.selected_text == "Hello World"
-    assert len(view._sel_items) == 2
+    # 选择高亮按行合并成一个矩形（覆盖整行含词间空格），避免大段选择生成成百上千个图元
+    assert len(view._sel_items) == 1
+    from PySide6.QtWidgets import QGraphicsRectItem
+
+    assert isinstance(view._sel_items[0], QGraphicsRectItem)
+    assert view._sel_items[0].rect().width() == pytest.approx(70.0)
     assert view.copy_selection() == len("Hello World")
     # 系统剪贴板可能被其他进程独占（Windows 上 OpenClipboard 失败时
     # Qt 会重试后放弃），此时无法验证落盘内容，跳过该断言而非误报失败。

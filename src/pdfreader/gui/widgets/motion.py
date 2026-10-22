@@ -109,7 +109,9 @@ def _appear(widget: QWidget, dy: int, duration: int, delay: int, dx: int = 0) ->
                 if widget.graphicsEffect() is effect:
                     widget.setGraphicsEffect(None)
 
-        group.finished.connect(finish)
+        # setGraphicsEffect(None) 会立即销毁动画目标；等 finished 的发送栈退出后再清理，
+        # 避免 Qt / PySide 在动画析构与目标销毁重入时调用已析构对象的虚函数。
+        group.finished.connect(lambda: QTimer.singleShot(0, widget, finish))
         _keep(widget, group)
         group.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
@@ -159,7 +161,13 @@ def pop_out(
     fade.setEndValue(0.0)
     fade.setDuration(duration)
     fade.setEasingCurve(EASE_IN)
-    fade.finished.connect(done)
+
+    def finish() -> None:
+        with contextlib.suppress(RuntimeError):
+            if widget.graphicsEffect() is effect:
+                done()  # 若期间重新打开浮窗，旧动画不得隐藏新内容或调用旧回调
+
+    fade.finished.connect(lambda: QTimer.singleShot(0, widget, finish))
     _keep(widget, fade)
     fade.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 

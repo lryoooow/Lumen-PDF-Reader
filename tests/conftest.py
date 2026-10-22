@@ -21,6 +21,20 @@ def qtbot(qtbot: pytest.fixture) -> pytest.fixture:  # type: ignore[type-arg]
 
 
 @pytest.fixture(autouse=True)
+def _flush_qt_deferred_deletes() -> Iterator[None]:
+    """兑现 pytest-qt 排队的控件删除，避免整套测试累积隐藏窗口与动画。
+
+    pytest-qt 在 fixture 收尾前 close / deleteLater，但普通 processEvents() 不保证
+    处理 DeferredDelete。测试没有常驻 app.exec()，需要在事件发送栈之外显式清空它们。
+    """
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    if QCoreApplication.instance() is not None:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
 def _no_write_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[None]:
@@ -31,12 +45,15 @@ def _no_write_settings(
     """
     from pdfreader.config import settings as settings_module
     from pdfreader.services import materials as materials_module
+    from pdfreader.services import recovery as recovery_module
 
     folder = tmp_path_factory.mktemp("settings")
     path = folder / "settings.json"
     monkeypatch.setattr(settings_module, "default_settings_path", lambda: path)
     # 写作素材库同理：不碰开发者真实的 ~/.pdfreader/materials.db
     monkeypatch.setattr(materials_module, "default_materials_path", lambda: folder / "m.db")
+    # 崩溃恢复快照同理：不读写开发者真实的 ~/.pdfreader/recovery
+    monkeypatch.setattr(recovery_module, "default_recovery_dir", lambda: folder / "recovery")
     yield
 
 

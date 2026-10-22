@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsItem,
     QGraphicsPathItem,
@@ -85,6 +87,12 @@ MAX_RENDER_PIXELS = 24_000_000
 _TOP_MARGIN = 24
 # 鼠标按下到松开的移动距离在此以内视为「单击」（用于链接点击）
 _CLICK_SLOP = 4
+# 拖选到视口上下边缘时自动滚动：边缘触发区、每 tick 步长与间隔（像素 / 毫秒）
+_AUTOSCROLL_MARGIN = 28
+_AUTOSCROLL_STEP = 14
+_AUTOSCROLL_INTERVAL_MS = 30
+# 双击选词时，同一行内字距不超过此宽度的相邻字并成一个词（中文排版常为 0）
+_WORD_JOIN_GAP = 1.0
 
 
 class ReadingMode:
@@ -231,6 +239,20 @@ class PdfView(QGraphicsView):
         self._links_cache: dict[int, tuple[LinkInfo, ...]] = {}
         self._press_pos: QPointF | None = None
 
+        # 选择手势：连击（选词 / 选行）、Shift 扩展、跨页选择、拖选自动滚动
+        self._sel_anchor: tuple[int, int] | None = None  # (页, 词下标)，固定端
+        self._sel_focus: tuple[int, int] | None = None  # 拖动端
+        self._sel_spans: list[tuple[int, list[WordBox]]] = []
+        self._click_count = 0
+        self._last_click_time = 0.0
+        self._last_click_pos = QPointF()
+        self._shift_click = False
+        self._drag_scrolled = False
+        self._last_drag_pos: QPointF | None = None
+        self._autoscroll_timer = QTimer(self)
+        self._autoscroll_timer.setInterval(_AUTOSCROLL_INTERVAL_MS)
+        self._autoscroll_timer.timeout.connect(self._autoscroll_tick)
+
         # 批注实时预览状态
         self._annot_page: int | None = None
         self._annot_start: QPointF | None = None
@@ -358,8 +380,20 @@ class PdfView(QGraphicsView):
                 self._annot_drawing = True
                 self._update_capture_item(pdf_point)
             return
-        # 浏览模式：左键拖拽 = 选择文本；不拖动直接松开 = 单击（可能是链接）
+        # 浏览模式：左键拖拽 = 选择文本；双击选词、三击选行；不拖动直接松开 = 单击（可能是链接）
         if event.button() == Qt.MouseButton.LeftButton:
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift and self.has_selection and self._sel_anchor is not None:
+                self._press_pos = event.position()
+                if self._extend_selection_to(event):
+                    self._shift_click = True
+                    self._selecting = True
+                    return
+            streak = 1 if shift else self._register_click(event.position())
+            if streak >= 2:
+                # 第二次按下在 Qt 里通常走 mouseDoubleClickEvent，这里兜住第三击
+                self._begin_word_selection(event, line=streak >= 3)
+                return
             self._clear_selection()
             self._press_pos = event.position()
             page_num, pdf_point = self._event_to_pdf(event)
@@ -389,7 +423,9 @@ class PdfView(QGraphicsView):
                     self._update_capture_item(pt)
             return
         if self._selecting and self._sel_start is not None:
+            self._last_drag_pos = event.position()
             self._update_selection(event)
+            self._update_autoscroll()
             return
         if self._pending_kind is None:
             # 悬停在链接上显示手形光标，提示可点击（参考文献 / 图表 / 目录跳转）
@@ -416,8 +452,23 @@ class PdfView(QGraphicsView):
             return
         if self._selecting:
             self._selecting = False
+            self._autoscroll_timer.stop()
+            self._last_drag_pos = None
             press, self._press_pos = self._press_pos, None
             moved = press is not None and (event.position() - press).manhattanLength() > _CLICK_SLOP
+            moved = moved or self._drag_scrolled
+            self._drag_scrolled = False
+            if self._shift_click:
+                # Shift+点击：只扩展选区，不当作链接点击
+                self._shift_click = False
+                if self._selected_text:
+                    self.selectionFinished.emit()
+                return
+            if self._click_count >= 2 and not moved:
+                # 双击 / 三击：保留选区，不当作链接点击
+                if self._selected_text:
+                    self.selectionFinished.emit()
+                return
             if not moved:
                 page_num, pdf_point = self._event_to_pdf(event)
                 link = (
@@ -432,6 +483,18 @@ class PdfView(QGraphicsView):
                 self.selectionFinished.emit()
             return
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._pending_kind is None
+            and self._current_mode() == "none"
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            streak = self._register_click(event.position())
+            if streak >= 2:
+                self._begin_word_selection(event, line=streak >= 3)
+                return
+        super().mouseDoubleClickEvent(event)
 
     # ------------------------------------------------------------------
     # 链接
@@ -496,10 +559,19 @@ class PdfView(QGraphicsView):
         return self._selected_text
 
     def selection_rects(self) -> tuple[int, tuple[Rect, ...]] | None:
-        """当前选择所在页与按行合并的矩形（给「高亮所选」等用）；无选择返回 None。"""
-        if self._sel_page is None or not self._sel_words:
+        """当前选择所在页与按行合并的矩形（给「高亮所选」等用）；跨页/无选择返回 None。"""
+        if len(self._sel_spans) != 1:
             return None
-        return self._sel_page, tuple(self._line_rects(self._sel_words))
+        page, words = self._sel_spans[0]
+        if not words:
+            return None
+        return page, tuple(self._line_rects(words))
+
+    def selection_spans(self) -> tuple[tuple[int, tuple[Rect, ...]], ...]:
+        """当前选择按页拆分的行矩形；跨页选择时用于绘制选区与提示。"""
+        return tuple(
+            (page, tuple(self._line_rects(words))) for page, words in self._sel_spans if words
+        )
 
     def selection_view_rect(self, *, last_word: bool = False) -> QRect | None:
         """当前选区在本控件坐标里的外接矩形（给贴在选区旁的浮窗定位）；无选区返回 None。
@@ -544,26 +616,30 @@ class PdfView(QGraphicsView):
         return words
 
     def _update_selection(self, event: QMouseEvent) -> None:
-        assert self._sel_start is not None
-        page, start_pt = self._sel_start
-        end_pt = self._point_on_page(event, page)
-        self._select_range(page, start_pt, end_pt)
+        if self._sel_start is None:
+            return
+        start_page, start_pt = self._sel_start
+        if self._sel_anchor is None:
+            words = self._get_words(start_page)
+            if not words:
+                return
+            self._sel_anchor = (start_page, self._nearest_word(words, start_pt))
+        self._extend_selection_to(event)
 
     def _select_range(self, page: int, start_pt: QPointF, end_pt: QPointF) -> None:
+        """选择同页内从 ``start_pt`` 到 ``end_pt`` 的文本（保留给外部调用与测试）。"""
         words = self._get_words(page)
-        self._remove_sel_items()
         if not words:
-            self._selected_text = ""
-            self._sel_words = []
-            self._sel_page = None
+            self._clear_selection()
             return
-        i0 = self._nearest_word(words, start_pt)
-        i1 = self._nearest_word(words, end_pt)
-        lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
-        self._sel_page = page
-        self._sel_words = list(words[lo : hi + 1])
-        self._selected_text = self._words_to_text(words, lo, hi)
-        self._draw_sel_rects(page, self._sel_words)
+        lo = self._nearest_word(words, start_pt)
+        hi = self._nearest_word(words, end_pt)
+        if lo > hi:
+            lo, hi = hi, lo
+        self._sel_anchor = (page, lo)
+        self._sel_focus = (page, hi)
+        self._sel_start = (page, start_pt)
+        self._apply_selection()
 
     @staticmethod
     def _nearest_word(words: Sequence[WordBox], pt: QPointF) -> int:
@@ -597,10 +673,207 @@ class PdfView(QGraphicsView):
             prev = key
         return text
 
-    def _draw_sel_rects(self, page: int, words: Sequence[WordBox]) -> None:
+    def _apply_selection(self) -> None:
+        """按 anchor/focus 重算跨页选区、文本与叠加层。"""
+        anchor, focus = self._sel_anchor, self._sel_focus
+        if anchor is None or focus is None:
+            return
+        lo, hi = (focus, anchor) if focus < anchor else (anchor, focus)
+        self._sel_spans = self._spans_between(lo, hi)
+        self._selected_text = "\n".join(
+            self._words_to_text(words, 0, len(words) - 1) for _, words in self._sel_spans if words
+        )
+        if len(self._sel_spans) == 1:
+            self._sel_page = self._sel_spans[0][0]
+            self._sel_words = list(self._sel_spans[0][1])
+        else:
+            self._sel_page = None
+            self._sel_words = []
+        self._remove_sel_items()
         color = QColor(self._palette.accent)
         color.setAlpha(80)
-        self._sel_items = self._add_overlay_rects(page, [w.rect for w in words], color)
+        items: list[QGraphicsItem] = []
+        for page, words in self._sel_spans:
+            if words:
+                items.extend(self._add_overlay_rects(page, self._line_rects(words), color))
+        self._sel_items = items
+
+    def _spans_between(
+        self, lo: tuple[int, int], hi: tuple[int, int]
+    ) -> list[tuple[int, list[WordBox]]]:
+        """把 (页, 词下标) 区间拆成按页的连续词段（跨页选择）。"""
+        if lo[0] == hi[0]:
+            words = list(self._get_words(lo[0]))
+            if not words:
+                return []
+            return [(lo[0], words[lo[1] : hi[1] + 1])]
+        spans: list[tuple[int, list[WordBox]]] = []
+        first = list(self._get_words(lo[0]))
+        if first:
+            spans.append((lo[0], first[lo[1] :]))
+        for page in range(lo[0] + 1, hi[0]):
+            words = list(self._get_words(page))
+            if words:
+                spans.append((page, words))
+        last = list(self._get_words(hi[0]))
+        if last:
+            spans.append((hi[0], last[: hi[1] + 1]))
+        return spans
+
+    @staticmethod
+    def _same_line(a: WordBox, b: WordBox) -> bool:
+        return (a.block, a.line) == (b.block, b.line)
+
+    @staticmethod
+    def _touching(a: WordBox, b: WordBox) -> bool:
+        """两词是否紧挨着（中文按字成词时字距为 0；英文单词间有明显空隙）。"""
+        gap = b.rect.x0 - a.rect.x1
+        return gap <= max(_WORD_JOIN_GAP, a.rect.height * 0.08)
+
+    @classmethod
+    def _word_span(cls, words: Sequence[WordBox], idx: int) -> tuple[int, int]:
+        """双击：从 idx 向两侧扩展成一个「词」（含中文连字）。"""
+        lo = hi = idx
+        while (
+            lo > 0
+            and cls._same_line(words[lo - 1], words[lo])
+            and cls._touching(words[lo - 1], words[lo])
+        ):
+            lo -= 1
+        while (
+            hi + 1 < len(words)
+            and cls._same_line(words[hi], words[hi + 1])
+            and cls._touching(words[hi], words[hi + 1])
+        ):
+            hi += 1
+        return lo, hi
+
+    @staticmethod
+    def _line_span(words: Sequence[WordBox], idx: int) -> tuple[int, int]:
+        """三击：选中 idx 所在的整行。"""
+        key = (words[idx].block, words[idx].line)
+        lo = hi = idx
+        while lo > 0 and (words[lo - 1].block, words[lo - 1].line) == key:
+            lo -= 1
+        while hi + 1 < len(words) and (words[hi + 1].block, words[hi + 1].line) == key:
+            hi += 1
+        return lo, hi
+
+    def _begin_word_selection(self, event: QMouseEvent, *, line: bool) -> None:
+        """双击选词 / 三击选行，并允许继续拖动扩展。"""
+        target = self._selection_page_point(event)
+        if target is None:
+            return
+        page, pt = target
+        words = self._get_words(page)
+        if not words:
+            return
+        idx = self._nearest_word(words, pt)
+        lo, hi = self._line_span(words, idx) if line else self._word_span(words, idx)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self._sel_anchor = (page, lo)
+        self._sel_focus = (page, hi)
+        self._sel_start = (page, pt)
+        self._apply_selection()
+        self._press_pos = event.position()
+        self._selecting = True
+
+    def _register_click(self, pos: QPointF) -> int:
+        """记录连击次数：1 单击、2 双击、3 三击，第 4 击重新开始。"""
+        now = time.monotonic()
+        interval = QApplication.doubleClickInterval() / 1000.0
+        close = (pos - self._last_click_pos).manhattanLength() <= _CLICK_SLOP
+        if self._click_count and close and now - self._last_click_time <= interval:
+            # 同一次物理点击可能先后收到 press 与 dblclick，50ms 内不重复计数
+            if now - self._last_click_time > 0.05:
+                self._click_count = 1 if self._click_count >= 3 else self._click_count + 1
+        else:
+            self._click_count = 1
+        self._last_click_time = now
+        self._last_click_pos = QPointF(pos)
+        return self._click_count
+
+    def _selection_page_point(self, event: QMouseEvent) -> tuple[int, QPointF] | None:
+        return self._scene_page_point(self.mapToScene(event.position().toPoint()))
+
+    def _scene_page_point(self, scene_pt: QPointF) -> tuple[int, QPointF] | None:
+        """场景坐标 → (页, 页内 PDF 点)；落在页间隙时取纵向最近页。"""
+        page = self._page_at_y(scene_pt.y())
+        if page is None:
+            page = self._nearest_page(scene_pt.y())
+        if page is None:
+            return None
+        page_x, page_y = self._page_origin(page)
+        return page, QPointF(
+            (scene_pt.x() - page_x) / self._zoom, (scene_pt.y() - page_y) / self._zoom
+        )
+
+    def _nearest_page(self, scene_y: float) -> int | None:
+        """页间隙里离 scene_y 最近的页。"""
+        best: int | None = None
+        best_d = float("inf")
+        for i in range(min(self._page_count, len(self._page_y_positions))):
+            y = self._page_y_positions[i]
+            _, h = self._scaled_size(i)
+            if scene_y < y:
+                d = y - scene_y
+            elif scene_y > y + h:
+                d = scene_y - (y + h)
+            else:
+                d = 0.0
+            if d < best_d:
+                best, best_d = i, d
+        return best
+
+    def _extend_selection_to(self, event: QMouseEvent) -> bool:
+        return self._extend_selection_to_point(self.mapToScene(event.position().toPoint()))
+
+    def _extend_selection_to_point(self, scene_pt: QPointF) -> bool:
+        target = self._scene_page_point(scene_pt)
+        if target is None or self._sel_anchor is None:
+            return False
+        page, pt = target
+        words = self._get_words(page)
+        if not words:
+            return False
+        self._sel_focus = (page, self._nearest_word(words, pt))
+        self._apply_selection()
+        return True
+
+    def _update_autoscroll(self) -> None:
+        """拖选到视口上下边缘时启动自动滚动。"""
+        pos = self._last_drag_pos
+        if pos is None:
+            self._autoscroll_timer.stop()
+            return
+        height = self.viewport().height()
+        active = pos.y() < _AUTOSCROLL_MARGIN or pos.y() > height - _AUTOSCROLL_MARGIN
+        if active and not self._autoscroll_timer.isActive():
+            self._autoscroll_timer.start()
+        elif not active:
+            self._autoscroll_timer.stop()
+
+    def _autoscroll_tick(self) -> None:
+        pos = self._last_drag_pos
+        if pos is None or not self._selecting:
+            self._autoscroll_timer.stop()
+            return
+        height = self.viewport().height()
+        if pos.y() < _AUTOSCROLL_MARGIN:
+            delta = -_AUTOSCROLL_STEP
+        elif pos.y() > height - _AUTOSCROLL_MARGIN:
+            delta = _AUTOSCROLL_STEP
+        else:
+            self._autoscroll_timer.stop()
+            return
+        bar = self.verticalScrollBar()
+        before = bar.value()
+        bar.setValue(before + delta)
+        if bar.value() == before:  # 已到文档头/尾
+            self._autoscroll_timer.stop()
+            return
+        self._drag_scrolled = True
+        self._extend_selection_to_point(self.mapToScene(pos.toPoint()))
 
     def _remove_sel_items(self) -> None:
         self._remove_overlay(self._sel_items)
@@ -805,6 +1078,27 @@ class PdfView(QGraphicsView):
         self._sel_page = None
         self._sel_start = None
         self._selecting = False
+        self._sel_anchor = None
+        self._sel_focus = None
+        self._sel_spans = []
+        self._shift_click = False
+        self._drag_scrolled = False
+        self._last_drag_pos = None
+        self._autoscroll_timer.stop()
+
+    def select_all_page(self) -> None:
+        """全选当前页的文字（没有当前页时取第一页）。"""
+        if self._page_count == 0:
+            return
+        page = self._current_page if self._current_page is not None else 0
+        words = self._get_words(page)
+        if not words:
+            return
+        self._sel_anchor = (page, 0)
+        self._sel_focus = (page, len(words) - 1)
+        self._sel_start = (page, QPointF(words[0].rect.x0, words[0].rect.y0))
+        self._apply_selection()
+        self.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     # ------------------------------------------------------------------
     # 搜索命中定位
@@ -876,6 +1170,9 @@ class PdfView(QGraphicsView):
             if self._selecting or self.has_selection:
                 self._clear_selection()
                 return
+        if event.matches(QKeySequence.StandardKey.SelectAll):
+            self.select_all_page()
+            return
         if event.matches(QKeySequence.StandardKey.Copy):
             self._emit_copy(merge_lines=None)
             return
@@ -892,13 +1189,18 @@ class PdfView(QGraphicsView):
             menu.addAction("复制", lambda: self._emit_copy(merge_lines=False))
             menu.addAction("复制（合并换行）", lambda: self._emit_copy(merge_lines=True))
             menu.addSeparator()
-            for label, kind in (
-                ("高亮", "highlight"),
-                ("下划线", "underline"),
-                ("删除线", "strikeout"),
-                ("波浪线", "squiggly"),
-            ):
-                menu.addAction(label, lambda k=kind: self._request_markup(k))
+            if len(self._sel_spans) > 1:
+                hint = menu.addAction("跨页选择：暂不支持加标记，可复制或翻译")
+                if hint is not None:
+                    hint.setEnabled(False)
+            else:
+                for label, kind in (
+                    ("高亮", "highlight"),
+                    ("下划线", "underline"),
+                    ("删除线", "strikeout"),
+                    ("波浪线", "squiggly"),
+                ):
+                    menu.addAction(label, lambda k=kind: self._request_markup(k))
             menu.addSeparator()
             for label, kind in (
                 ("AI 翻译", "translate"),
@@ -986,6 +1288,13 @@ class PdfView(QGraphicsView):
         self._sel_page = None
         self._sel_start = None
         self._selecting = False
+        self._sel_anchor = None
+        self._sel_focus = None
+        self._sel_spans.clear()
+        self._shift_click = False
+        self._drag_scrolled = False
+        self._last_drag_pos = None
+        self._autoscroll_timer.stop()
         self._words_cache.clear()
         self._links_cache.clear()
         self._search_items.clear()
@@ -1502,6 +1811,13 @@ class PdfView(QGraphicsView):
         self._sel_page = None
         self._sel_start = None
         self._selecting = False
+        self._sel_anchor = None
+        self._sel_focus = None
+        self._sel_spans.clear()
+        self._shift_click = False
+        self._drag_scrolled = False
+        self._last_drag_pos = None
+        self._autoscroll_timer.stop()
         self._words_cache.clear()
         self._links_cache.clear()
         self._search_items.clear()

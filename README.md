@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.4-C96A49"></a>
+  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.6-C96A49"></a>
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows-0078D4">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/许可证-AGPL--3.0-7C3AED"></a>
   <img alt="免费" src="https://img.shields.io/badge/价格-免费-10B981">
@@ -119,6 +119,11 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 - [x] 文献库首页：收藏、按文件夹分组与检索
 - [x] 划词翻译浮窗、离线查词卡与写作素材库
 - [x] 从 Zotero 导入批注（只读本机库）
+- [x] 自动保存与崩溃恢复（整份快照 + 文献库恢复横幅）
+- [x] 文本选择手势：双击选词、三击选行、Shift 扩展、Ctrl+A、跨页拖选与边缘自动滚动
+- [x] 长文档优化：主线程分片全文索引，AI 首次动作不再一次性逐页取词
+- [x] 会话恢复与单实例：启动回到上次打开的标签，第二次启动把文件转交已运行窗口
+- [x] 崩溃诊断：`crash.log` + 「关于」里导出脱敏诊断包
 
 ## 参与贡献
 

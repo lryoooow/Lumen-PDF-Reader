@@ -111,6 +111,10 @@ class Settings:
     translate_use_glossary: bool = True
     # Zotero 数据目录（含 zotero.sqlite）；空 = 自动查找（Zotero 设置里的数据目录 / ~/Zotero）
     zotero_data_dir: str = ""
+    # 上次退出时打开的文档（正常关闭时写入；启动时按顺序恢复，找不到的文件跳过）
+    session_files: list[str] = field(default_factory=list)
+    # 上次退出时所在的文档（路径为空表示停在文献库）
+    session_active: str = ""
 
     def add_recent_file(self, path: str | Path, *, max_count: int = 10) -> None:
         """添加最近文件（去重、置顶、限制数量）。"""

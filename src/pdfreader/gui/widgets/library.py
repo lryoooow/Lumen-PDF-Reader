@@ -29,6 +29,7 @@ import hashlib
 import math
 import time
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1090,6 +1091,9 @@ class LibraryHome(QWidget):
     exploreAiRequested = Signal()
     returnRequested = Signal()
     viewModeChanged = Signal(str)
+    recoveryRestoreRequested = Signal()
+    recoveryDiscardRequested = Signal()
+    recoveryLaterRequested = Signal()
 
     def __init__(self, theme: ThemeManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1117,6 +1121,8 @@ class LibraryHome(QWidget):
         main_lay.setContentsMargins(0, 0, 0, 0)
         main_lay.setSpacing(0)
         main_lay.addWidget(self._build_topbar())
+        self._recovery_banner = self._build_recovery_banner()
+        main_lay.addWidget(self._recovery_banner)
         main_lay.addWidget(self._build_scroll(), stretch=1)
         root.addWidget(main, stretch=1)
 
@@ -1327,6 +1333,44 @@ class LibraryHome(QWidget):
         mini.setFixedSize(28, 28)
         mini.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(mini)
+        return bar
+
+    # ---------------------------------------------------------------- 构建：恢复提示
+    def _build_recovery_banner(self) -> QFrame:
+        """顶部恢复提示条：非模态，避免启动时弹窗打断（也便于自动化测试）。"""
+        bar = QFrame()
+        bar.setObjectName("RecoveryBanner")
+        bar.setFixedHeight(52)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(42, 0, 42, 0)
+        lay.setSpacing(10)
+        self._recovery_title = _label("", "RecoveryTitle")
+        lay.addWidget(self._recovery_title)
+        self._recovery_text = _label("", "RecoveryText")
+        self._recovery_text.setWordWrap(False)
+        # 文件名很长时让正文先收缩，别把「恢复 / 丢弃 / 稍后」挤出窗口
+        self._recovery_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay.addWidget(self._recovery_text, 1)
+
+        restore = QPushButton("恢复")
+        restore.setObjectName("RecoveryRestore")
+        restore.setCursor(Qt.CursorShape.PointingHandCursor)
+        restore.setToolTip("把快照写回原文件（原文件会先备份）")
+        restore.clicked.connect(self.recoveryRestoreRequested.emit)
+        lay.addWidget(restore)
+        discard = QPushButton("丢弃")
+        discard.setObjectName("RecoveryDiscard")
+        discard.setCursor(Qt.CursorShape.PointingHandCursor)
+        discard.setToolTip("删除这些恢复快照，不可撤销")
+        discard.clicked.connect(self.recoveryDiscardRequested.emit)
+        lay.addWidget(discard)
+        later = QPushButton("稍后")
+        later.setObjectName("RecoveryLater")
+        later.setCursor(Qt.CursorShape.PointingHandCursor)
+        later.setToolTip("保留快照，下次启动再提示")
+        later.clicked.connect(self.recoveryLaterRequested.emit)
+        lay.addWidget(later)
+        bar.setVisible(False)
         return bar
 
     # ---------------------------------------------------------------- 构建：主体
@@ -1627,6 +1671,26 @@ class LibraryHome(QWidget):
         """有打开的标签页时在顶栏显示「返回阅读」。"""
         self.return_button.setVisible(can)
         self.return_button.setToolTip(tip or "回到正在阅读的文档")
+
+    def set_recovery_notice(self, labels: Sequence[str]) -> None:
+        """显示「崩溃前未保存的修改」提示；``labels`` 是文档名（为空则隐藏）。"""
+        if not labels:
+            self.hide_recovery_notice()
+            return
+        names = "、".join(labels[:3])
+        if len(labels) > 3:
+            names += f" 等 {len(labels)} 个"
+        self._recovery_title.setText(f"发现 {len(labels)} 个未保存的修改")
+        self._recovery_text.setText(f"{names} · 恢复后原文件会先备份，改动过的原文件另存副本")
+        self._recovery_text.setToolTip(names)
+        self._recovery_banner.setVisible(True)
+
+    def hide_recovery_notice(self) -> None:
+        self._recovery_banner.setVisible(False)
+
+    @property
+    def recovery_notice_visible(self) -> bool:
+        return bool(self._recovery_banner.isVisibleTo(self))
 
     def set_dragging(self, dragging: bool) -> None:
         """拖入文件时高亮「留一个位置」导入区。"""

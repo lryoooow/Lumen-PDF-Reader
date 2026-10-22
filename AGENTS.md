@@ -25,7 +25,7 @@
    第三方库（pdf2docx / pdfplumber / rapidocr / httpx / keyring）只允许出现在 `services/`。
 3. PyMuPDF 非线程安全：子线程只跑 `workers/` 里的 OCR / 搜索 / 转换 / AI 请求；**页面渲染在主线程**
    直接渲染受控文档（`MainWindow._render_page`），以保证批注/编辑所见即所得。
-   AI 用到的文字在主线程取好再交给 `AiWorker`，后台线程只做网络 I/O。
+   AI 用到的文字在主线程分片索引或直接取好再交给 `AiWorker`，后台线程只做网络 I/O。
 4. 分层依赖方向：`gui → controllers → core → engines`（`services`/`workers` 可被 gui 使用）。
    领域逻辑不写进 GUI 事件处理器，错误经控制器上报（`DocumentController.last_error`）。
 

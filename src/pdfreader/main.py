@@ -19,9 +19,15 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pdfreader import __version__
 from pdfreader.gui.main_window import MainWindow
-from pdfreader.utils.logger import setup_logging
+from pdfreader.gui.single_instance import SingleInstance
+from pdfreader.utils.logger import enable_faulthandler, setup_logging
 
-__all__ = ["create_application", "file_from_argv", "global_exception_handler", "main"]
+__all__ = [
+    "create_application",
+    "file_from_argv",
+    "global_exception_handler",
+    "main",
+]
 
 _logger = setup_logging()
 
@@ -170,12 +176,24 @@ def main() -> int:
         return run_selftest()
 
     _logger.info("PDF Reader %s 启动", __version__)
+    enable_faulthandler()
     sys.excepthook = global_exception_handler
+    initial = file_from_argv(sys.argv)
     app = create_application(sys.argv)
 
-    window = MainWindow()
+    # 单实例：第二次启动只把文件交给已运行的窗口，不再开第二个进程
+    instance = SingleInstance()
+    if not instance.try_start():
+        sent = instance.send_open([str(initial)] if initial is not None else [], str(Path.cwd()))
+        if not sent:
+            _logger.warning("已有实例在运行，但转交打开请求失败")
+        return 0
+    app.aboutToQuit.connect(instance.close)
+
+    # 命令行给了文件时只打开它；否则恢复上次退出时的标签
+    window = MainWindow(restore_session=initial is None)
+    instance.messageReceived.connect(window.handle_second_instance)
     window.show()
-    initial = file_from_argv(sys.argv)
     if initial is not None:
         # 等事件循环起来、窗口完成布局后再打开（适宽缩放依赖视口尺寸）
         QTimer.singleShot(0, lambda: window.open_path(initial))
