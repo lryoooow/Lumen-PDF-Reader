@@ -645,3 +645,26 @@ def test_main_window_speed_read_marks_view(window, tmp_path: Path, qtbot) -> Non
     assert list(window.pdf_view.marks()) == [0]
     window.rotate_action.trigger()  # 页结构变化 → 标记清空
     assert window.pdf_view.marks() == {}
+
+
+def test_sliced_index_avoids_main_thread_extraction(
+    window: MainWindow, tmp_path: Path, qtbot, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    window.open_path(_make_doc(tmp_path / "index.pdf"))
+    qtbot.waitUntil(lambda: window._ai._texts is not None, timeout=10000)
+    texts = window._ai._texts
+    assert texts is not None and "Section 1" in texts[0]
+
+    def fail() -> list[str]:
+        raise AssertionError("索引就绪时不应再在主线程整篇取词")
+
+    monkeypatch.setattr(window._controller, "page_texts", fail)
+    assert window._ai._page_texts()[1] == texts[1]
+
+
+def test_stop_index_cancels_pending_schedule(window: MainWindow, tmp_path: Path, qtbot) -> None:  # type: ignore[no-untyped-def]
+    window.open_path(_make_doc(tmp_path / "pending.pdf"))
+    window._ai.stop_index()  # 模拟标签被回收：已排队的 500 ms 定时器不得再启动索引
+    qtbot.wait(700)
+    assert not window._ai._index_timer.isActive()
+    assert window._ai._texts is None

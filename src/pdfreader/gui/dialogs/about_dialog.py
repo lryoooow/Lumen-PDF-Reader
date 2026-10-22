@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -20,6 +21,8 @@ __all__ = ["AboutDialog"]
 
 class AboutDialog(QDialog):
     """关于本应用。"""
+
+    diagnosticsRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -75,6 +78,11 @@ class AboutDialog(QDialog):
         layout.addSpacing(10)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        diag = QPushButton("导出诊断信息…")
+        diag.setToolTip("生成 zip：版本、运行环境、日志尾部与脱敏设置（不含文档内容）")
+        diag.setCursor(Qt.CursorShape.PointingHandCursor)
+        diag.clicked.connect(self.diagnosticsRequested.emit)
+        buttons.addButton(diag, QDialogButtonBox.ButtonRole.ActionRole)
         buttons.accepted.connect(self.accept)
         ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok.setProperty("variant", "primary")

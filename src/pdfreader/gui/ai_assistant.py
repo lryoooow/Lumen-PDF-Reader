@@ -11,10 +11,12 @@
 from __future__ import annotations
 
 import base64
+import logging
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QDialog, QMessageBox, QWidget
 
 from pdfreader.controllers import DocumentController
@@ -31,10 +33,17 @@ from pdfreader.workers.ai_worker import AiWorker
 
 __all__ = ["LARGE_SEND_CHARS", "AiAssistant"]
 
+_logger = logging.getLogger("pdfreader")
+
 # 单次外发超过这么多字符时提醒（约等于一篇中等长度论文的全文）
 LARGE_SEND_CHARS = 40000
 # 文字层少于这么多字符的页视为扫描页，有 OCR 结果时用 OCR 文字代替
 _SCANNED_PAGE_CHARS = 20
+# 文档打开后延迟这么久再建全文索引（先让首屏渲染完成）
+_INDEX_DELAY_MS = 500
+# 全文索引在主线程分片进行（PyMuPDF 非线程安全）：每片最多约 20 ms，片间让出事件循环。
+_INDEX_SLICE_SECONDS = 0.02
+_INDEX_TICK_MS = 10
 # 框选区域渲染：目标最长边像素（够看清公式，又不至于图片过大）
 _CAPTURE_MAX_SIDE = 1600
 _CAPTURE_MAX_ZOOM = 4.0
@@ -113,6 +122,14 @@ class AiAssistant(QObject):
         self._note_anchor: tuple[int, float, float] | None = None
         self._encrypted_ok = False
         self._texts: list[str] | None = None
+        # 全文索引：文档打开后稍等再建，避开首屏渲染；之后在主线程分片进行
+        self._index_generation = 0
+        self._index_timer = QTimer(self)
+        self._index_timer.setInterval(_INDEX_TICK_MS)
+        self._index_timer.timeout.connect(self._index_tick)
+        self._index_page = 0
+        self._index_pages: list[str] = []
+        self._index_running = False
         # 本次会话的 OCR 识别结果（页 → 文字）：扫描页没有文字层时用它代替，不必先另存
         self._ocr: dict[int, str] = {}
         self._ocr_page_count = 0
@@ -208,6 +225,7 @@ class AiAssistant(QObject):
         """切换 / 关闭文档：停掉请求，清空对话与缓存。"""
         self.stop()
         self.stop_quick()
+        self.stop_index()
         self._history.clear()
         self._note_anchor = None
         self._encrypted_ok = False
@@ -216,9 +234,11 @@ class AiAssistant(QObject):
         self._forget_speed()
         self._panel.clear()
         self._panel.set_page_count(self._controller.page_count)
+        self._schedule_index()
 
     def invalidate_text(self) -> None:
         """文档内容变了（删页 / 合并 / OCR 等）：下次重新取文字。"""
+        self.stop_index()
         self._texts = None
         if self._controller.page_count != self._ocr_page_count:
             self._ocr.clear()  # 页数变了，页码已对不上 OCR 结果
@@ -232,13 +252,81 @@ class AiAssistant(QObject):
         self._ocr_page_count = self._controller.page_count
         self._texts = None
 
+    def _schedule_index(self) -> None:
+        """稍后建全文索引；期间用户先提问会退回主线程逐页取词。"""
+        self._index_generation += 1
+        generation = self._index_generation
+        QTimer.singleShot(
+            _INDEX_DELAY_MS, self, lambda generation=generation: self._start_index(generation)
+        )
+
+    def _start_index(self, generation: int) -> None:
+        if generation != self._index_generation or self._texts is not None:
+            return
+        controller = self._controller
+        doc = controller.document
+        if (
+            doc is None
+            or doc.is_closed
+            or controller.is_modified
+            or doc.path.suffix.lower() != ".pdf"
+        ):
+            return
+        if not doc.path.is_file():
+            return
+        self._index_page = 0
+        self._index_pages = []
+        self._index_running = True
+        self._index_timer.start()
+
+    def stop_index(self) -> None:
+        """取消尚未开始的索引并停掉正在进行的索引（回收标签 / 退出时调用）。"""
+        self._index_generation += 1
+        self._index_timer.stop()
+        self._index_running = False
+        self._index_pages = []
+
+    def _index_tick(self) -> None:
+        """主线程分片取词：每片不超过约 20 ms，片间让出事件循环。"""
+        if not self._index_running:
+            self._index_timer.stop()
+            return
+        controller = self._controller
+        doc = controller.document
+        if doc is None or doc.is_closed or controller.is_modified:
+            self.stop_index()
+            return
+        page_count = controller.page_count
+        started = time.perf_counter()
+        try:
+            while self._index_page < page_count:
+                self._index_pages.append(controller.page_text(self._index_page))
+                self._index_page += 1
+                if time.perf_counter() - started >= _INDEX_SLICE_SECONDS:
+                    break
+        except Exception as exc:  # 单页取词失败就退回主线程路径
+            _logger.warning("全文索引中断，将退回主线程取词：%s", exc)
+            self.stop_index()
+            return
+        if self._index_page < page_count:
+            return
+        self._index_timer.stop()
+        self._index_running = False
+        texts = self._index_pages
+        self._index_pages = []
+        if len(texts) == page_count:
+            self._texts = self._merge_ocr(texts)
+
+    def _merge_ocr(self, texts: list[str]) -> list[str]:
+        for page, text in self._ocr.items():
+            if 0 <= page < len(texts) and len(texts[page].strip()) < _SCANNED_PAGE_CHARS:
+                texts[page] = text
+        return texts
+
     def _page_texts(self) -> list[str]:
         if self._texts is None or len(self._texts) != self._controller.page_count:
-            texts = self._controller.page_texts()
-            for page, text in self._ocr.items():
-                if 0 <= page < len(texts) and len(texts[page].strip()) < _SCANNED_PAGE_CHARS:
-                    texts[page] = text
-            self._texts = texts
+            self.stop_index()  # 分片索引还没完成：直接整篇取一次，避免两套取词并行
+            self._texts = self._merge_ocr(self._controller.page_texts())
         return self._texts
 
     # ------------------------------------------------------------------ 动作入口
@@ -526,6 +614,7 @@ class AiAssistant(QObject):
 
     def shutdown(self) -> None:
         """退出前：取消并等待所有请求线程。"""
+        self.stop_index()
         for worker in self.workers():
             worker.shutdown()
         for worker in self.workers():

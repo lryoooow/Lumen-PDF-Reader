@@ -14,4 +14,10 @@ from pdfreader.workers.convert_worker import ConvertWorker
 from pdfreader.workers.ocr_worker import ImageOcrWorker, OcrWorker
 from pdfreader.workers.search_worker import SearchWorker
 
-__all__ = ["AiWorker", "ConvertWorker", "ImageOcrWorker", "OcrWorker", "SearchWorker"]
+__all__ = [
+    "AiWorker",
+    "ConvertWorker",
+    "ImageOcrWorker",
+    "OcrWorker",
+    "SearchWorker",
+]

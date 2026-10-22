@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from PySide6.QtCore import QObject, QPoint
+from PySide6.QtCore import QObject, QPoint, QPropertyAnimation
 from PySide6.QtWidgets import QLabel, QWidget
 
 from pdfreader.gui.widgets import motion
@@ -95,3 +95,35 @@ def test_slide_and_pop_in_end_at_layout_position(qtbot, motion_on) -> None:  # t
     qtbot.waitUntil(
         lambda: child.pos() == QPoint(30, 20) and child.graphicsEffect() is None, timeout=2000
     )
+
+
+def test_pop_out_keeps_target_alive_during_finished_signal(qtbot, motion_on) -> None:  # type: ignore[no-untyped-def]
+    widget = QLabel("x")
+    qtbot.addWidget(widget)
+    widget.show()
+    motion.pop_out(widget, duration=60)
+    effect = widget.graphicsEffect()
+    anim = widget._motion_anim
+    assert isinstance(anim, QPropertyAnimation)
+    observed: list[bool] = []
+    anim.finished.connect(lambda: observed.append(widget.graphicsEffect() is effect))
+    # 同步推进到结束：finished 的其余接收者仍应能访问动画目标。
+    anim.setCurrentTime(60)
+    assert observed == [True]
+    qtbot.waitUntil(lambda: not widget.isVisible(), timeout=2000)
+    assert widget.graphicsEffect() is None
+
+
+def test_reopening_popup_supersedes_pending_close(qtbot, motion_on) -> None:  # type: ignore[no-untyped-def]
+    widget = QLabel("x")
+    qtbot.addWidget(widget)
+    widget.show()
+    closed: list[bool] = []
+    motion.pop_out(widget, duration=60, on_done=lambda: closed.append(True))
+    anim = widget._motion_anim
+    anim.setCurrentTime(60)
+    # 结束信号与下一轮事件之间重新打开，旧动画的收尾不得隐藏新浮窗。
+    motion.pop_in(widget, duration=60)
+    assert widget.isVisible()
+    qtbot.waitUntil(lambda: widget.graphicsEffect() is None, timeout=2000)
+    assert widget.isVisible() and closed == []

@@ -106,6 +106,7 @@ from pdfreader.services.materials import (
     quote_template,
 )
 from pdfreader.services.ocr import OCR_AVAILABLE
+from pdfreader.services.recovery import RecoveryEntry, RecoveryError, RecoveryStore
 from pdfreader.services.zotero import (
     ZoteroError,
     ZoteroLibrary,
@@ -159,6 +160,9 @@ _HISTORY_LIMIT = 50
 _ANNOT_SCAN_PAGE_LIMIT = 300
 # 同时打开的文档标签上限（每个标签常驻一份已解析的文档）
 MAX_TABS = 20
+# 自动保存：每 15 秒检查一次，同一文档最快每 60 秒写一份恢复快照
+_AUTOSAVE_TICK_MS = 15_000
+_AUTOSAVE_MIN_INTERVAL = 60.0
 
 
 def _hex_to_rgb(value: str) -> tuple[float, float, float] | None:
@@ -234,7 +238,9 @@ class _ContentArea(QWidget):
 class MainWindow(QMainWindow):
     """应用主窗口。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, recovery_store: RecoveryStore | None = None, restore_session: bool = True
+    ) -> None:
         super().__init__()
         self._theme = get_theme()
         self._annotation_controller = AnnotationController()
@@ -257,12 +263,21 @@ class MainWindow(QMainWindow):
         self._snapshot_paths: list[Path] = []
         self._temp_files: list[Path] = []  # 其他本进程生成的临时文件（如手绘签名）
         self._last_open_failure: str = ""
+        # 恢复上次会话期间不把逐个打开的标签反写进设置（避免中途崩溃丢掉其余文件）
+        self._restoring_session = False
         # 文献库显示时暂存的阅读器快捷键（否则 Ctrl+W 等会作用在看不见的文档上）
         self._parked_shortcuts: dict[QAction, list[QKeySequence]] = {}
 
         # 设置持久化（主题、窗口尺寸、最近文件、阅读位置……）
         self._settings_store = SettingsStore()
         self._settings = self._settings_store.load()
+        # 崩溃恢复：整份快照写用户目录；会话锁避免多个实例同时改写同一批快照
+        self._recovery = recovery_store or RecoveryStore()
+        self._recovery_session = self._recovery.acquire_session()
+        self._recovery_entries: list[RecoveryEntry] = []
+        self._last_autosave: dict[str, float] = {}
+        # 只清理本进程写出的快照：上一次崩溃留下的快照必须由用户显式恢复或丢弃。
+        self._owned_recovery: set[str] = set()
 
         # 依据设置应用主题（在建 UI 之前，避免闪烁）
         self._theme.set_theme(self._settings.theme)
@@ -277,6 +292,15 @@ class MainWindow(QMainWindow):
 
         self._set_document_state(False)
         self._show_library(animate=False)
+        # 文献库显示后再检查上次遗留的恢复快照（横幅提示，不打断启动）
+        QTimer.singleShot(0, self, self._check_recovery)
+        if restore_session:
+            # 等事件循环起来、窗口完成布局后再恢复标签（适宽缩放依赖视口尺寸）
+            QTimer.singleShot(0, self, self._restore_session)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(_AUTOSAVE_TICK_MS)
+        self._autosave_timer.timeout.connect(self._autosave_tick)
+        self._autosave_timer.start()
 
         if self._settings.window_maximized:
             QTimer.singleShot(0, self.showMaximized)
@@ -482,9 +506,11 @@ class MainWindow(QMainWindow):
         if refresh and tab.has_document:
             self._show_tab(tab)
         self._sync_tab_bar()
+        self._save_session()
 
     def _leave_tab(self, old: DocumentTab) -> None:
         """离开旧标签：取消搜索、收起只对它有意义的浮层与工具，释放它的渲染位图。"""
+        self._snapshot_on_leave(old)
         if self._search_worker is not None:
             self._retire_search_worker(self._search_worker)
             self._search_worker = None
@@ -587,6 +613,7 @@ class MainWindow(QMainWindow):
             self._sync_tab_bar()
             return
         self._tabs.insert(dst, self._tabs.pop(src))
+        self._save_session()
 
     def _on_tab_close_requested(self, index: int) -> None:
         tab = self._tab_at(index)
@@ -613,6 +640,7 @@ class MainWindow(QMainWindow):
             return
         self._activate(tab, refresh=False)
         self._on_document_opened(page_count)
+        self._save_session()
 
     def _on_tab_closed(self, tab: DocumentTab) -> None:
         """某个标签的文档关闭了：还有别的标签就移除它，最后一个则回到文献库。"""
@@ -624,17 +652,21 @@ class MainWindow(QMainWindow):
                 self._on_document_closed()
             return
         self._remove_tab(tab)
+        self._save_session()
 
     def _close_tab(self, tab: DocumentTab) -> bool:
         """关闭一个标签（有未保存改动先切过去询问）。返回 False = 用户取消。"""
         if not tab.has_document:
             return True
+        path = tab.path
         if tab.controller.is_modified:
             self._activate(tab)
             if not self._maybe_save():
                 return False
         self._remember_reading_position(tab)
         tab.controller.close_document()  # → documentClosed → _on_tab_closed
+        if path is not None:
+            self._forget_recovery(path)
         return True
 
     def _remove_tab(self, tab: DocumentTab) -> None:
@@ -661,6 +693,7 @@ class MainWindow(QMainWindow):
         if self._ocr_progress_owner is tab:
             self._close_ocr_progress()
         tab.ai.stop()
+        tab.ai.stop_index()
         tab.ai.clear_marks()
         tab.translator.reset()
         tab.view.clear()
@@ -1312,6 +1345,9 @@ class MainWindow(QMainWindow):
         lib.exploreAiRequested.connect(self._on_explore_ai)
         lib.returnRequested.connect(self._return_to_reader)
         lib.viewModeChanged.connect(self._on_library_view_changed)
+        lib.recoveryRestoreRequested.connect(self._on_recovery_restore)
+        lib.recoveryDiscardRequested.connect(self._on_recovery_discard)
+        lib.recoveryLaterRequested.connect(self._on_recovery_later)
         self.ribbon.homeRequested.connect(self._go_home)
 
         self.tab_bar.currentChanged.connect(self._on_tab_bar_current)
@@ -1772,6 +1808,7 @@ class MainWindow(QMainWindow):
 
     def _on_save_as(self) -> bool:
         doc = self._controller.document
+        old_path = doc.path if doc is not None else None
         path, _ = QFileDialog.getSaveFileName(
             self, "另存为", str(doc.path) if doc is not None else "", _PDF_FILTER
         )
@@ -1780,10 +1817,12 @@ class MainWindow(QMainWindow):
         old_marks = self._settings.bookmarks_for(doc.path) if doc is not None else []
         if self._controller.save_as(Path(path)):
             self._after_saved()
+            if old_path is not None:
+                self._forget_recovery(old_path)
             if old_marks:  # 书签跟着新文件走（原文件的保留）
                 self._settings.set_bookmarks(Path(path), old_marks)
             self._settings.add_recent_file(Path(path), max_count=MAX_LIBRARY_FILES)
-            self._save_settings()
+            self._save_session()
             return True
         QMessageBox.warning(self, "保存失败", self._controller.last_error or "保存失败")
         return False
@@ -1792,6 +1831,7 @@ class MainWindow(QMainWindow):
         doc = self._controller.document
         if doc is not None:
             self.status_bar.show_message(f"已保存到 {doc.path}")
+            self._forget_recovery(doc.path)
             self._record_meta(self._tab, opened=False)
             self._save_settings()
         self._update_title()
@@ -2767,7 +2807,39 @@ class MainWindow(QMainWindow):
     def _on_about(self) -> None:
         from pdfreader.gui.dialogs import AboutDialog
 
-        AboutDialog(self).exec()
+        dialog = AboutDialog(self)
+        dialog.diagnosticsRequested.connect(self._on_export_diagnostics)
+        dialog.exec()
+
+    def _on_export_diagnostics(self) -> None:
+        """导出诊断 zip（版本、环境、日志尾部与脱敏设置，不含文档内容）。"""
+        from pdfreader.services.diagnostics import collect_diagnostics
+
+        default_name = f"Lumen-diagnostics-{time.strftime('%Y%m%d-%H%M')}.zip"
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出诊断信息",
+            str(Path.home() / default_name),
+            "ZIP 压缩包 (*.zip)",
+        )
+        if not target:
+            return
+        path = Path(target)
+        if path.suffix.lower() != ".zip":
+            path = path.with_suffix(".zip")
+        try:
+            written = collect_diagnostics(path)
+        except OSError as exc:
+            _logger.warning("导出诊断信息失败：%s", exc)
+            QMessageBox.warning(self, "导出失败", f"无法写入诊断包：\n{exc}")
+            return
+        QMessageBox.information(
+            self,
+            "诊断信息已导出",
+            f"已保存到：\n{written}\n\n"
+            "压缩包只含版本、运行环境、日志尾部与脱敏设置，不含 PDF 内容；"
+            "反馈问题时可以直接附上这个文件。",
+        )
 
     def _on_doc_info(self) -> None:
         doc = self._controller.document
@@ -3124,6 +3196,7 @@ class MainWindow(QMainWindow):
         self._sync_tab_bar()
         self.status_bar.show_message("")
         self._show_library()
+        self._save_session()
 
     def _on_open_failed(self, result: str, message: str) -> None:
         self._last_open_failure = result
@@ -3305,6 +3378,272 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
             self._open_paths(paths)
 
+    # ------------------------------------------------------------------ 自动保存与恢复
+    def _recovery_key(self, path: Path) -> str:
+        return os.path.normcase(str(path.expanduser().resolve()))
+
+    def _snapshot_on_leave(self, tab: DocumentTab) -> None:
+        """离开标签前补一份快照：否则在 60 秒窗口内切走的改动没有保护。"""
+        if not self._recovery_session or self._shutting_down or not tab.has_document:
+            return
+        doc = tab.controller.document
+        if doc is None or doc.is_closed or not doc.is_modified:
+            return
+        key = self._recovery_key(doc.path)
+        if time.monotonic() - self._last_autosave.get(key, 0.0) < _AUTOSAVE_MIN_INTERVAL:
+            return
+        self._last_autosave[key] = time.monotonic()
+        self._write_recovery_snapshot(tab)
+
+    def _autosave_tick(self) -> None:
+        """定时检查当前标签：有未保存改动就写恢复快照（同一文档最快 60 秒一次）。"""
+        if not self._recovery_session or self._shutting_down:
+            return
+        if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
+            return  # 正在拖选 / 拖拽，别在指针底下写大文件
+        if QApplication.activeModalWidget() is not None:
+            return  # 有模态对话框时不抢事件循环
+        tab = self._tab
+        if not tab.has_document:
+            return
+        doc = tab.controller.document
+        if doc is None or doc.is_closed:
+            return
+        key = self._recovery_key(doc.path)
+        if not doc.is_modified:
+            # 已保存 / 已撤销到干净状态：旧快照失去意义，删掉免得下次误提示
+            self._forget_recovery(doc.path)
+            return
+        if time.monotonic() - self._last_autosave.get(key, 0.0) < _AUTOSAVE_MIN_INTERVAL:
+            return
+        self._last_autosave[key] = time.monotonic()
+        self._write_recovery_snapshot(tab)
+
+    def _write_recovery_snapshot(self, tab: DocumentTab) -> None:
+        controller = tab.controller
+        doc = controller.document
+        if doc is None or doc.is_closed:
+            return
+
+        def write(target: Path) -> bool:
+            return controller.save_copy(target)
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._recovery.write_snapshot(
+                doc.path,
+                page_count=controller.page_count,
+                title=controller.title or doc.path.name,
+                encrypted=bool(controller.password),
+                writer=write,
+            )
+        except (OSError, RecoveryError) as exc:
+            reason = controller.last_error or str(exc)
+            _logger.warning("自动保存恢复快照失败：%s", reason, exc_info=True)
+            self.status_bar.show_message(f"自动保存恢复快照失败：{reason}")
+        else:
+            self._owned_recovery.add(self._recovery_key(doc.path))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _forget_recovery(self, path: Path) -> None:
+        """删除本进程写出的、已失去意义的快照（保存 / 关闭 / 撤销回干净状态）。
+
+        上一次崩溃留下的快照不在这里删除：用户还没看到提示前不能替他丢掉数据。
+        """
+        key = self._recovery_key(path)
+        self._last_autosave.pop(key, None)
+        if key not in self._owned_recovery:
+            return
+        self._owned_recovery.discard(key)
+        with contextlib.suppress(OSError):
+            self._recovery.remove_for(path)
+
+    def _check_recovery(self) -> None:
+        """启动时扫描遗留快照并在文献库顶部提示（非模态）。"""
+        if not self._recovery_session:
+            return
+        try:
+            entries = self._recovery.entries()
+        except OSError:
+            _logger.warning("读取恢复快照失败", exc_info=True)
+            return
+        self._recovery_entries = entries
+        if entries:
+            self.library.set_recovery_notice([entry.original.name for entry in entries])
+
+    def _refresh_recovery_notice(self) -> None:
+        try:
+            self._recovery_entries = self._recovery.entries()
+        except OSError:
+            _logger.warning("读取恢复快照失败", exc_info=True)
+            self._recovery_entries = []
+            self.library.hide_recovery_notice()
+            return
+        self.library.set_recovery_notice([entry.original.name for entry in self._recovery_entries])
+
+    def _on_recovery_restore(self) -> None:
+        entries = list(self._recovery_entries)
+        if not entries:
+            self.library.hide_recovery_notice()
+            return
+        names = "\n".join(
+            f"· {entry.original.name}（{entry.created_label}，{entry.page_count} 页）"
+            for entry in entries
+        )
+        answer = QMessageBox.question(
+            self,
+            "恢复未保存的修改",
+            f"发现 {len(entries)} 个崩溃前未保存的文档：\n\n{names}\n\n"
+            "恢复会先把原文件备份到恢复目录，再用快照写回；"
+            "原文件在崩溃后已变化或已删除时，会另存为恢复副本。继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        restored: list[Path] = []
+        problems: list[str] = []
+        notes: list[str] = []
+        for entry in entries:
+            try:
+                if self._find_tab(entry.original) is not None:
+                    # 原文件正在标签里打开：不能悄悄覆盖它（视图与磁盘会不一致），
+                    # 把恢复内容放到旁边，用户确认后再自行替换。
+                    copy = self._recovery.copy_aside(entry)
+                    restored.append(copy)
+                    notes.append(
+                        f"{entry.original.name} 正在标签中打开，已把恢复内容另存为 {copy.name}"
+                    )
+                elif entry.original_unchanged:
+                    self._recovery.replace_original(entry)
+                    restored.append(entry.original)
+                else:
+                    restored.append(self._recovery.copy_aside(entry))
+            except (OSError, RecoveryError) as exc:
+                problems.append(f"{entry.original.name}：{exc}")
+                _logger.warning("恢复 %s 失败", entry.original, exc_info=True)
+        self._refresh_recovery_notice()
+        for path in restored:
+            self.open_path(path)
+        if restored:
+            self.status_bar.show_message(f"已恢复 {len(restored)} 个文档")
+        if problems:
+            QMessageBox.warning(
+                self,
+                "部分文档未能恢复",
+                "以下文档恢复失败，快照仍保留在恢复目录，可稍后重试：\n\n" + "\n".join(problems),
+            )
+        elif notes:
+            QMessageBox.information(self, "恢复完成", "\n".join(notes))
+
+    def _on_recovery_discard(self) -> None:
+        entries = list(self._recovery_entries)
+        if not entries:
+            self.library.hide_recovery_notice()
+            return
+        answer = QMessageBox.warning(
+            self,
+            "丢弃恢复快照",
+            f"确定删除 {len(entries)} 份崩溃前未保存的快照吗？\n这些改动将无法找回。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for entry in entries:
+            self._recovery.remove(entry)
+        self._refresh_recovery_notice()
+        if self._recovery_entries:
+            QMessageBox.warning(
+                self,
+                "部分快照未能删除",
+                f"仍有 {len(self._recovery_entries)} 份恢复快照无法删除，"
+                "可能被其它程序占用；可稍后重试。",
+            )
+            return
+        self.status_bar.show_message(f"已丢弃 {len(entries)} 份恢复快照")
+
+    def _on_recovery_later(self) -> None:
+        self.library.hide_recovery_notice()
+        self.status_bar.show_message("恢复快照已保留，下次启动会再次提示")
+
+    # ------------------------------------------------------------------ 会话恢复
+    def _restore_session(self) -> None:
+        """恢复上次退出时打开的标签（文件找不到就跳过，不打断启动）。"""
+        if self._shutting_down or any(tab.has_document for tab in self._tabs):
+            return  # 命令行 / 拖放已经打开了文件，不再恢复旧会话
+        raw_files = self._settings.session_files
+        if not raw_files:
+            return
+        opened = 0
+        missing = 0
+        self._restoring_session = True
+        try:
+            seen: set[str] = set()
+            for raw in raw_files[:MAX_TABS]:
+                if not raw:
+                    continue
+                path = Path(raw)
+                key = os.path.normcase(str(path))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if not path.is_file():
+                    missing += 1
+                    continue
+                if self._find_tab(path) is not None:
+                    continue
+                if self.open_path(path):
+                    opened += 1
+            active = self._settings.session_active
+            if active:
+                tab = self._find_tab(Path(active))
+                if tab is not None and tab is not self._tab:
+                    self._activate(tab)
+        finally:
+            self._restoring_session = False
+        if opened:
+            message = f"已恢复上次打开的 {opened} 个文档"
+            if missing:
+                message += f"，另有 {missing} 个文件找不到"
+            self.status_bar.show_message(message)
+        elif missing:
+            self.status_bar.show_message(f"上次打开的 {missing} 个文档已找不到，未恢复")
+
+    def _save_session(self) -> None:
+        """把当前打开的文档与活动标签写进设置（正常关闭 / 标签增减时调用）。"""
+        if self._shutting_down or self._restoring_session:
+            return
+        files: list[str] = []
+        seen: set[str] = set()
+        active = ""
+        for tab in self._tabs:
+            path = tab.path
+            if path is None:
+                continue
+            text = str(path)
+            key = os.path.normcase(text)
+            if key not in seen:
+                seen.add(key)
+                files.append(text)
+            if tab is self._tab:
+                active = text
+        self._settings.session_files = files[:MAX_TABS]
+        self._settings.session_active = active
+        self._save_settings()
+
+    def handle_second_instance(self, paths: list[str], cwd: str) -> None:
+        """第二个实例转来的打开请求：激活窗口并打开文件。"""
+        self.raise_()
+        self.activateWindow()
+        base = Path(cwd) if cwd else Path.cwd()
+        for raw in paths:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = base / path
+            self.open_path(path)
+
     # ------------------------------------------------------------------ 持久化 / 关闭
     def _save_settings(self) -> None:
         with contextlib.suppress(OSError):
@@ -3320,19 +3659,26 @@ class MainWindow(QMainWindow):
                     return
         for tab in self._tabs:
             self._remember_reading_position(tab)
+        # 下次启动恢复这些标签（没有文档时清空，停在文献库）
+        self._save_session()
         # 记录窗口状态
         self._settings.window_maximized = self.isMaximized()
         if not self.isMaximized():
             self._settings.window_width = self.width()
             self._settings.window_height = self.height()
         self._save_settings()
+        self._autosave_timer.stop()
+        open_paths = [tab.path for tab in self._tabs if tab.path is not None]
         self._shutting_down = True  # 下面逐个关文档时不再切换标签 / 刷新界面
         for tab in self._tabs:
             if tab.has_document:
                 tab.controller.close_document()
+        for path in open_paths:
+            self._forget_recovery(path)
         self._wait_for_background_workers()
         self._materials.close()
         self._cleanup_snapshots()
+        self._recovery.release_session()
         super().closeEvent(event)
 
 

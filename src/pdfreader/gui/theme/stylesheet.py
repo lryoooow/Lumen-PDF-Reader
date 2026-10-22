@@ -387,6 +387,41 @@ QPushButton#ReturnButton {
 }
 QPushButton#ReturnButton:hover { border-color: $accent; }
 
+/* 崩溃恢复提示条（文献库首页顶部，非模态） */
+QFrame#RecoveryBanner {
+    background-color: $accent_soft;
+    border: none;
+    border-bottom: 1px solid $border;
+}
+QLabel#RecoveryTitle { color: $text; font-size: 12px; font-weight: 600; }
+QLabel#RecoveryText { color: $text_secondary; font-size: 12px; }
+QPushButton#RecoveryRestore {
+    background-color: $accent;
+    border: none;
+    border-radius: 6px;
+    color: $on_accent;
+    padding: 5px 14px;
+    font-size: 12px;
+}
+QPushButton#RecoveryRestore:hover { background-color: $accent_hover; }
+QPushButton#RecoveryDiscard {
+    background: transparent;
+    border: 1px solid $border;
+    border-radius: 6px;
+    color: $danger;
+    padding: 5px 12px;
+    font-size: 12px;
+}
+QPushButton#RecoveryDiscard:hover { background-color: $danger_soft; }
+QPushButton#RecoveryLater {
+    background: transparent;
+    border: none;
+    color: $text_muted;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+QPushButton#RecoveryLater:hover { color: $text; }
+
 QLabel#Eyebrow { color: $text_muted; font-size: 11px; letter-spacing: 2.1px; }
 QLabel#GreetingTitle {
     font-family: $serif_family;
