@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from pdfreader.config.settings import MAX_LIBRARY_FILES, DocMeta
 from pdfreader.gui.main_window import MainWindow
+from pdfreader.services.bibliography import Reference
 
 
 def _make_pdf(path: Path, pages: int = 3, title: str = "") -> Path:
@@ -23,6 +24,23 @@ def _make_pdf(path: Path, pages: int = 3, title: str = "") -> Path:
     d.save(str(path))
     d.close()
     return path
+
+
+def test_adopted_bibliography_survives_reload_and_open_record(
+    window: MainWindow, tmp_path: Path
+) -> None:
+    source = _make_pdf(tmp_path / "bibliography.pdf", title="Embedded title")
+    window.open_path(source)
+    reference = Reference("paper", "Adopted title", ("Smith, John",), "2024", "10.1000/test")
+    window._apply_reference(reference)
+    from pdfreader.config.settings import SettingsStore
+
+    loaded = SettingsStore().load()
+    meta = loaded.meta_for(source)
+    assert meta is not None and meta.bibliography and meta.doi == "10.1000/test"
+    window._settings = loaded
+    window._record_meta(window.current_tab, opened=True)
+    assert window._settings.meta_for(source).title == "Adopted title"
 
 
 @pytest.fixture

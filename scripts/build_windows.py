@@ -49,6 +49,7 @@ HIDDEN_IMPORTS = [
     "pdfplumber",
     "openpyxl",
     "PySide6.QtPrintSupport",  # 打印
+    "PySide6.QtTextToSpeech",  # 用户主动发起的本地朗读
     "keyring.backends.Windows",  # AI 助读：API Key 存 Windows 凭据管理器
 ]
 
@@ -62,6 +63,9 @@ COLLECT_ALL = [
     "shapely",
     "keyring",  # 后端靠包元数据（entry points）发现，需连同 dist-info 收集
     "certifi",  # httpx 的 HTTPS 根证书
+    "bibtexparser",  # 书目交换
+    "regex",  # 带超时保护的正则引擎
+    "docx",  # 独立笔记 Word 写入器及默认模板
 ]
 
 

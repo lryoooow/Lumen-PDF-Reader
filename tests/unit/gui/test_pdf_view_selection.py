@@ -79,6 +79,20 @@ def _click(view: PdfView, pos: QPointF) -> None:
 
 
 class TestClickGestures:
+    def test_native_double_click_remains_double_when_dispatch_is_delayed(
+        self, view: PdfView
+    ) -> None:
+        view.set_text_provider(lambda p: CJK if p == 0 else ())
+        view.setup_document(1, [A4])
+        view.set_zoom(1.0)
+        pos = _view_pos(view, 0, 12, 15)
+        _click(view, pos)
+        # 系统已识别为双击，但主线程忙导致事件晚于自行计时的阈值才被处理。
+        view._last_click_time -= QApplication.doubleClickInterval() / 1000 + 1
+        _double_click(view, pos)
+        _release(view, pos)
+        assert view.selected_text == "中文"
+
     def test_double_click_selects_word(self, view: PdfView, qtbot) -> None:  # type: ignore[no-untyped-def]
         view.set_text_provider(lambda p: TWO_LINES if p == 0 else ())
         view.setup_document(1, [A4])

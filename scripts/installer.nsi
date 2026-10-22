@@ -11,7 +11,7 @@ Unicode true
 
 ; -------- 可由命令行 /D 覆盖 --------
 !ifndef VERSION
-  !define VERSION "0.0.6"
+  !define VERSION "0.1.0"
 !endif
 !ifndef SOURCEDIR
   !define SOURCEDIR "dist\PDFReader"

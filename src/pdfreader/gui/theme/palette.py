@@ -9,9 +9,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-__all__ = ["DARK", "LIGHT", "TOKENS", "Palette", "Tokens", "palette_for"]
+__all__ = ["CONTRAST", "DARK", "LIGHT", "TOKENS", "Palette", "Tokens", "palette_for"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +90,7 @@ class Palette:
 
     @property
     def is_dark(self) -> bool:
-        return self.name == "dark"
+        return self.name in ("dark", "contrast")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +204,48 @@ DARK = Palette(
 )
 
 
+CONTRAST = replace(
+    DARK,
+    name="contrast",
+    window="#000000",
+    surface="#000000",
+    canvas="#000000",
+    popover="#000000",
+    card="#000000",
+    surface_hover="#252525",
+    surface_active="#303030",
+    text="#FFFFFF",
+    text_secondary="#FFFFFF",
+    text_muted="#FFFFFF",
+    border="#FFFFFF",
+    border_strong="#FFFFFF",
+    accent="#FFFF00",
+    accent_hover="#FFFF66",
+    accent_pressed="#FFD700",
+    accent_soft="#303000",
+    accent_text="#FFFF00",
+    on_accent="#000000",
+    icon="#FFFFFF",
+    icon_active="#FFFF00",
+    nav="#000000",
+    nav_text="#FFFFFF",
+    nav_muted="#FFFFFF",
+    nav_bright="#FFFFFF",
+    nav_active="#303030",
+    nav_icon_active="#FFFF00",
+    hero="#000000",
+    hero_ink="#FFFFFF",
+    hero_button="#333333",
+    hero_button_hover="#444444",
+    insight="#000000",
+    insight_ink="#FFFFFF",
+    cream="#303030",
+    import_button="#444444",
+    import_button_hover="#666666",
+    covers=(("#000000", "#FFFFFF"),) * 4,
+)
+
+
 def palette_for(name: str) -> Palette:
     """按名称取配色板（未知名回退浅色）。"""
-    return DARK if name == "dark" else LIGHT
+    return CONTRAST if name == "contrast" else DARK if name == "dark" else LIGHT

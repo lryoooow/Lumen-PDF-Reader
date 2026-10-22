@@ -20,6 +20,7 @@ import re
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -96,7 +97,9 @@ from pdfreader.gui.widgets.library import display_title
 from pdfreader.gui.widgets.overlays import CitePopover, ToolHint
 from pdfreader.gui.widgets.panel_grip import PanelGrip
 from pdfreader.gui.widgets.pdf_view import ReadingMode
+from pdfreader.plugin_api import Command, DocumentContext
 from pdfreader.services.ai.provider import AiSettings
+from pdfreader.services.bibliography import Reference, extract_doi
 from pdfreader.services.materials import (
     KIND_LABELS,
     MAX_TERM_CHARS,
@@ -121,6 +124,7 @@ __all__ = ["MainWindow"]
 _logger = logging.getLogger("pdfreader")
 
 _PDF_FILTER = "PDF 文件 (*.pdf);;所有文件 (*.*)"
+_OPEN_FILTER = "阅读文档 (*.pdf *.epub);;PDF 文件 (*.pdf);;EPUB 电子书 (*.epub);;所有文件 (*.*)"
 # 打开加密文档时允许输错密码的次数
 _PASSWORD_ATTEMPTS = 3
 # 允许从文档里点开的外部链接协议（其余如 file: / javascript: 一律不打开）
@@ -137,6 +141,12 @@ _READING_MODES = (
     (ReadingMode.NORMAL, "正常", "#FFFFFF"),
     (ReadingMode.NIGHT, "夜间（页面反色）", "#18181B"),
     (ReadingMode.SEPIA, "护眼（暖色纸张）", "#F3E7C9"),
+)
+_ACCESSIBLE_HIGHLIGHT_COLORS = (
+    ("蓝", "#0072B2"),
+    ("橙", "#E69F00"),
+    ("青绿", "#009E73"),
+    ("紫红", "#CC79A7"),
 )
 _MODE_CHIP = {ReadingMode.NIGHT: "夜间", ReadingMode.SEPIA: "护眼"}
 _TOOL_NAMES = {
@@ -769,6 +779,13 @@ class MainWindow(QMainWindow):
         return act
 
     def _create_actions(self) -> None:
+        self._extension_commands: dict[str, tuple[Command, QAction]] = {}
+        self.command_palette_action = self._act(
+            "search",
+            "命令面板",
+            self._on_command_palette,
+            shortcut="Ctrl+Shift+P",
+        )
         # 文件
         self.open_action = self._act(
             "open", "打开", self._on_open, shortcut=QKeySequence.StandardKey.Open
@@ -811,6 +828,40 @@ class MainWindow(QMainWindow):
         )
 
         # 视图
+        self.contrast_action = self._act(
+            "sun",
+            "高对比度",
+            lambda: self._on_theme_mode(
+                "contrast" if self.contrast_action.isChecked() else "light"
+            ),
+            checkable=True,
+            tooltip="黑白高对比度主题与色觉友好的批注色板",
+        )
+        self.contrast_action.setChecked(self._theme.mode == "contrast")
+        self.speech_action = self._act("notes", "本地朗读", self._on_speech, enabled=False)
+        self.reading_workspace_action = self._act(
+            "fit_page",
+            "分屏与演示",
+            self._on_reading_workspace,
+            enabled=False,
+            shortcut="Ctrl+Alt+S",
+            tooltip="独立滚动、旋转预览与全屏演示",
+        )
+        self.presentation_action = self._act(
+            "fit_page",
+            "全屏演示",
+            lambda: self._on_reading_workspace(presentation=True),
+            enabled=False,
+            shortcut="F11",
+        )
+        self.double_page_action = self._act(
+            "fit_page",
+            "书本双页",
+            self._toggle_double_page,
+            checkable=True,
+            enabled=False,
+            tooltip="封面单独显示，之后两页并排",
+        )
         self.zoom_in_action = self._act(
             "zoom_in",
             "放大",
@@ -952,6 +1003,61 @@ class MainWindow(QMainWindow):
         }
 
         # 工具
+        self.bibliography_action = self._act(
+            "notes", "书目引用", self._on_bibliography, enabled=False
+        )
+        self.library_files_action = self._act(
+            "open",
+            "目录与去重",
+            self._on_library_files,
+            tooltip="监控选定目录，查看 SHA-256 重复文件",
+        )
+        self.table_action = self._act("export", "表格提取", self._on_tables, enabled=False)
+        self.formula_action = self._act(
+            "capture", "公式转 LaTeX", self._start_formula_capture, enabled=False
+        )
+        self.research_ai_action = self._act(
+            "ai",
+            "长文与多文档",
+            self._on_research_ai,
+            enabled=False,
+            tooltip="分层摘要、对比表、综述草稿与原文短引核对",
+        )
+        self.zotero_library_action = self._act(
+            "zotero",
+            "Zotero 文献库",
+            self._on_zotero_library,
+            tooltip="只读合集、条目元数据与书目导出",
+        )
+        self.zotero_export_action = self._act(
+            "export",
+            "导出批注 PDF",
+            self._on_export_annotation_pdf,
+            enabled=False,
+            tooltip="导出当前内容及嵌入批注，供 Zotero 导入",
+        )
+        self.research_search_action = self._act(
+            "search",
+            "高级搜索",
+            self._on_research_search,
+            enabled=False,
+            shortcut="Ctrl+Shift+F",
+            tooltip="正则搜索与本地文献库全文索引",
+        )
+        self.notebook_action = self._act(
+            "notes",
+            "阅读笔记",
+            self._on_notebook,
+            enabled=False,
+            tooltip="Markdown 笔记、来源追踪与 Word/PDF 导出",
+        )
+        self.parallel_translation_action = self._act(
+            "translate",
+            "段落对照翻译",
+            self._on_parallel_translation,
+            enabled=False,
+            tooltip="逐页预览、对照翻译与原文定位",
+        )
         self.ocr_action = self._act(
             "ocr",
             "OCR",
@@ -1159,22 +1265,51 @@ class MainWindow(QMainWindow):
                         self.fit_page_action,
                     ],
                 ),
-                ("阅读", [self.reading_mode_action]),
+                (
+                    "阅读",
+                    [
+                        self.reading_mode_action,
+                        self.double_page_action,
+                        self.reading_workspace_action,
+                        self.presentation_action,
+                        self.speech_action,
+                        self.contrast_action,
+                    ],
+                ),
             ],
         )
         self.ribbon.add_tab(
             "工具",
             [
-                ("识别", [self.ocr_action]),
-                ("输出", [self.export_action, self.export_notes_action]),
-                ("文档", [self.doc_info_action]),
+                ("识别", [self.ocr_action, self.table_action]),
+                ("输出", [self.export_action, self.export_notes_action, self.notebook_action]),
+                (
+                    "文档",
+                    [
+                        self.doc_info_action,
+                        self.bibliography_action,
+                        self.research_search_action,
+                        self.zotero_library_action,
+                        self.library_files_action,
+                        self.command_palette_action,
+                        self.zotero_export_action,
+                    ],
+                ),
             ],
         )
         self.ribbon.add_tab(
             "AI 助读",
             [
-                ("全文", [self.ai_panel_action, self.ai_summary_action, self.ai_suggest_action]),
-                ("速读", [self.ai_tldr_action, self.ai_speedread_action]),
+                (
+                    "全文",
+                    [
+                        self.ai_panel_action,
+                        self.ai_summary_action,
+                        self.ai_suggest_action,
+                        self.parallel_translation_action,
+                    ],
+                ),
+                ("速读", [self.ai_tldr_action, self.ai_speedread_action, self.research_ai_action]),
                 (
                     "划词与框选",
                     [
@@ -1183,6 +1318,7 @@ class MainWindow(QMainWindow):
                         self.translate_continuous_action,
                         self.ai_explain_action,
                         self.capture_action,
+                        self.formula_action,
                     ],
                 ),
                 ("模型", [self.ai_settings_action]),
@@ -1298,13 +1434,20 @@ class MainWindow(QMainWindow):
     def _build_swatch_menu(self) -> QMenu:
         """高亮颜色色板（设计稿：一排 5 个圆点，当前色带强调色外环）。"""
         menu = QMenu(self)
+        previous = getattr(self, "_swatch_menu", None)
+        if previous is not None:
+            previous.deleteLater()
+        self._swatch_menu = menu
         holder = QWidget()
         holder.setObjectName("SwatchPopup")
         row = QHBoxLayout(holder)
         row.setContentsMargins(8, 6, 8, 6)
         row.setSpacing(6)
         self._swatches: dict[str, QToolButton] = {}
-        for name, color in _HIGHLIGHT_COLORS:
+        colors = (
+            _ACCESSIBLE_HIGHLIGHT_COLORS if self._theme.mode == "contrast" else _HIGHLIGHT_COLORS
+        )
+        for name, color in colors:
             btn = QToolButton()
             btn.setObjectName("Swatch")
             btn.setToolTip(f"高亮颜色：{name}")
@@ -1400,6 +1543,8 @@ class MainWindow(QMainWindow):
         self._tab_add_button.setIcon(self._theme.colored_icon("plus", p.text_muted, size=14))
 
     def _on_theme_changed(self, _name: str) -> None:
+        self.contrast_action.setChecked(self._theme.mode == "contrast")
+        self.ribbon.set_menu(self.color_action, self._build_swatch_menu())
         for tab in self._tabs:
             tab.view.apply_palette(self._theme.palette)
         self._refresh_tab_icons()
@@ -1901,7 +2046,8 @@ class MainWindow(QMainWindow):
 
     def _update_page_actions(self) -> None:
         """与页数相关的动作：只剩一页时不能删除（0 页的 PDF 无法保存）。"""
-        active = self._controller.has_document
+        document = self._controller.document
+        active = document is not None and document.meta.is_pdf
         self.delete_page_action.setEnabled(active and self._controller.page_count > 1)
 
     # ------------------------------------------------------------------ 批注
@@ -1909,6 +2055,7 @@ class MainWindow(QMainWindow):
         previous = getattr(self, "_last_mode", AnnotationMode.NONE)
         self._last_mode = mode
         self._capture_translate = False  # 换了工具：框选回到「交给 AI 解释」
+        self._capture_formula = False
         if mode == AnnotationMode.PAN:
             # 抓手：ScrollHandDrag 自带开手/抓手光标
             self.pdf_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -2090,6 +2237,268 @@ class MainWindow(QMainWindow):
             self._after_annotation_change(annot.page_num)
         else:
             self._report_failure("删除批注")
+
+    def _on_parallel_translation(self) -> None:
+        from pdfreader.gui.dialogs.translation_dialog import TranslationDialog
+
+        tab = self._tab
+        if not tab.has_document:
+            return
+        dialog = TranslationDialog(
+            tab.controller,
+            tab.ai,
+            self._navigate_to,
+            self._current_page(),
+            self,
+        )
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _on_tables(self) -> None:
+        from pdfreader.gui.dialogs.table_dialog import TableDialog
+
+        dialog = TableDialog(self._controller, self._ai, self._current_page(), self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _on_library_files(self) -> None:
+        from pdfreader.gui.dialogs.library_files_dialog import LibraryFilesDialog
+
+        def add_paths(paths: list[Path]) -> None:
+            for path in paths:
+                self._settings.add_recent_file(path, max_count=MAX_LIBRARY_FILES)
+            self._save_settings()
+            self._refresh_library()
+
+        dialog = LibraryFilesDialog(add_paths, self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def register_command(self, command: Command) -> None:
+        """注册显式提供的命令扩展；不自动加载第三方模块。"""
+        if (
+            not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,79}", command.id)
+            or not command.title.strip()
+        ):
+            raise ValueError("扩展命令标识或标题无效")
+        if command.id in self._extension_commands:
+            raise ValueError("扩展命令标识重复")
+
+        def run() -> None:
+            try:
+                if command.enabled():
+                    command.run()
+            except Exception:
+                _logger.exception("扩展命令执行失败：%s", command.id)
+                self.status_bar.show_message("扩展命令执行失败，请检查扩展或导出诊断信息。")
+
+        action = self._act("settings", command.title, run)
+        self._extension_commands[command.id] = (command, action)
+
+    def document_context(self) -> DocumentContext | None:
+        document = self._controller.document
+        if document is None:
+            return None
+        return DocumentContext(
+            str(document.path),
+            document.title,
+            self.pdf_view.current_page_num,
+            document.page_count,
+            document.meta.is_encrypted,
+        )
+
+    def _on_command_palette(self) -> None:
+        from pdfreader.gui.dialogs.command_palette import CommandPalette
+
+        for command, action in self._extension_commands.values():
+            try:
+                action.setEnabled(command.enabled())
+            except Exception:
+                _logger.exception("扩展命令可用性检查失败：%s", command.id)
+                action.setEnabled(False)
+        dialog = CommandPalette(
+            [action for action in self.actions() if action is not self.command_palette_action], self
+        )
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _on_speech(self) -> None:
+        from pdfreader.gui.dialogs.speech_dialog import SpeechDialog
+
+        text = self.pdf_view.selected_text
+        if not text:
+            page = self.pdf_view.current_page_num
+            if page is None:
+                self.status_bar.show_message("请先打开文档或选择文字。")
+                return
+            text = self._controller.page_text(page)
+        dialog = SpeechDialog(text, self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _toggle_double_page(self) -> None:
+        self.pdf_view.set_page_layout(double_page=self.double_page_action.isChecked())
+        self._update_page_actions()
+
+    def _on_reading_workspace(self, *, presentation: bool = False) -> None:
+        from pdfreader.gui.dialogs.reading_workspace import ReadingWorkspace
+
+        tabs = [tab for tab in self._tabs if tab.has_document]
+        if not tabs:
+            return
+        dialog = ReadingWorkspace(
+            [(tab.label(), tab.controller) for tab in tabs], tabs.index(self._tab), self
+        )
+        dialog.left.page.setValue(self._current_page() + 1)
+        if presentation:
+            dialog.toggle_presentation()
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _on_research_ai(self) -> None:
+        from pdfreader.gui.dialogs.research_dialog import ResearchDialog
+
+        tabs = [tab for tab in self._tabs if tab.has_document]
+
+        def navigate(index: int, page: int) -> None:
+            if 0 <= index < len(tabs) and tabs[index].has_document:
+                self._activate(tabs[index])
+                self._navigate_to(page, None)
+
+        dialog = ResearchDialog(
+            [(tab.label(), tab.controller) for tab in tabs], self._ai, navigate, self
+        )
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _on_notebook(self) -> None:
+        from pdfreader.gui.dialogs.notebook_dialog import NotebookDialog
+
+        if self._controller.has_document:
+            dialog = NotebookDialog(
+                self._controller,
+                self._navigate_to,
+                self,
+                materials=self._materials,
+                reference=self._current_reference(),
+                on_reference=self._apply_reference,
+            )
+            dialog.exec()
+            dialog.deleteLater()
+
+    def _current_reference(self) -> Reference:
+        document = self._controller.document
+        if document is None:
+            return Reference("paper", "")
+        meta = self._settings.meta_for(document.path) or DocMeta()
+        return Reference(
+            meta.citation_key or re.sub(r"[^\w:-]", "_", document.path.stem),
+            meta.title or document.title,
+            tuple(
+                a.strip() for a in (meta.author or document.meta.author).split("；") if a.strip()
+            ),
+            meta.year,
+            meta.doi or extract_doi(self._controller.page_text(0)),
+            meta.journal,
+            meta.volume,
+            meta.issue,
+            meta.citation_pages,
+            kind=meta.citation_kind,
+        )
+
+    def _apply_reference(self, reference: Reference) -> None:
+        document = self._controller.document
+        if document is None:
+            return
+        old = self._settings.meta_for(document.path) or DocMeta(pages=document.page_count)
+        self._settings.remember_meta(
+            document.path,
+            replace(
+                old,
+                title=reference.title,
+                author="；".join(reference.authors),
+                doi=reference.doi,
+                year=reference.year,
+                bibliography=True,
+                citation_key=reference.key,
+                citation_kind=reference.kind,
+                journal=reference.journal,
+                volume=reference.volume,
+                issue=reference.issue,
+                citation_pages=reference.pages,
+            ),
+        )
+        self._save_settings()
+        self._refresh_library()
+
+    def _on_bibliography(self) -> None:
+        from pdfreader.gui.dialogs.bibliography_dialog import BibliographyDialog
+
+        dialog = BibliographyDialog(self._current_reference(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._apply_reference(dialog.reference())
+        dialog.deleteLater()
+
+    def _on_zotero_library(self) -> None:
+        from pdfreader.gui.dialogs.zotero_library_dialog import ZoteroLibraryDialog
+
+        directory = self._zotero_data_dir()
+        if directory is None:
+            return
+
+        def open_pdf(path: Path, reference: Reference) -> None:
+            self.open_path(path)
+            if not self._tab.is_file(path):
+                return
+            self._apply_reference(reference)
+
+        dialog = ZoteroLibraryDialog(directory, open_pdf, self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _on_export_annotation_pdf(self) -> None:
+        document = self._controller.document
+        if document is None:
+            return
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出带嵌入批注的 PDF",
+            str(document.path.with_stem(document.path.stem + "_批注")),
+            "PDF (*.pdf)",
+        )
+        if not filename:
+            return
+        target = Path(filename)
+        if self._find_tab(target) is not None:
+            QMessageBox.warning(
+                self, "导出批注", "请选择当前未打开的新文件，避免覆盖阅读中的文档。"
+            )
+            return
+        try:
+            document.save_copy(target)
+        except Exception:
+            _logger.exception("导出带批注 PDF 失败")
+            QMessageBox.warning(self, "导出批注", "导出失败，请检查目标路径和文档权限。")
+            return
+        QMessageBox.information(
+            self,
+            "导出批注",
+            "已导出当前内容及嵌入批注，保留原加密。\n"
+            "在 Zotero 中打开导出副本，可用阅读器的 Import Annotations 导入。"
+            "不同版本支持的批注类型可能不同，请核对结果。",
+        )
+
+    def _on_research_search(self) -> None:
+        from pdfreader.gui.dialogs.research_search_dialog import ResearchSearchDialog
+
+        def open_result(path: str, page: int) -> None:
+            self.open_path(Path(path))
+            if self._tab.is_file(Path(path)):
+                self._navigate_to(page, None)
+
+        dialog = ResearchSearchDialog(self._controller, self._navigate_to, open_result, self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _on_export_notes(self) -> None:
         doc = self._controller.document
@@ -2449,21 +2858,34 @@ class MainWindow(QMainWindow):
             self.status_bar.show_message("请先打开文档")
             return
         self._capture_translate = False
+        self._capture_formula = False
         self._annotation_controller.set_mode(AnnotationMode.CAPTURE)
+
+    def _start_formula_capture(self) -> None:
+        if not self._controller.has_document:
+            return
+        self._start_capture()
+        self._capture_formula = True
+        self.status_bar.show_message("框选公式区域，使用视觉模型转换为 LaTeX。")
 
     def _start_translate_capture(self) -> None:
         """划词翻译遇到乱码：框选那段文字，截图识别后在浮窗里翻译。"""
         if not self._controller.has_document:
             return
+        self._capture_formula = False
         self._annotation_controller.set_mode(AnnotationMode.CAPTURE)
         self._capture_translate = True  # 在 set_mode 之后：模式变化回调会清掉它
         self.tool_hint.show_tool("capture_translate")
         self._content.reposition_overlay()
 
     def _on_area_captured(self, page_num: int, rect: Rect) -> None:
+        formula = getattr(self, "_capture_formula", False)
+        self._capture_formula = False
         translate, self._capture_translate = self._capture_translate, False
         self._annotation_controller.set_mode(AnnotationMode.NONE)
-        if translate:
+        if formula:
+            self._ai.formula_to_latex(page_num, rect)
+        elif translate:
             self._tab.translator.translate_area(page_num, rect)
         else:
             self._ai.explain_area(page_num, rect)
@@ -2958,7 +3380,7 @@ class MainWindow(QMainWindow):
         start_dir = ""
         if self._settings.recent_files:
             start_dir = str(Path(self._settings.recent_files[0]).parent)
-        paths, _ = QFileDialog.getOpenFileNames(self, "打开 PDF", start_dir, _PDF_FILTER)
+        paths, _ = QFileDialog.getOpenFileNames(self, "打开文档", start_dir, _OPEN_FILTER)
         self._open_paths(paths)
 
     def _on_open_recent(self, path: str) -> None:
@@ -3144,6 +3566,18 @@ class MainWindow(QMainWindow):
             self.watermark_action,
             self.export_action,
             self.export_notes_action,
+            self.parallel_translation_action,
+            self.notebook_action,
+            self.research_search_action,
+            self.zotero_export_action,
+            self.double_page_action,
+            self.reading_workspace_action,
+            self.presentation_action,
+            self.research_ai_action,
+            self.table_action,
+            self.formula_action,
+            self.speech_action,
+            self.bibliography_action,
             self.doc_info_action,
             self.search_action,
             self.copy_merge_action,
@@ -3169,9 +3603,34 @@ class MainWindow(QMainWindow):
         ):
             act.setEnabled(active)
         self.reading_mode_action.setChecked(self.pdf_view.reading_mode != ReadingMode.NORMAL)
+        self.double_page_action.setChecked(self.pdf_view.double_page)
         for key, act in self._mode_actions.items():
             act.setChecked(key == self.pdf_view.reading_mode)
         self.status_bar.set_document_active(active)
+        document = self._controller.document
+        self.pdf_view.set_read_only(document is not None and not document.meta.is_pdf)
+        if active and document is not None and not document.meta.is_pdf:
+            for action in (
+                self.save_action,
+                self.save_as_action,
+                self.zotero_action,
+                self.zotero_export_action,
+                self.rotate_action,
+                self.merge_action,
+                self.watermark_action,
+                self.export_action,
+                self.ocr_action,
+                self.highlight_action,
+                self.underline_action,
+                self.ink_action,
+                self.note_action,
+                self.freetext_action,
+                self.eraser_action,
+                self.signature_action,
+                self.timestamp_action,
+                self.table_action,
+            ):
+                action.setEnabled(False)
         if active:
             self.status_bar.set_reading_mode(_MODE_CHIP.get(self.pdf_view.reading_mode, ""))
         self._update_page_actions()
@@ -3325,11 +3784,12 @@ class MainWindow(QMainWindow):
         count = tab.annotation_count
         self._settings.remember_meta(
             doc.path,
-            DocMeta(
+            replace(
+                old,
                 pages=tab.controller.page_count,
                 annotations=count if count is not None else old.annotations,
-                title=doc.meta.title,
-                author=doc.meta.author,
+                title=old.title if old.bibliography else doc.meta.title,
+                author=old.author if old.bibliography else doc.meta.author,
                 opened_at=time.time() if opened or old.opened_at <= 0 else old.opened_at,
             ),
         )
@@ -3359,7 +3819,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 拖放打开
     def dragEnterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         mime = event.mimeData()
-        if mime.hasUrls() and any(u.toLocalFile().lower().endswith(".pdf") for u in mime.urls()):
+        if mime.hasUrls() and any(
+            u.toLocalFile().lower().endswith((".pdf", ".epub")) for u in mime.urls()
+        ):
             event.acceptProposedAction()
             self.library.set_dragging(True)
 
@@ -3372,7 +3834,7 @@ class MainWindow(QMainWindow):
         paths = [
             u.toLocalFile()
             for u in event.mimeData().urls()
-            if u.toLocalFile().lower().endswith(".pdf")
+            if u.toLocalFile().lower().endswith((".pdf", ".epub"))
         ]
         if paths:
             event.acceptProposedAction()

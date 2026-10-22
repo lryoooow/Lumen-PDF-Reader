@@ -27,6 +27,7 @@ from pdfreader.engines.types import (
     Point,
     Rect,
     SearchResult,
+    TableData,
     TocEntry,
     WordBox,
 )
@@ -108,6 +109,10 @@ class PdfEngine(Protocol):
         Raises:
             PageIndexError: 页码越界
         """
+        ...
+
+    def extract_tables(self, doc: EngineDocument, page_num: int) -> tuple[TableData, ...]:
+        """提取表格，返回可见帧边界与单元格文本；不得修改受控文档。"""
         ...
 
     def pixmap_to_png(self, data: PixmapData) -> bytes:

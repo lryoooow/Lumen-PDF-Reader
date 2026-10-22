@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QMenu,
 )
 
+from pdfreader.core.layout import layout_pages, page_rows
 from pdfreader.engines.types import InkStroke, LinkInfo, PixmapData, Point, Rect, WordBox
 from pdfreader.gui.theme.palette import TOKENS
 from pdfreader.gui.widgets import motion
@@ -205,6 +206,9 @@ class PdfView(QGraphicsView):
         self._fit_mode: str | None = None  # "width" / "page" / None（手动缩放）
         self._page_sizes: list[tuple[int, int]] = []  # 各页原始尺寸 (w, h) @ 72dpi
         self._page_y_positions: list[float] = []  # 各页顶部 y 坐标
+        self._double_page = False
+        self._read_only = False
+        self._cover_alone = True
         self._page_x_positions: list[float] = []  # 各页左侧 x（宽度不一的页水平居中）
         self._frame_items: dict[int, list[QGraphicsItem]] = {}  # 页面阴影
         self._no_fade: set[int] = set()  # 编辑后重绘的页不做淡入（避免闪烁）
@@ -348,6 +352,9 @@ class PdfView(QGraphicsView):
                 self.clear_pending()
             return
         mode = self._current_mode()
+        if self._read_only and mode not in ("none", "pan", "capture"):
+            event.ignore()
+            return
         if mode == "pan":  # 抓手：交给 ScrollHandDrag 平移
             super().mousePressEvent(event)
             return
@@ -490,10 +497,12 @@ class PdfView(QGraphicsView):
             and self._current_mode() == "none"
             and event.button() == Qt.MouseButton.LeftButton
         ):
-            streak = self._register_click(event.position())
-            if streak >= 2:
-                self._begin_word_selection(event, line=streak >= 3)
-                return
+            # Qt 的原生事件已经确认双击。分发延迟可能超过本地墙钟阈值，
+            # 不能因此把它退化为单击（复杂页面/中文字体首次布局时尤其明显）。
+            streak = max(2, self._register_click(event.position()))
+            self._click_count = streak
+            self._begin_word_selection(event, line=streak >= 3)
+            return
         super().mouseDoubleClickEvent(event)
 
     # ------------------------------------------------------------------
@@ -798,9 +807,9 @@ class PdfView(QGraphicsView):
 
     def _scene_page_point(self, scene_pt: QPointF) -> tuple[int, QPointF] | None:
         """场景坐标 → (页, 页内 PDF 点)；落在页间隙时取纵向最近页。"""
-        page = self._page_at_y(scene_pt.y())
+        page = self._page_at_scene(scene_pt)
         if page is None:
-            page = self._nearest_page(scene_pt.y())
+            page = self._nearest_page(scene_pt.y(), scene_pt.x())
         if page is None:
             return None
         page_x, page_y = self._page_origin(page)
@@ -808,7 +817,7 @@ class PdfView(QGraphicsView):
             (scene_pt.x() - page_x) / self._zoom, (scene_pt.y() - page_y) / self._zoom
         )
 
-    def _nearest_page(self, scene_y: float) -> int | None:
+    def _nearest_page(self, scene_y: float, scene_x: float | None = None) -> int | None:
         """页间隙里离 scene_y 最近的页。"""
         best: int | None = None
         best_d = float("inf")
@@ -821,6 +830,10 @@ class PdfView(QGraphicsView):
                 d = scene_y - (y + h)
             else:
                 d = 0.0
+            if scene_x is not None:
+                left = self._page_x_positions[i]
+                width = self._scaled_size(i)[0]
+                d = math.hypot(d, max(left - scene_x, scene_x - left - width, 0.0))
             if d < best_d:
                 best, best_d = i, d
         return best
@@ -1193,6 +1206,10 @@ class PdfView(QGraphicsView):
                 hint = menu.addAction("跨页选择：暂不支持加标记，可复制或翻译")
                 if hint is not None:
                     hint.setEnabled(False)
+            elif self._read_only:
+                hint = menu.addAction("只读文档：可复制、翻译或加入笔记")
+                if hint is not None:
+                    hint.setEnabled(False)
             else:
                 for label, kind in (
                     ("高亮", "highlight"),
@@ -1220,6 +1237,8 @@ class PdfView(QGraphicsView):
         super().contextMenuEvent(event)
 
     def _request_markup(self, kind: str) -> None:
+        if self._read_only:
+            return
         selection = self.selection_rects()
         if selection is None:
             return
@@ -1230,7 +1249,7 @@ class PdfView(QGraphicsView):
     def _event_to_pdf(self, event: QMouseEvent) -> tuple[int | None, QPointF | None]:
         """将鼠标事件转换为 (页码, PDF点坐标 QPointF)。"""
         scene_pt = self.mapToScene(event.position().toPoint())
-        page_num = self._page_at_y(scene_pt.y())
+        page_num = self._page_at_scene(scene_pt)
         if page_num is None:
             return None, None
         page_x, page_y = self._page_origin(page_num)
@@ -1247,6 +1266,16 @@ class PdfView(QGraphicsView):
                 return i
         return None
 
+    def _page_at_scene(self, point: QPointF) -> int | None:
+        if not self._double_page:
+            return self._page_at_y(point.y())
+        for page in range(self._page_count):
+            x, y = self._page_origin(page)
+            width, height = self._scaled_size(page)
+            if QRectF(x, y, width, height).contains(point):
+                return page
+        return None
+
     # ------------------------------------------------------------------
     # 属性
     # ------------------------------------------------------------------
@@ -1261,6 +1290,25 @@ class PdfView(QGraphicsView):
     @property
     def page_count(self) -> int:
         return self._page_count
+
+    @property
+    def double_page(self) -> bool:
+        return self._double_page
+
+    def set_read_only(self, read_only: bool) -> None:
+        self._read_only = read_only
+
+    def set_page_layout(self, *, double_page: bool, cover_alone: bool = True) -> None:
+        """切换单页/书本排版，保持原阅读位置；不改变 PDF 页尺寸和 /Rotate。"""
+        page, offset = self.reading_position()
+        marks = dict(self._marks)
+        self._double_page = double_page
+        self._cover_alone = cover_alone
+        self.setup_document(self._page_count, self._page_sizes, keep_page=page, keep_offset=offset)
+        for number, rects in marks.items():
+            self.set_marks(number, rects)
+        if self._fit_mode is not None:
+            self._apply_fit()
 
     # ------------------------------------------------------------------
     # 文档设置
@@ -1542,8 +1590,8 @@ class PdfView(QGraphicsView):
         result: list[int] = []
         for i in range(self._page_count):
             y = self._page_y_positions[i]
-            _, h = self._scaled_size(i)
-            if viewport_rect.intersects(QRectF(0, y, max(1.0, viewport_rect.width()), h)):
+            w, h = self._scaled_size(i)
+            if viewport_rect.intersects(QRectF(self._page_x_positions[i], y, w, h)):
                 result.append(i)
         return result
 
@@ -1562,10 +1610,22 @@ class PdfView(QGraphicsView):
             return
         view = self._viewport_scene_rect()
         best, best_h = None, 0.0
+        if self._double_page and self._current_page is not None:
+            best = self._current_page
+            x, y = self._page_origin(best)
+            width, height = self._scaled_size(best)
+            visible_rect = view.intersected(QRectF(x, y, width, height))
+            best_h = visible_rect.width() * visible_rect.height()
         for i in range(self._page_count):
             y = self._page_y_positions[i]
             h = self._scaled_size(i)[1]
-            visible = min(y + h, view.bottom()) - max(y, view.top())
+            if self._double_page:
+                rect = view.intersected(
+                    QRectF(self._page_x_positions[i], y, self._scaled_size(i)[0], h)
+                )
+                visible = rect.width() * rect.height()
+            else:
+                visible = min(y + h, view.bottom()) - max(y, view.top())
             if visible > best_h + 0.5:
                 best, best_h = i, visible
         if best is None:  # 视口完全落在页之外（极端情况）：取最近的页
@@ -1593,6 +1653,7 @@ class PdfView(QGraphicsView):
         """滚到某页的页内相对位置（0 = 页首）。"""
         if page_num < 0 or page_num >= self._page_count:
             return
+        self._focus_book_page(page_num)
         h = self._scaled_size(page_num)[1]
         target = self._page_y_positions[page_num] + min(max(offset, 0.0), 1.0) * h
         self._scroll_top_to(target - _TOP_MARGIN, animate=animate)
@@ -1691,24 +1752,26 @@ class PdfView(QGraphicsView):
                 _remove_item(item)
         self._frame_items.clear()
 
-        max_w = max((self._scaled_size(i)[0] for i in range(self._page_count)), default=0.0)
-        self._page_y_positions = []
-        self._page_x_positions = []
-        total_height = 0.0
-        for i in range(self._page_count):
-            w = self._scaled_size(i)[0]
-            self._page_x_positions.append((max_w - w) / 2)
-            self._page_y_positions.append(total_height)
+        placements, _width, total_height = layout_pages(
+            [self._scaled_size(i) for i in range(self._page_count)],
+            gap=PAGE_GAP,
+            double_page=self._double_page,
+            cover_alone=self._cover_alone,
+        )
+        self._page_y_positions = [item.y for item in placements]
+        self._page_x_positions = [item.x for item in placements]
+        for i, placement in enumerate(placements):
             self._make_frame(i)
-            self._page_items[i] = self._make_placeholder(i, total_height)
-            total_height += self._scaled_size(i)[1] + PAGE_GAP
+            self._page_items[i] = self._make_placeholder(i, placement.y)
         self._update_scene_rect(total_height)
         self._draw_marks()
 
     def _update_scene_rect(self, total_height: float) -> None:
         """场景矩形：上方留 TOP_PADDING、左右各留阴影余量。"""
         if self._page_count > 0:
-            max_w = max(self._scaled_size(i)[0] for i in range(self._page_count))
+            max_w = max(
+                self._page_x_positions[i] + self._scaled_size(i)[0] for i in range(self._page_count)
+            )
             self._scene.setSceneRect(-16, -TOP_PADDING, max_w + 32, total_height + TOP_PADDING)
         else:
             self._scene.setSceneRect(0, 0, 0, 0)
@@ -1764,8 +1827,20 @@ class PdfView(QGraphicsView):
             return
         page = self._current_page or 0
         w, h = self._page_sizes[page] if page < len(self._page_sizes) else self._page_sizes[0]
+        if self._double_page:
+            row = next(
+                row
+                for row in page_rows(
+                    self._page_count, double_page=True, cover_alone=self._cover_alone
+                )
+                if page in row
+            )
+            w = sum(self._page_sizes[i][0] for i in row)
+            h = max(self._page_sizes[i][1] for i in row)
         # 两侧各留 24px（场景左右各有 16px 阴影留白，再多留一点避免横向滚动条）
         vw = max(50, self.viewport().width() - 48)
+        if self._double_page:
+            vw = max(50, vw - PAGE_GAP)
         vh = max(50, self.viewport().height() - TOP_PADDING - PAGE_GAP)
         if self._fit_mode == "page" and w > 0 and h > 0:
             self.set_zoom(min(vw / w, vh / h))
@@ -1782,10 +1857,22 @@ class PdfView(QGraphicsView):
         """
         if page_num < 0 or page_num >= self._page_count:
             return
+        self._focus_book_page(page_num)
         top = self._page_y_positions[page_num]
         if y is not None:
             top += max(0.0, y) * self._zoom - 3 * _TOP_MARGIN  # 目标行上方留一点上下文
         self._scroll_top_to(top - _TOP_MARGIN, animate=animate)
+
+    def _focus_book_page(self, page_num: int) -> None:
+        if not self._double_page:
+            return
+        if self._current_page != page_num:
+            self._current_page = page_num
+            self.pageChanged.emit(page_num)
+        x, _y = self._page_origin(page_num)
+        self.centerOn(
+            x + self._scaled_size(page_num)[0] / 2, self._viewport_scene_rect().center().y()
+        )
 
     # ------------------------------------------------------------------
     # 兼容阶段 3 的单页接口（保留 show_pixmap_data 供集成测试）

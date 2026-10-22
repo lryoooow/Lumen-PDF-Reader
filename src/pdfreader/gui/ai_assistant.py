@@ -122,6 +122,7 @@ class AiAssistant(QObject):
         self._note_anchor: tuple[int, float, float] | None = None
         self._encrypted_ok = False
         self._texts: list[str] | None = None
+        self._pending_action: Callable[[], None] | None = None
         # 全文索引：文档打开后稍等再建，避开首屏渲染；之后在主线程分片进行
         self._index_generation = 0
         self._index_timer = QTimer(self)
@@ -154,7 +155,7 @@ class AiAssistant(QObject):
 
     @property
     def busy(self) -> bool:
-        return self._worker is not None
+        return self._worker is not None or self._pending_action is not None
 
     @property
     def store(self) -> AiSettingsStore:
@@ -253,7 +254,7 @@ class AiAssistant(QObject):
         self._texts = None
 
     def _schedule_index(self) -> None:
-        """稍后建全文索引；期间用户先提问会退回主线程逐页取词。"""
+        """稍后建全文索引；提前提问时直接启动分片，不同步遍历全文。"""
         self._index_generation += 1
         generation = self._index_generation
         QTimer.singleShot(
@@ -265,14 +266,7 @@ class AiAssistant(QObject):
             return
         controller = self._controller
         doc = controller.document
-        if (
-            doc is None
-            or doc.is_closed
-            or controller.is_modified
-            or doc.path.suffix.lower() != ".pdf"
-        ):
-            return
-        if not doc.path.is_file():
+        if doc is None or doc.is_closed:
             return
         self._index_page = 0
         self._index_pages = []
@@ -285,6 +279,9 @@ class AiAssistant(QObject):
         self._index_timer.stop()
         self._index_running = False
         self._index_pages = []
+        if self._pending_action is not None:
+            self._pending_action = None
+            self._panel.set_preparing(False)
 
     def _index_tick(self) -> None:
         """主线程分片取词：每片不超过约 20 ms，片间让出事件循环。"""
@@ -293,7 +290,7 @@ class AiAssistant(QObject):
             return
         controller = self._controller
         doc = controller.document
-        if doc is None or doc.is_closed or controller.is_modified:
+        if doc is None or doc.is_closed:
             self.stop_index()
             return
         page_count = controller.page_count
@@ -304,9 +301,12 @@ class AiAssistant(QObject):
                 self._index_page += 1
                 if time.perf_counter() - started >= _INDEX_SLICE_SECONDS:
                     break
-        except Exception as exc:  # 单页取词失败就退回主线程路径
-            _logger.warning("全文索引中断，将退回主线程取词：%s", exc)
+        except Exception:
+            _logger.exception("全文文字索引失败")
+            requested = self._pending_action is not None
             self.stop_index()
+            if requested:
+                self._notify("读取文档文字失败，请重试或导出诊断信息。")
             return
         if self._index_page < page_count:
             return
@@ -316,6 +316,28 @@ class AiAssistant(QObject):
         self._index_pages = []
         if len(texts) == page_count:
             self._texts = self._merge_ocr(texts)
+        action, self._pending_action = self._pending_action, None
+        if action is not None:
+            self._panel.set_preparing(False)
+            action()
+
+    def _defer_until_indexed(self, action: Callable[[], None]) -> bool:
+        """先让出事件循环；取消、关闭及内容变更均丢弃待执行动作。"""
+        if not self._controller.has_document:
+            return False
+        if not self.is_ready() and self._ensure_ready() is None:
+            return True
+        if self._texts is not None and len(self._texts) == self._controller.page_count:
+            return False
+        self.stop()
+        self._pending_action = action
+        self._panel.set_preparing(True)
+        self._show_panel()
+        self._notify("正在读取文档文字，可点击停止取消…")
+        if not self._index_running:
+            self._index_generation += 1
+            self._start_index(self._index_generation)
+        return True
 
     def _merge_ocr(self, texts: list[str]) -> list[str]:
         for page, text in self._ocr.items():
@@ -381,6 +403,8 @@ class AiAssistant(QObject):
                 self.ask(preset.question, title=preset.title)
 
     def summarize(self) -> None:
+        if self._defer_until_indexed(self.summarize):
+            return
         pages = self._doc_pages()
         if pages is None:
             return
@@ -393,6 +417,8 @@ class AiAssistant(QObject):
 
     def tldr(self) -> None:
         """三句话以内的全文速览（TL;DR），每句带页码。"""
+        if self._defer_until_indexed(self.tldr):
+            return
         pages = self._doc_pages()
         if pages is None:
             return
@@ -432,6 +458,8 @@ class AiAssistant(QObject):
         self._speed_answer = ""
 
     def suggest(self) -> None:
+        if self._defer_until_indexed(self.suggest):
+            return
         pages = self._doc_pages()
         if pages is None:
             return
@@ -443,6 +471,8 @@ class AiAssistant(QObject):
         """就全文提问；面板上有「问 AI…」引用的原文时一起发送（问题针对它）。"""
         question = question.strip()
         if not question:
+            return
+        if self._defer_until_indexed(lambda: self.ask(question, title=title)):
             return
         pages = self._doc_pages()
         if pages is None:
@@ -496,7 +526,51 @@ class AiAssistant(QObject):
             remember=f"请解释这段原文：\n{_clip(hint)}",
         )
 
+    def formula_to_latex(self, page: int, rect: Rect) -> None:
+        provider = self._ensure_ready()
+        if provider is None:
+            return
+        if not provider.vision:
+            self._notify("公式转 LaTeX 需要支持图片输入的视觉模型，请先检查模型设置。")
+            return
+        png = self._capture_png(page, rect)
+        if not png:
+            self._notify("公式截图失败，请重新框选。")
+            return
+        self._set_anchor(page, rect)
+        messages: list[Message] = [
+            {
+                "role": "system",
+                "content": "识别公式并输出 LaTeX 代码块，保留编号与符号。无法辨认的符号明确标记，禁止猜测。",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "将此区域中的公式转换为 LaTeX，并列出需要人工核对的符号。",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+                        },
+                    },
+                ],
+            },
+        ]
+        self._start(
+            "公式转 LaTeX",
+            "",
+            messages,
+            image=png,
+            label=_page_label(page),
+            remember="请将刚才框选的公式转换为 LaTeX。",
+        )
+
     def stop(self) -> None:
+        if self._pending_action is not None:
+            self.stop_index()
         worker = self._worker
         if worker is None:
             return
@@ -574,6 +648,10 @@ class AiAssistant(QObject):
         速读结果例外：把标出的句子逐句存为高亮批注（批注面板里每句一张卡片）。
         """
         if not text.strip() or not self._controller.has_document:
+            return
+        document = self._controller.document
+        if document is not None and not document.meta.is_pdf:
+            self._notify("此文档格式只读，请复制回答到阅读笔记中保存。")
             return
         if self._speed_marks is not None and text.strip() == self._speed_answer.strip():
             self._save_speed_marks()
@@ -705,6 +783,15 @@ class AiAssistant(QObject):
                 return False
         return True
 
+    def authorize_request(self, size: int) -> ProviderConfig | None:
+        """其他用户发起的 AI 工具复用配置、外发和加密文档确认。"""
+        provider = self._ensure_ready()
+        return provider if provider is not None and self._allowed(provider, size) else None
+
+    def glossary_for(self, text: str) -> list[tuple[str, str]]:
+        """按当前术语设置取出本段命中的术语。"""
+        return self._glossary(text)
+
     # ------------------------------------------------------------------ 内部：请求
     def _start(
         self,
@@ -718,6 +805,8 @@ class AiAssistant(QObject):
         remember: str = "",
     ) -> bool:
         """发起一轮请求。``remember`` 非空时，回答完成后连同它写进对话历史，后续提问可以接着聊。"""
+        if self._pending_action is not None:
+            self.stop_index()
         provider = self._ensure_ready()
         if provider is None:
             return False
@@ -768,7 +857,8 @@ class AiAssistant(QObject):
     def _on_finished(self, text: str) -> None:
         if not self._is_current():
             return
-        self._worker = None
+        # 结果先于 QThread.finished 发出，网络连接仍可能在 finally 中关闭。
+        # 保留持有关系到线程真正结束，关标签/退出时才不会销毁仍在运行的线程。
         if self._kind == "speedread":
             self._finish_speed_read(text)
             return
@@ -809,12 +899,10 @@ class AiAssistant(QObject):
 
     def _on_failed(self, message: str) -> None:
         if self._is_current():
-            self._worker = None
             self._panel.fail_turn(message)
 
     def _on_cancelled(self) -> None:
         if self._is_current():
-            self._worker = None
             self._panel.cancel_turn()
 
     def _on_thread_finished(self) -> None:
