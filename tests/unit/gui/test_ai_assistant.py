@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from pdfreader.controllers import AnnotationMode, DocumentController
 from pdfreader.engines.types import AnnotationType, Rect
 from pdfreader.gui.ai_assistant import LARGE_SEND_CHARS, AiAssistant
 from pdfreader.gui.dialogs.ai_settings_dialog import AiSettingsDialog
+from pdfreader.gui.dialogs.translation_dialog import TranslationDialog
 from pdfreader.gui.main_window import MainWindow
 from pdfreader.gui.panels.ai_panel import AiPanel
 from pdfreader.services.ai.client import ChatClient
@@ -526,6 +528,7 @@ def test_scanned_doc_offers_ocr_then_uses_ocr_text(make, qtbot, tmp_path: Path) 
     h.ai._start_ocr = lambda: started.append(True)
 
     h.ai.ask("这篇讲什么？")
+    h.wait(qtbot)
     assert "没有可读的文字" in h.confirms and started == [True]
     assert server.requests == []  # 没有文字就不外发
 
@@ -536,12 +539,13 @@ def test_scanned_doc_offers_ocr_then_uses_ocr_text(make, qtbot, tmp_path: Path) 
     assert "XYZ-42" in sent
 
 
-def test_scanned_doc_without_ocr_explains(make, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+def test_scanned_doc_without_ocr_explains(make, qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     h = make()
     h.controller.close_document()
     h.controller.open_file(_blank_doc(tmp_path / "scan.pdf"))
     h.ai.reset_document()
     h.ai.ask("问题")
+    h.wait(qtbot)
     assert any("OCR" in m for m in h.messages)
 
 
@@ -668,3 +672,170 @@ def test_stop_index_cancels_pending_schedule(window: MainWindow, tmp_path: Path,
     qtbot.wait(700)
     assert not window._ai._index_timer.isActive()
     assert window._ai._texts is None
+
+
+def test_first_question_waits_for_sliced_index(make, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("索引后的回答")
+    h = make(server=server)
+
+    def fail() -> list[str]:
+        raise AssertionError("首次动作不得同步读取整篇文档")
+
+    monkeypatch.setattr(h.controller, "page_texts", fail)
+    h.ai.ask("主要结论？")
+    assert h.ai.busy and h.panel.busy
+    assert server.requests == []
+    h.wait(qtbot)
+    assert h.panel.last_answer() == "索引后的回答"
+    assert "Section 3" in json.dumps(server.requests[0]["body"], ensure_ascii=False)
+
+
+def test_cancel_question_during_index_sends_nothing(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer()
+    h = make(server=server)
+    h.ai.ask("取消这次问题")
+    assert h.ai.busy
+    h.ai.stop()
+    qtbot.wait(80)
+    assert not h.ai.busy and not h.panel.busy
+    assert server.requests == []
+
+
+def test_edited_document_can_be_indexed_and_pending_action_invalidates(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    h = make()
+    h.controller.delete_page(0)
+    h.ai.invalidate_text()
+    h.ai.summarize()
+    h.wait(qtbot)
+    assert "Section 2" in h.panel.transcript_markdown() or h.ai._texts[0].startswith("Section 2")
+    h.ai.invalidate_text()
+    h.ai.ask("不要发送旧版本")
+    h.ai.invalidate_text()
+    qtbot.wait(80)
+    assert not h.ai.busy
+
+
+def test_parallel_translation_preview_cache_and_source_location(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("第 1 页译文")
+    h = make(server=server)
+    dialog = TranslationDialog(h.controller, h.ai, lambda p, y: h.navigated.append((p, y)), 0)
+    qtbot.addWidget(dialog)
+    dialog.extract()
+    qtbot.waitUntil(lambda: not dialog._timer.isActive())
+    assert dialog.table.rowCount() == 2
+    assert not server.requests
+    dialog.start_translation()
+    qtbot.waitUntil(lambda: not dialog._running and dialog._worker is None, timeout=5000)
+    assert len(server.requests) == 2
+    assert "第 1 页译文" in dialog.table.item(0, 2).text()
+    dialog._locate(0, 2)
+    assert h.navigated[0][0] == 0
+    dialog.start_translation()
+    assert len(server.requests) == 2  # 相同参数仅命中内存缓存
+    h.ai.settings.target_language = "English"
+    dialog.start_translation()
+    qtbot.waitUntil(lambda: not dialog._running and dialog._worker is None, timeout=5000)
+    assert len(server.requests) == 4
+    dialog.close()
+
+
+def test_parallel_translation_failure_retry_and_edit_invalidation(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("结果")
+    server.status = 429
+    h = make(server=server)
+    dialog = TranslationDialog(h.controller, h.ai, lambda p, y: None, 0)
+    qtbot.addWidget(dialog)
+    dialog.extract()
+    qtbot.waitUntil(lambda: not dialog._timer.isActive())
+    dialog.start_translation()
+    qtbot.waitUntil(lambda: dialog._worker is None, timeout=5000)
+    assert "暂停" in dialog.status.text()
+    assert "额度" in dialog.table.item(0, 2).text()
+    server.status = 200
+    dialog.start_translation()
+    qtbot.waitUntil(lambda: not dialog._running and dialog._worker is None, timeout=5000)
+    assert len(server.requests) == 3
+    h.controller.delete_page(0)
+    assert dialog.table.rowCount() == 0 and not dialog.start_btn.isEnabled()
+    dialog.close()
+
+
+def test_research_preview_coverage_evidence_and_memory_cache(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    from pdfreader.gui.dialogs.research_dialog import ResearchDialog
+
+    server = FakeServer("结论 [d.1 p.1]「Section 1 attention mechanism」")
+    h = make(server=server)
+    located: list[tuple[int, int]] = []
+    dialog = ResearchDialog([("论文", h.controller)], h.ai, lambda d, p: located.append((d, p)))
+    qtbot.addWidget(dialog)
+    dialog.prepare()
+    qtbot.waitUntil(lambda: not dialog._timer.isActive())
+    assert not server.requests and "预计最多" in dialog.status.text()
+    dialog.run()
+    qtbot.waitUntil(lambda: dialog._worker is None, timeout=5000)
+    assert len(server.requests) == 2
+    assert "Section 3" in json.dumps(server.requests[0]["body"])
+    assert dialog._evidence[0].found
+    dialog.evidence.setCurrentRow(0)
+    dialog.locate()
+    assert located == [(0, 0)]
+    dialog.run()
+    assert len(server.requests) == 2
+    h.controller.delete_page(0)
+    assert not dialog.run_btn.isEnabled() and not dialog._documents
+    dialog.close()
+
+
+def test_formula_to_latex_requires_vision_and_sends_capture(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    h = make()
+    h.ai.formula_to_latex(0, Rect(60, 60, 300, 130))
+    assert not h.ai.workers() and "视觉模型" in h.messages[-1]
+    h.ai.settings.active().vision = True
+    h.ai.formula_to_latex(0, Rect(60, 60, 300, 130))
+    h.wait(qtbot)
+    assert h.panel.turns[-1].title == "公式转 LaTeX"
+
+
+def test_ai_worker_stays_owned_until_thread_finishes_after_result(make, qtbot) -> None:  # type: ignore[no-untyped-def]
+    server = FakeServer("完成")
+    release = threading.Event()
+    h = make(server=server)
+
+    def factory(base: str, key: str) -> ChatClient:
+        client = server.factory(base, key)
+        close = client.close
+
+        def delayed_close() -> None:
+            release.wait(3)
+            close()
+
+        client.close = delayed_close  # type: ignore[method-assign]
+        return client
+
+    h.ai._client_factory = factory
+    try:
+        h.ai.translate("text")
+        qtbot.waitUntil(lambda: bool(h.panel.turns) and h.panel.turns[-1].done, timeout=5000)
+        assert any(worker.isRunning() for worker in h.ai.workers())
+        h.ai.reset_document()
+        assert any(worker.isRunning() for worker in h.ai.workers())
+    finally:
+        release.set()
+        h.wait(qtbot)
+
+
+def test_recovery_snapshot_does_not_invalidate_translation_preview(
+    make, qtbot, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    h = make()
+    dialog = TranslationDialog(h.controller, h.ai, lambda p, y: None, 0)
+    qtbot.addWidget(dialog)
+    dialog.extract()
+    qtbot.waitUntil(lambda: not dialog._timer.isActive())
+    before = dialog.table.rowCount()
+    assert before > 0
+    assert h.controller.save_copy(tmp_path / "recovery.pdf")
+    assert dialog.table.rowCount() == before
+    h.controller.delete_page(0)
+    assert dialog.table.rowCount() == 0
+    dialog.close()

@@ -12,7 +12,7 @@
 
 其他：
 
-* [images/](images/) —— 文档用截图（Lumen 0.0.3）。
+* [images/](images/) —— 文档用截图（旧版基线与 0.1.0 合成样本；新增界面见 0.1.0/）。
 * 仓库根目录：[README](../README.md)、[CHANGELOG](../CHANGELOG.md)、协作约束 [AGENTS.md](../AGENTS.md)。
 
 文档维护规则：描述现状的文档（01–07）随代码一起更新；改动功能、接口或流程时同步修改对应文档，

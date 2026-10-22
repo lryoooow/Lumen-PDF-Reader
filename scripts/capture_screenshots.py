@@ -11,8 +11,16 @@ import pymupdf
 from PySide6.QtWidgets import QApplication
 from pdfreader.config import settings as st
 
-tmp = Path(tempfile.mkdtemp())
+memory = Path(__file__).resolve().parent.parent / "memory"
+memory.mkdir(exist_ok=True)
+tmp = Path(tempfile.mkdtemp(prefix="截图验收_", dir=memory))
 st.default_settings_path = lambda: tmp / "s.json"
+from pdfreader.services import materials, recovery
+from pdfreader.utils import logger as app_logger
+materials.default_materials_path = lambda: tmp / "materials.db"
+recovery.default_recovery_dir = lambda: tmp / "recovery"
+app_logger.LOG_FILE = tmp / "pdfreader.log"
+app_logger.CRASH_LOG_FILE = tmp / "crash.log"
 from pdfreader.gui.main_window import MainWindow
 from pdfreader.gui.panels import SidePanel
 from pdfreader.gui.widgets import motion
@@ -88,7 +96,6 @@ links = win._controller.get_links(0)
 win.pdf_view.jump_to_page(0)
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QCursor
-QCursor.setPos(win.mapToGlobal(QPoint(700, 300)))
 win._on_link_activated(0, links[0]); pump()
 shot = win.grab(); pop = win.cite_popover.grab()
 from PySide6.QtGui import QPainter
@@ -105,5 +112,51 @@ win.grab().save(str(out / "07_dark_night_view_tab.png"))
 win._set_reading_mode("sepia"); win._toggle_theme(); pump(1.0)
 win.grab().save(str(out / "08_light_sepia.png"))
 win._set_reading_mode("normal")
+
+# 0.1.0 桌面研究工具：仅合成样本与明确标注的界面示例，不连接 AI 服务。
+from pdfreader.gui.dialogs.translation_dialog import TranslationDialog
+translation = TranslationDialog(win._controller, win._ai, win._navigate_to, 0, win)
+translation.show()
+translation.last_page.setValue(2)
+translation.extract()
+pump(1.0)
+deadline = time.monotonic() + 10
+while translation._timer.isActive() and time.monotonic() < deadline:
+    app.processEvents()
+    time.sleep(0.002)
+if not translation._paragraphs:
+    raise RuntimeError("对照翻译预览没有段落：" + translation.status.text())
+if translation._paragraphs:
+    translation._row = 0
+    translation._show_result("用于长文理解的层级注意力（界面示例译文）")
+translation.status.setText("界面演示：使用合成论文与示例译文，未连接 AI 服务。")
+translation.grab().save(str(out / "09_parallel_translation.png"))
+translation.close(); translation.deleteLater(); pump(0.1)
+
+from pdfreader.gui.dialogs.notebook_dialog import NotebookDialog
+notebook = NotebookDialog(win._controller, win._navigate_to, win, materials=win._materials)
+notebook.show(); pump(0.5)
+if notebook.sources.count():
+    notebook._insert_source(notebook.sources.item(0))
+notebook.editor.document().setModified(False)
+notebook.grab().save(str(out / "10_research_notebook.png"))
+notebook.close(); notebook.deleteLater(); pump(0.1)
+
+win.ribbon._tab_group.button(3).click()
+win.double_page_action.trigger(); win.pdf_view.fit_to_page(); pump(0.5)
+win.pdf_view.jump_to_page(2); pump(0.4)
+win.grab().save(str(out / "11_book_layout.png"))
+win.double_page_action.trigger(); pump(0.1)
+
+from pdfreader.gui.dialogs.research_dialog import ResearchDialog
+research = ResearchDialog([(tab.label(), tab.controller) for tab in win.tabs if tab.has_document],
+                          win._ai, lambda d, p: None, win)
+research.show(); research.prepare(); pump(1.5)
+research.grab().save(str(out / "12_research_budget.png"))
+research.close(); research.deleteLater(); pump(0.1)
+
+win._on_theme_mode("contrast"); pump(0.5)
+win.grab().save(str(out / "13_high_contrast.png"))
+win._on_theme_mode("light"); pump(0.1)
 win._controller.document.mark_saved(); win.close()
 print("saved to", out)

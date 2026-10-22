@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -123,10 +124,28 @@ def test_load_items_and_collections(library: ZoteroLibrary) -> None:
     assert item.title == "Attention Is All You Need"
     assert item.creators == "Vaswani、Shazeer 等"
     assert item.year == "2017" and item.item_type == "journalArticle"
+    assert item.key == "ITEMKEY1"
+    assert item.author_names[0] == "Vaswani, Ashish"
+    assert item.select_uri == "zotero://select/library/items/ITEMKEY1"
     assert item.collections == (10,)
     assert len(item.pdfs) == 1
     assert item.pdfs[0].exists and item.pdfs[0].path is not None
     assert item.pdfs[0].path.name == "paper.pdf"
+
+
+def test_metadata_doi_and_group_select_uri(tmp_path: Path) -> None:
+    folder = _make_library(tmp_path / "Zotero")
+    with closing(sqlite3.connect(folder / "zotero.sqlite")) as db:
+        db.execute("ALTER TABLE items ADD COLUMN libraryID INTEGER DEFAULT 7")
+        db.execute("CREATE TABLE groups(groupID INTEGER,libraryID INTEGER)")
+        db.execute("INSERT INTO groups VALUES (42,7)")
+        db.execute("INSERT INTO fields VALUES (3,'DOI')")
+        db.execute("INSERT INTO itemDataValues VALUES (3,'10.1000/example')")
+        db.execute("INSERT INTO itemData VALUES (1,3,3)")
+        db.commit()
+    _, items = ZoteroLibrary(folder).load()
+    assert items[0].doi == "10.1000/example"
+    assert items[0].select_uri == "zotero://select/groups/42/items/ITEMKEY1"
 
 
 def test_deleted_item_hidden(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ from pdfreader.engines.types import (
     Point,
     Rect,
     SearchResult,
+    TableData,
     TocEntry,
     WordBox,
 )
@@ -126,6 +127,11 @@ class Document:
             page.bind(self._engine, self._handle)
             self._pages[page_num] = page
         return self._pages[page_num]
+
+    def extract_tables(self, page_num: int) -> tuple[TableData, ...]:
+        self._ensure_open()
+        assert self._handle is not None
+        return self._engine.extract_tables(self._handle, page_num)
 
     def iter_pages(self) -> Iterator[Page]:
         """遍历所有页。"""

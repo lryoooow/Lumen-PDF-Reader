@@ -47,6 +47,7 @@ from pdfreader.engines.types import (
     Rect,
     SearchHit,
     SearchResult,
+    TableData,
     TextSpan,
     TocEntry,
     WordBox,
@@ -803,6 +804,35 @@ class PyMuPdfEngine:
         for page_num in range(handle.page_count):
             yield self.extract_text(doc, page_num)
 
+    def extract_tables(self, doc: EngineDocument, page_num: int) -> tuple[TableData, ...]:
+        handle = self._require(doc)
+        original = handle.get_page(page_num)
+        if not handle.native.is_pdf:
+            raise PdfEngineError("当前格式不支持表格提取")
+        try:
+            # find_tables 内部可能临时调整旋转。仅复制当前页到无 journal 的内存文档，
+            # 不碰受控文档的 /Rotate，也不回退到磁盘旧版本或落地明文副本。
+            with pymupdf.open() as snapshot:
+                snapshot.insert_pdf(handle.native, from_page=page_num, to_page=page_num)
+                page = snapshot[0]
+                page.set_rotation(0)
+                tables: list[TableData] = []
+                for table in page.find_tables().tables:
+                    values = table.extract()
+                    if len(values) > 2000 or sum(len(row) for row in values) > 20000:
+                        raise PdfEngineError("表格超过单次提取上限，请缩小文档范围")
+                    rows = tuple(tuple(str(cell or "") for cell in row) for row in values)
+                    if table.header.external:
+                        rows = (tuple(str(cell or "") for cell in table.header.names), *rows)
+                    tables.append(
+                        TableData(page_num, _visible_rect(original, pymupdf.Rect(table.bbox)), rows)
+                    )
+                return tuple(tables)
+        except PdfEngineError:
+            raise
+        except Exception as exc:
+            raise PdfEngineError("表格提取失败") from exc
+
     def get_words(self, doc: EngineDocument, page_num: int) -> tuple[WordBox, ...]:
         """提取页面上的词及坐标（PyMuPDF: (x0,y0,x1,y1,word,block,line,word_no)）。"""
         handle = self._require(doc)
@@ -1278,6 +1308,7 @@ class PyMuPdfEngine:
                         rect=_visible_rect(page, annot.rect),
                         content=str(info.get("content", "")),
                         title=str(info.get("title", "")),
+                        stable_id=str(info.get("id", "")),
                         index=i,
                         color=_annot_color(annot),
                         marked_text=marked,

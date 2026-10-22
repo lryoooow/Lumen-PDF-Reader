@@ -238,6 +238,10 @@ class AiPanel(QFrame):
         """有效页数（超出范围的 [p.N] 不做成链接，防止模型编造的页码乱跳）。"""
         self._page_count = count
 
+    def set_preparing(self, preparing: bool) -> None:
+        """全文请求的取词阶段也允许停止，不创建尚未发送的对话记录。"""
+        self._set_busy(preparing)
+
     def begin_turn(
         self, title: str, quote: str = "", *, label: str = "", image: bytes = b""
     ) -> None:

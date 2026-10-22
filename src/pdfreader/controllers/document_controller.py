@@ -31,6 +31,7 @@ from pdfreader.engines.types import (
     PixmapData,
     Point,
     Rect,
+    TableData,
     TocEntry,
     WordBox,
 )
@@ -77,6 +78,7 @@ class DocumentController(QObject):
     documentClosed = Signal()
     openFailed = Signal(str, str)  # (OpenResult 分类, 消息)
     undoStateChanged = Signal()
+    documentChanged = Signal()  # 真实编辑/撤销/重做；保存与恢复快照不改变内容
 
     def __init__(self, engine=None, parent=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(parent)
@@ -198,6 +200,20 @@ class DocumentController(QObject):
             _logger.warning("%s失败", what, exc_info=True)
             return default
 
+    def extract_tables(self, page_num: int) -> tuple[TableData, ...]:
+        document = self._document
+        if document is None or document.is_closed:
+            self._last_error = "请先打开文档"
+            return ()
+        try:
+            tables = document.extract_tables(page_num)
+            self._last_error = ""
+            return tables
+        except Exception:
+            _logger.exception("提取表格失败")
+            self._last_error = "表格提取失败，请检查文档或改用框选提问。"
+            return ()
+
     def get_words(self, page_num: int) -> tuple[WordBox, ...]:
         """获取某页的词及坐标（文本选择/复制）；无文档或失败时返回空。"""
         return self._query("取词", lambda d: d.get_words(page_num), ())
@@ -292,13 +308,17 @@ class DocumentController(QObject):
     # ------------------------------------------------------------------
     # 统一执行（失败时记录真实原因，供 GUI 展示，不再静默吞掉）
     # ------------------------------------------------------------------
-    def _run(self, op_name: str, fn: Callable[[Document], object]) -> bool:
+    def _run(
+        self, op_name: str, fn: Callable[[Document], object], *, changes_content: bool = True
+    ) -> bool:
         if self._document is None or self._document.is_closed:
             self._last_error = "未打开文档"
             return False
         try:
             fn(self._document)
             self._last_error = ""
+            if changes_content:
+                self.documentChanged.emit()
             self.undoStateChanged.emit()
             return True
         except Exception as exc:  # 兜底：记录真实原因供 GUI 展示
@@ -394,7 +414,7 @@ class DocumentController(QObject):
 
         目标若正是打开时的原文件，引擎会自动走增量保存（整份覆盖正在打开的文件不被允许）。
         """
-        if not self._run("保存", lambda d: d.save(path)):
+        if not self._run("保存", lambda d: d.save(path), changes_content=False):
             return False
         assert self._document is not None
         self._document.path = path
@@ -406,11 +426,11 @@ class DocumentController(QObject):
             self._last_error = "未打开文档"
             return False
         path = self._document.path
-        return self._run("保存", lambda d: d.save(path, incremental=True))
+        return self._run("保存", lambda d: d.save(path, incremental=True), changes_content=False)
 
     def save_copy(self, path: Path) -> bool:
         """把当前内存内容（含未保存改动）另存副本，不改变修改状态。"""
-        return self._run("导出副本", lambda d: d.save_copy(path))
+        return self._run("导出副本", lambda d: d.save_copy(path), changes_content=False)
 
     # ------------------------------------------------------------------
     # 撤销 / 重做
@@ -431,6 +451,7 @@ class DocumentController(QObject):
             _logger.warning("%s失败", name, exc_info=True)
             return False
         if ok:
+            self.documentChanged.emit()
             self.undoStateChanged.emit()
         return ok
 

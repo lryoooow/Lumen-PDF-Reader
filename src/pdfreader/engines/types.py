@@ -29,6 +29,7 @@ __all__ = [
     "Rect",
     "SearchHit",
     "SearchResult",
+    "TableData",
     "TextSpan",
     "TocEntry",
     "WordBox",
@@ -135,6 +136,13 @@ class TextSpan:
 
     text: str
     rect: Rect
+
+
+@dataclass(frozen=True, slots=True)
+class TableData:
+    page_num: int
+    rect: Rect
+    rows: tuple[tuple[str, ...], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +256,7 @@ class Annotation:
     index: int = -1
     color: tuple[float, float, float] | None = None
     marked_text: str = ""
+    stable_id: str = ""  # PDF /NM；只在文档内结合来源指纹使用，不使用页内列表序号
 
     @property
     def is_markup(self) -> bool:

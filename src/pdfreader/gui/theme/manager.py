@@ -41,7 +41,7 @@ def serif_font(pixel_size: int) -> QFont:
 
 
 # 有效的主题模式："system" 跟随操作系统浅/深色
-MODES = ("light", "dark", "system")
+MODES = ("light", "dark", "system", "contrast")
 
 
 class ThemeManager(QObject):
@@ -97,7 +97,7 @@ class ThemeManager(QObject):
         """把模式解析为具体配色名。"""
         if mode == "system":
             return self._system_scheme()
-        return mode if mode in ("light", "dark") else "light"
+        return mode if mode in ("light", "dark", "contrast") else "light"
 
     def _connect_hints(self) -> None:
         """首次需要时连接系统主题变化信号（仅连一次）。"""

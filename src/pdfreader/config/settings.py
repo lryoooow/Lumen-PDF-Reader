@@ -69,6 +69,15 @@ class DocMeta:
     title: str = ""
     author: str = ""
     opened_at: float = 0.0  # 上次打开时间（epoch 秒）
+    doi: str = ""
+    year: str = ""
+    bibliography: bool = False  # 用户采用的书目元数据，后续打开不以 PDF 内嵌字段覆盖
+    citation_key: str = ""
+    citation_kind: str = "article"
+    journal: str = ""
+    volume: str = ""
+    issue: str = ""
+    citation_pages: str = ""
 
 
 _META_FIELDS: dict[str, type] = {
@@ -77,6 +86,15 @@ _META_FIELDS: dict[str, type] = {
     "title": str,
     "author": str,
     "opened_at": float,
+    "doi": str,
+    "year": str,
+    "bibliography": bool,
+    "citation_key": str,
+    "citation_kind": str,
+    "journal": str,
+    "volume": str,
+    "issue": str,
+    "citation_pages": str,
 }
 
 
@@ -88,7 +106,7 @@ class Settings:
     window_width: int = 1024
     window_height: int = 768
     window_maximized: bool = False
-    theme: str = "light"  # "light" | "dark" | "system"（跟随系统）
+    theme: str = "light"  # light / dark / system（跟随系统）/ contrast（高对比度）
     reading_mode: str = "normal"  # "normal" | "night" | "sepia"
     highlight_color: str = "#F5D64E"  # 高亮颜色（十六进制）
     sidebar_visible: bool = True
@@ -225,9 +243,11 @@ def _coerce_doc_meta(value: object) -> dict[str, dict[str, object]]:
         good: dict[str, object] = {}
         for name, kind in _META_FIELDS.items():
             item = raw.get(name)
-            if isinstance(item, bool):
+            if kind is bool and isinstance(item, bool):
+                good[name] = item
+            elif isinstance(item, bool):
                 continue
-            if kind is float and isinstance(item, (int, float)):
+            elif kind is float and isinstance(item, (int, float)):
                 good[name] = float(item)
             elif kind is int and isinstance(item, int):
                 good[name] = max(0, item)

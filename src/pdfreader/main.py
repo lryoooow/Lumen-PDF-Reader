@@ -144,10 +144,30 @@ def run_selftest() -> int:
         if "fail" in type(backend).__module__:
             raise RuntimeError(f"没有可用的凭据后端：{type(backend).__name__}")
 
+    def _research() -> None:
+        import io
+
+        import bibtexparser
+        import regex
+        from docx import Document as WordDocument
+        from PySide6.QtTextToSpeech import QTextToSpeech
+
+        if not bibtexparser.loads("@article{test,title={Lumen}}").entries:
+            raise RuntimeError("BibTeX 解析失败")
+        if not list(regex.finditer("Lumen", "Lumen", timeout=0.1)):
+            raise RuntimeError("正则搜索不可用")
+        buffer = io.BytesIO()
+        document = WordDocument()
+        document.add_paragraph("中文笔记自检")
+        document.save(buffer)
+        if not buffer.getvalue().startswith(b"PK") or not hasattr(QTextToSpeech, "say"):
+            raise RuntimeError("笔记或朗读依赖不可用")
+
     check("pdf_engine", _pdf)
     check("convert_deps", _convert)
     check("ocr_engine", _ocr)
     check("ai_deps", _ai)
+    check("research_deps", _research)
 
     text = json.dumps(result, ensure_ascii=False, indent=2)
     with contextlib.suppress(Exception):
@@ -160,12 +180,12 @@ def run_selftest() -> int:
 
 
 def file_from_argv(argv: list[str]) -> Path | None:
-    """命令行里第一个存在的 PDF 路径（双击文件 / 「打开方式」/ 拖到 exe 图标上时传入）。"""
+    """命令行里第一个存在的 PDF/EPUB 路径（含拖到 exe 图标上的文件）。"""
     for arg in argv[1:]:
         if arg.startswith("-"):
             continue
         candidate = Path(arg)
-        if candidate.suffix.lower() == ".pdf" and candidate.is_file():
+        if candidate.suffix.lower() in (".pdf", ".epub") and candidate.is_file():
             return candidate
     return None
 

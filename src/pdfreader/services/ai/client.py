@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -192,6 +193,84 @@ class ChatClient:
             if isinstance(item, dict) and item.get("id")
         }
         return sorted(ids)
+
+    def embeddings(self, texts: list[str], *, model: str) -> list[list[float]]:
+        """可选的 /embeddings 兼容接口；不下载模型，不回退到其他服务。"""
+        if (
+            not model.strip()
+            or not texts
+            or len(texts) > 32
+            or any(len(text) > 6000 for text in texts)
+        ):
+            raise AiError("向量请求的模型、数量或分片长度无效")
+        if self._cancelled:
+            raise AiError("已取消")
+        request = self._http.build_request(
+            "POST",
+            self._url("/embeddings"),
+            json={"model": model, "input": texts, "encoding_format": "float"},
+        )
+        try:
+            response = self._http.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            raise self._transport_error(exc) from None
+        with self._lock:
+            self._response = response
+        try:
+            content = bytearray()
+            for part in response.iter_bytes():
+                if self._cancelled:
+                    raise AiError("已取消")
+                content.extend(part)
+                if len(content) > 16_000_000:
+                    raise AiError("向量响应过大")
+            if response.status_code != 200:
+                raise AiError(
+                    describe_status(response.status_code, _error_detail(bytes(content), self._key))
+                )
+            try:
+                payload = json.loads(content)
+            except ValueError:
+                raise AiError("向量响应不是有效 JSON") from None
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list) or len(data) != len(texts):
+                raise AiError("向量响应数量与输入不匹配")
+            vectors: dict[int, list[float]] = {}
+            dimension = 0
+            for item in data:
+                if not isinstance(item, dict):
+                    raise AiError("向量响应格式无效")
+                index, values = item.get("index"), item.get("embedding")
+                if (
+                    not isinstance(index, int)
+                    or isinstance(index, bool)
+                    or not 0 <= index < len(texts)
+                    or index in vectors
+                ):
+                    raise AiError("向量响应序号无效")
+                if (
+                    not isinstance(values, list)
+                    or not 1 <= len(values) <= 8192
+                    or any(
+                        not isinstance(value, (int, float))
+                        or isinstance(value, bool)
+                        or not math.isfinite(value)
+                        for value in values
+                    )
+                ):
+                    raise AiError("向量内容无效")
+                vector = [float(value) for value in values]
+                if not any(vector) or (dimension and len(vector) != dimension):
+                    raise AiError("向量维度不一致或向量为零")
+                dimension = len(vector)
+                vectors[index] = vector
+            return [vectors[i] for i in range(len(texts))]
+        except httpx.HTTPError as exc:
+            raise self._transport_error(exc) from None
+        finally:
+            with self._lock:
+                self._response = None
+            response.close()
 
     def stream_chat(
         self,

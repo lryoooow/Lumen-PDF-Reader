@@ -434,6 +434,8 @@ def test_close_tab_while_ai_request_in_flight(window: MainWindow, docs: list[Pat
     window._activate(a)
     a.ai.ask("问题")
     assert a.ai.busy
+    # 全文提问先异步取词；此用例验证的前提是网络线程确实已启动。
+    qtbot.waitUntil(lambda: a.ai._worker is not None and a.ai._worker.isRunning())
     window.close_doc_action.trigger()  # 请求还在路上就关掉 A
     assert window.current_tab is b and a not in window.tabs
     assert a in window._parked_tabs  # 线程没停前不销毁

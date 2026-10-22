@@ -30,6 +30,17 @@ from pathlib import Path
 
 from pdfreader.engines.types import PdfSpaceAnnotation
 
+
+def _select_uri(key: str, library_id: int, groups: dict[int, int]) -> str:
+    if not re.fullmatch(r"[A-Z0-9]{8}", key):
+        return ""
+    if library_id == 1:
+        return "zotero://select/library/items/" + key
+    if library_id in groups:
+        return f"zotero://select/groups/{groups[library_id]}/items/{key}"
+    return ""  # 无法确认库身份时不生成可能跳错条目的 URI
+
+
 __all__ = [
     "ANNOTATION_KINDS",
     "ZoteroAnnotation",
@@ -83,6 +94,10 @@ class ZoteroItem:
     item_type: str = ""
     collections: tuple[int, ...] = ()
     pdfs: tuple[ZoteroPdf, ...] = ()
+    key: str = ""
+    doi: str = ""
+    author_names: tuple[str, ...] = ()
+    select_uri: str = ""
 
 
 @dataclass(frozen=True)
@@ -228,10 +243,11 @@ class ZoteroLibrary:
             "SELECT d.itemID, f.fieldName, v.value FROM itemData d"
             " JOIN fields f ON d.fieldID = f.fieldID"
             " JOIN itemDataValues v ON d.valueID = v.valueID"
-            " WHERE f.fieldName IN ('title', 'date')"
+            " WHERE f.fieldName IN ('title', 'date', 'DOI')"
         ):
             fields.setdefault(int(item_id), {})[str(name)] = str(value)
         creators: dict[int, list[str]] = {}
+        author_names: dict[int, list[str]] = {}
         for item_id, first, last in db.execute(
             "SELECT ic.itemID, c.firstName, c.lastName FROM itemCreators ic"
             " JOIN creators c ON ic.creatorID = c.creatorID ORDER BY ic.itemID, ic.orderIndex"
@@ -239,6 +255,9 @@ class ZoteroLibrary:
             name = str(last or first or "").strip()
             if name:
                 creators.setdefault(int(item_id), []).append(name)
+                author_names.setdefault(int(item_id), []).append(
+                    f"{last}, {first}".strip(", ") if last and first else name
+                )
         member: dict[int, list[int]] = {}
         for cid, item_id in db.execute("SELECT collectionID, itemID FROM collectionItems"):
             member.setdefault(int(item_id), []).append(int(cid))
@@ -261,6 +280,20 @@ class ZoteroLibrary:
             elif int(parent) not in deleted:
                 pdfs.setdefault(int(parent), []).append(pdf)
         items: list[ZoteroItem] = []
+        library_ids: dict[int, int] = {}
+        if any(row[1] == "libraryID" for row in db.execute("PRAGMA table_info(items)")):
+            library_ids = {
+                int(row[0]): int(row[1])
+                for row in db.execute(
+                    "SELECT itemID,libraryID FROM items WHERE libraryID IS NOT NULL"
+                )
+            }
+        group_ids: dict[int, int] = {}
+        if db.execute("SELECT name FROM sqlite_master WHERE name='groups'").fetchone():
+            group_ids = {
+                int(row[1]): int(row[0])
+                for row in db.execute("SELECT groupID,libraryID FROM groups")
+            }
         for item_id, (_key, type_name) in types.items():
             if type_name in _SKIP_TYPES and item_id not in standalone:
                 continue
@@ -282,6 +315,10 @@ class ZoteroLibrary:
                     type_name,
                     tuple(member.get(item_id, ())),
                     tuple(pdfs.get(item_id, ())),
+                    _key,
+                    data.get("DOI", ""),
+                    tuple(author_names.get(item_id, ())),
+                    _select_uri(_key, library_ids.get(item_id, 1), group_ids),
                 )
             )
         return items
