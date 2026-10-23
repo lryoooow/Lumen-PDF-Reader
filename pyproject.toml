@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pdfreader"
-version = "0.1.0"
+version = "0.0.6"
 description = "Lumen：免费开源的 PDF 文献阅读器——目录与引用跳转、多色批注与笔记导出、OCR（AGPL-3.0）"
 readme = "README.md"
 requires-python = ">=3.10"

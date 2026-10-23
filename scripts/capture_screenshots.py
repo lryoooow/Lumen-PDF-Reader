@@ -113,7 +113,7 @@ win._set_reading_mode("sepia"); win._toggle_theme(); pump(1.0)
 win.grab().save(str(out / "08_light_sepia.png"))
 win._set_reading_mode("normal")
 
-# 0.1.0 桌面研究工具：仅合成样本与明确标注的界面示例，不连接 AI 服务。
+# 0.0.6 开发分支桌面研究工具：仅合成样本与明确标注的界面示例，不连接 AI 服务。
 from pdfreader.gui.dialogs.translation_dialog import TranslationDialog
 translation = TranslationDialog(win._controller, win._ai, win._navigate_to, 0, win)
 translation.show()
