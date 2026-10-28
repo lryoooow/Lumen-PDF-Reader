@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from pdfreader.controllers import DocumentController
 from pdfreader.engines.types import Point
-from pdfreader.gui.dialogs.notebook_dialog import NotebookDialog
+from pdfreader.gui.dialogs.notebook_dialog import NotebookDialog, NotebookPanel
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def notes(qtbot, tmp_path):  # type: ignore[no-untyped-def]
     assert controller.open_file(path)
     assert controller.add_text_annot(0, Point(50, 50), "需要追踪的批注")
     navigated: list[int] = []
-    dialog = NotebookDialog(controller, lambda p, y: navigated.append(p))
+    dialog = NotebookPanel(controller, lambda p, y: navigated.append(p))
     qtbot.addWidget(dialog)
     qtbot.waitUntil(lambda: not dialog._timer.isActive())
     yield dialog, controller, navigated
@@ -58,6 +58,7 @@ def test_export_pdf_and_unsaved_close_cancel(notes, tmp_path: Path, monkeypatch)
 
 
 def test_modal_dialog_can_close(notes) -> None:  # type: ignore[no-untyped-def]
-    dialog, _, _ = notes
+    _, controller, _ = notes
+    dialog = NotebookDialog(controller, lambda p, y: None)
     QTimer.singleShot(10, dialog.close)
     assert dialog.exec() == 0

@@ -205,12 +205,12 @@ class SelectionTranslator(QObject):
         self.popup.place_near(self._view.selection_view_rect())
 
     def _explain_word(self, *, keep_card: bool) -> None:
-        worker = self._ai.quick_word(self._word, self._page, self._rect)
-        if worker is None:  # 未配置 / 用户取消发送
-            return
-        self.popup.begin_word(self._word, keep_card=keep_card)
-        self.popup.place_near(self._view.selection_view_rect())
-        self._attach(worker)
+        def prepare(worker: AiWorker) -> None:
+            self.popup.begin_word(self._word, keep_card=keep_card)
+            self.popup.place_near(self._view.selection_view_rect())
+            self._attach(worker)
+
+        self._ai.quick_word(self._word, self._page, self._rect, prepare=prepare)
 
     def _on_word_explain(self) -> None:
         if self._word:
@@ -264,12 +264,14 @@ class SelectionTranslator(QObject):
         self.popup.set_language(self._ai.settings.target_language)
         self._stop_requests()
         if self._ai.supports_image:
-            worker = self._ai.quick_translate(image=png)
-            if worker is not None:
+
+            def prepare(worker: AiWorker) -> None:
                 self._segments = []
                 self.popup.begin("（框选区域截图）")
                 self.popup.place_near(None)
                 self._attach(worker)
+
+            self._ai.quick_translate(image=png, prepare=prepare)
             return
         if not OCR_AVAILABLE:
             self.popup.show_message(
@@ -313,12 +315,13 @@ class SelectionTranslator(QObject):
     # ------------------------------------------------------------------ 请求
     def _translate_text(self, text: str) -> None:
         self._stop_requests()
-        worker = self._ai.quick_translate(text)
-        if worker is None:  # 未配置 / 用户取消发送
-            return
-        self.popup.begin(text, len(self._segments))
-        self.popup.place_near(self._view.selection_view_rect())
-        self._attach(worker)
+
+        def prepare(worker: AiWorker) -> None:
+            self.popup.begin(text, len(self._segments))
+            self.popup.place_near(self._view.selection_view_rect())
+            self._attach(worker)
+
+        self._ai.quick_translate(text, prepare=prepare)
 
     def _attach(self, worker: AiWorker) -> None:
         self._worker = worker

@@ -245,6 +245,11 @@ class AiAssistant(QObject):
             self._ocr.clear()  # 页数变了，页码已对不上 OCR 结果
         self._panel.set_page_count(self._controller.page_count)
 
+    def clear_ocr_text(self) -> None:
+        """来源修订变化后废弃 OCR 快照，即使页数相同也不能沿用。"""
+        self._ocr.clear()
+        self.invalidate_text()
+
     def add_ocr_text(self, page: int, text: str) -> None:
         """收下一页 OCR 结果：该页没有文字层时，AI 用它代替（只在内存里，不改文件）。"""
         if not text.strip():
@@ -578,31 +583,47 @@ class AiAssistant(QObject):
         self._panel.cancel_turn()
 
     # ------------------------------------------------------------------ 划词翻译浮窗
-    def quick_translate(self, text: str = "", *, image: bytes = b"") -> AiWorker | None:
+    def quick_translate(
+        self,
+        text: str = "",
+        *,
+        image: bytes = b"",
+        prepare: Callable[[AiWorker], None] | None = None,
+    ) -> AiWorker | None:
         """划词翻译浮窗用的单独请求：不进 AI 面板与对话历史，发送前同样检查配置与隐私确认。
 
-        ``image`` 非空时发截图让视觉模型读图翻译。返回已启动的线程（调用方连接它的
-        ``delta`` / ``finished_text`` / ``failed`` 信号）；未配置或用户取消返回 None。
+        ``image`` 非空时发截图让视觉模型读图翻译。``prepare`` 在隐私确认之后、启动之前
+        初始化界面并连接结果信号，避免快速服务的结果早于调用方订阅。返回已启动的线程；
+        未配置、用户取消或准备失败返回 None。
         同时只保留一个浮窗请求，新请求会取消旧的。
         """
         language = self._settings.target_language
         if image:
             encoded = base64.b64encode(image).decode("ascii")
-            return self._start_quick(prompts.translate_image_messages(encoded, language))
-        return self._start_quick(prompts.translate_messages(text, language, self._glossary(text)))
+            return self._start_quick(prompts.translate_image_messages(encoded, language), prepare)
+        return self._start_quick(
+            prompts.translate_messages(text, language, self._glossary(text)), prepare
+        )
 
     def quick_word(
-        self, word: str, page: int | None = None, rect: Rect | None = None
+        self,
+        word: str,
+        page: int | None = None,
+        rect: Rect | None = None,
+        *,
+        prepare: Callable[[AiWorker], None] | None = None,
     ) -> AiWorker | None:
         """查词浮窗：让 AI 结合所在句子解释一个单词（词典没收录 / 想看本句含义时）。"""
         sentence = ""
         if page is not None and rect is not None and self._controller.has_document:
             sentence = self._controller.text_excerpt(page, max(0.0, rect.y0 - 24), max_chars=400)
         return self._start_quick(
-            prompts.word_messages(word, sentence, self._settings.target_language)
+            prompts.word_messages(word, sentence, self._settings.target_language), prepare
         )
 
-    def _start_quick(self, messages: list[Message]) -> AiWorker | None:
+    def _start_quick(
+        self, messages: list[Message], prepare: Callable[[AiWorker], None] | None = None
+    ) -> AiWorker | None:
         provider = self._ensure_ready()
         if provider is None:
             return None
@@ -610,14 +631,25 @@ class AiAssistant(QObject):
             return None
         self.stop_quick()
         worker = AiWorker(self)
+        client = self._client_factory(provider.base_url, self._key(provider))
         worker.setup_chat(
-            self._client_factory(provider.base_url, self._key(provider)),
+            client,
             messages,
             model=provider.model,
             temperature=provider.temperature,
         )
         worker.finished.connect(self._on_thread_finished)
         self._quick = worker
+        if prepare is not None:
+            try:
+                prepare(worker)
+            except Exception:
+                _logger.exception("准备划词请求失败")
+                self._quick = None
+                client.close()
+                worker.deleteLater()
+                self._notify("准备划词请求失败，请重试或导出诊断信息。")
+                return None
         worker.start()
         return worker
 

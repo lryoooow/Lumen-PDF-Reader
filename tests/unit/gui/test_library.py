@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 
 import pytest
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtWidgets import QPushButton, QScrollArea, QWidget
 
 from pdfreader.gui.theme.manager import get_theme
 from pdfreader.gui.widgets import motion
@@ -63,7 +65,7 @@ def test_filter_entries_sections_folders_query_and_sort() -> None:
     assert names(filter_entries(es)) == ["attention", "bert", "annual"]
     assert names(filter_entries(es, section="最近阅读")) == ["attention", "annual"]
     assert names(filter_entries(es, section="我的收藏")) == ["bert"]
-    assert names(filter_entries(es, section="阅读笔记")) == ["attention"]
+    assert names(filter_entries(es, section="含批注文档")) == ["attention"]
     assert names(filter_entries(es, folder="report")) == ["annual"]
     assert names(filter_entries(es, query=" devlin ")) == ["bert"]
     assert names(filter_entries(es, query="综述")) == ["annual"]
@@ -109,10 +111,10 @@ def test_sections_folders_and_search(home: LibraryHome) -> None:
     home.set_section("我的收藏")
     assert home.entry_paths() == ["/lib/ml/bert.pdf"]
     assert home.heading.text() == "我的收藏" and home.heading_count.text() == "01"
-    home.set_section("阅读笔记")
-    assert "灵感的起点" in home.heading_desc.text()
+    home.set_section("含批注文档")
+    assert "PDF 批注" in home.heading_desc.text()
     home.set_section("不存在")  # 无效分区忽略
-    assert home.section == "阅读笔记"
+    assert home.section == "含批注文档"
 
     home.reset_filters()
     home._collections[1].click()  # 合集 → 全部文档 + 该文件夹
@@ -136,6 +138,119 @@ def test_sections_folders_and_search(home: LibraryHome) -> None:
     home.set_folder("report")
     home.set_entries(_entries()[:2])  # 文件夹没了 → 回到全部
     assert home.folder == ALL_FOLDERS
+
+
+def test_annotation_documents_section_matches_name_scope_and_counts(home: LibraryHome) -> None:
+    home.set_entries(_entries())
+    assert "含批注文档" in home.nav_items
+    assert "阅读笔记" not in home.nav_items
+    item = home.nav_items["含批注文档"]
+    assert item.count.text() == "01"
+    assert item.accessibleName() == "含批注文档"
+    assert item.toolTip() == "含批注文档"
+
+    item.click()
+    assert home.section == "含批注文档" and item.isChecked()
+    assert home.heading.text() == home.crumb.text() == "含批注文档"
+    assert home.heading_count.text() == "01"
+    assert "PDF 批注" in home.heading_desc.text()
+    assert "Markdown" in home.heading_desc.text()
+    assert home.heading_desc.wordWrap()  # 范围说明不能挤掉窄窗口中的搜索与视图入口
+    assert home.entry_paths() == ["/lib/ml/attention.pdf"]
+
+    home.search.setText("Lin")
+    assert home.entry_paths() == ["/lib/ml/attention.pdf"]
+    home.search.setText("Devlin")
+    assert home.entry_paths() == []  # 非批注文档即使匹配作者也不混入
+    assert home.heading_count.text() == "00" and item.count.text() == "01"
+    assert home.empty_title.text() == "没有匹配的批注文档"
+    home.empty_button.click()
+    assert home.section == "全部文档" and home.search.text() == ""
+    assert len(home.entry_paths()) == 3
+
+
+def test_annotation_section_empty_state_remains_accurate_after_refresh(home: LibraryHome) -> None:
+    home.set_entries(_entries()[1:])
+    home.set_section("含批注文档")
+    assert home.entry_paths() == []
+    assert home.empty_title.text() == "还没有含批注的文档"
+    assert "独立 Markdown 笔记" in home.empty_body.text()
+    assert home.empty_button.text() == "查看全部文档"
+
+    home.set_entries(_entries())
+    assert home.section == "含批注文档"
+    assert home.entry_paths() == ["/lib/ml/attention.pdf"]
+    assert home.nav_items["含批注文档"].isChecked()
+    assert not home._empty.isVisibleTo(home)
+    home.apply_width(700)  # 只留图标时仍由名称与提示表达真实范围
+    assert home.nav_items["含批注文档"].toolTip() == "含批注文档"
+
+
+def test_short_window_keeps_navigation_search_recovery_and_return_reachable(
+    home: LibraryHome, qtbot
+) -> None:  # type: ignore[no-untyped-def]
+    home._theme.apply()  # 使用真实字体/QSS尺寸，而非未应用主题的控件默认值
+    home.set_entries(_entries())
+    home.set_can_return(True)
+    home.set_recovery_notice(["待恢复文献.pdf"])
+    home.resize(1024, 768)
+    home.activateWindow()
+    qtbot.waitUntil(lambda: home.size() == QSize(1024, 768))
+
+    def fully_inside(widget: QWidget, container: QWidget) -> bool:
+        bounds = QRect(widget.mapTo(container, QPoint()), widget.size())
+        return container.rect().contains(bounds)
+
+    assert isinstance(home._nav, QScrollArea)
+    qtbot.waitUntil(lambda: home._nav.horizontalScrollBar().maximum() == 0)
+    assert home._nav.verticalScrollBar().maximum() > 0
+    assert home._nav.horizontalScrollBar().maximum() == 0, [
+        (child.objectName(), child.minimumSizeHint().width(), child.width())
+        for child in home._nav.findChildren(QWidget)
+        if child.minimumSizeHint().width() > 140
+    ]
+    assert fully_inside(home.return_button, home)
+    assert fully_inside(home._recovery_banner, home)
+    returned: list[bool] = []
+    restored: list[bool] = []
+    home.returnRequested.connect(lambda: returned.append(True))
+    home.recoveryRestoreRequested.connect(lambda: restored.append(True))
+    qtbot.mouseClick(home.return_button, Qt.MouseButton.LeftButton)
+    restore = home.findChild(QPushButton, "RecoveryRestore")
+    assert restore is not None and fully_inside(restore, home)
+    qtbot.mouseClick(restore, Qt.MouseButton.LeftButton)
+    assert returned == [True] and restored == [True]
+
+    # 即使主体滚到底部，Ctrl+K 的焦点入口也应将搜索真正带回可见视口。
+    home.scroll_area.verticalScrollBar().setValue(home.scroll_area.verticalScrollBar().maximum())
+    qtbot.keyClick(home, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(home.search.hasFocus)
+    qtbot.waitUntil(lambda: fully_inside(home.search, home.scroll_area.viewport()))
+    qtbot.keyClicks(home.search, "Devlin")
+    assert home.entry_paths() == ["/lib/ml/bert.pdf"]
+    assert fully_inside(home.return_button, home)  # 主体滚动不带走返回与恢复操作
+
+    # Tab 到低处的导航按钮时，滚动容器应自动展示焦点，而非仅保留被裁剪的按钮。
+    home.nav_items["含批注文档"].setFocus(Qt.FocusReason.TabFocusReason)
+    for _ in range(12):
+        if home.profile.hasFocus():
+            break
+        qtbot.keyClick(home.focusWidget(), Qt.Key.Key_Tab)
+    assert home.profile.hasFocus()
+    qtbot.waitUntil(lambda: fully_inside(home.profile, home._nav.viewport()))
+    assert home._nav.verticalScrollBar().value() > 0
+    toggled: list[bool] = []
+    home.themeToggleRequested.connect(lambda: toggled.append(True))
+    qtbot.keyClick(home.profile, Qt.Key.Key_Space)
+    assert toggled == [True]
+
+    home.resize(1360, 860)
+    qtbot.waitUntil(lambda: home._nav.verticalScrollBar().maximum() == 0)
+    assert fully_inside(home.profile, home._nav.viewport())
+    home.resize(700, 768)
+    qtbot.waitUntil(lambda: home._nav.width() == 68)
+    qtbot.waitUntil(lambda: home._nav.horizontalScrollBar().maximum() == 0)
+    assert home.nav_items["含批注文档"].toolTip() == "含批注文档"
 
 
 def test_cards_and_continue_emit_paths(home: LibraryHome) -> None:

@@ -167,6 +167,7 @@ class TestRun:
         assert [r.page_num for r in box["results"]] == [0, 2]
         assert box["done"] == [3]
         assert box["progress"] == [(1, 3), (2, 3), (3, 3)]
+        assert worker.page_failures == {1: "页面渲染失败，可对该页重新运行 OCR。"}
 
     def test_missing_path_fails(self, worker: OcrWorker) -> None:
         box = _collect(worker)

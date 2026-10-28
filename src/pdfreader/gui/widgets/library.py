@@ -14,7 +14,7 @@
 数据全部来自真实设置（不放演示数据）：
 
 * 全部文档 = 最近文件；最近阅读 = 读过（有阅读进度）的；我的收藏 = 收藏列表；
-  阅读笔记 = 记录到批注的（打开 / 保存时统计）
+  含批注文档 = 记录有 PDF 批注的文档（不是独立 Markdown 笔记列表）
 * 「我的合集」与筛选标签 = 文档所在文件夹（本地优先：不另造一套标签体系）
 * 封面按路径稳定地取一种矿物色（sage / sand / rose / blue），标题取 PDF 元数据或文件名
 
@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -91,7 +92,7 @@ SECTIONS = (
     ("全部文档", "grid"),
     ("最近阅读", "stamp"),
     ("我的收藏", "bookmark"),
-    ("阅读笔记", "notes"),
+    ("含批注文档", "notes"),
 )
 ALL_FOLDERS = "全部"
 SORTS = ("最近阅读", "名称排序")
@@ -188,7 +189,7 @@ def filter_entries(
         for e in entries
         if (section != "最近阅读" or e.read)
         and (section != "我的收藏" or e.favorite)
-        and (section != "阅读笔记" or e.annotations > 0)
+        and (section != "含批注文档" or e.annotations > 0)
         and (folder == ALL_FOLDERS or e.folder == folder)
         and (not q or q in f"{e.name}\n{e.title}\n{e.author}\n{e.folder}".lower())
     ]
@@ -1134,11 +1135,23 @@ class LibraryHome(QWidget):
 
     # ---------------------------------------------------------------- 构建：导航
     def _build_nav(self) -> QWidget:
+        # 导航的固定间距、合集及底部信息会超过短窗口高度。让导航单独滚动，
+        # 不把整窗撑高，也不带走右侧常驻的返回阅读和恢复操作。
+        scroll = QScrollArea()
+        scroll.setObjectName("StudioNavScroll")
+        scroll.setAccessibleName("文献库导航")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        scroll.setFixedWidth(228)
+        scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self._nav = scroll
         nav = QFrame()
         nav.setObjectName("StudioNav")
-        nav.setFixedWidth(228)
-        self._nav = nav
+        scroll.setWidget(nav)
         lay = QVBoxLayout(nav)
+        lay.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         self._nav_lay = lay
         lay.setContentsMargins(20, 33, 20, 18)
         lay.setSpacing(0)
@@ -1156,6 +1169,7 @@ class LibraryHome(QWidget):
         lay.addSpacing(40)
 
         self._ws_label = _label("PERSONAL WORKSPACE", "NavCaption")
+        self._ws_label.setWordWrap(True)
         lay.addWidget(self._ws_label)
         lay.addSpacing(14)
         self._ws_switch = QPushButton()
@@ -1283,7 +1297,7 @@ class LibraryHome(QWidget):
         self._compact_theme.clicked.connect(self.themeToggleRequested.emit)
         self._compact_theme.setVisible(False)
         lay.addWidget(self._compact_theme, alignment=Qt.AlignmentFlag.AlignHCenter)
-        return nav
+        return scroll
 
     # ---------------------------------------------------------------- 构建：顶栏
     def _build_topbar(self) -> QWidget:
@@ -1471,6 +1485,7 @@ class LibraryHome(QWidget):
         h2.addStretch(1)
         left.addLayout(h2)
         self.heading_desc = _label("每一份文档，都是一个新的思考起点。", "LibraryDesc")
+        self.heading_desc.setWordWrap(True)
         left.addWidget(self.heading_desc)
         lay.addLayout(left, 1)
 
@@ -1667,8 +1682,9 @@ class LibraryHome(QWidget):
             if notify:
                 self.viewModeChanged.emit(mode)
 
-    def set_can_return(self, can: bool, tip: str = "") -> None:
+    def set_can_return(self, can: bool, tip: str = "", *, label: str = "返回阅读") -> None:
         """有打开的标签页时在顶栏显示「返回阅读」。"""
+        self.return_button.setText(label)
         self.return_button.setVisible(can)
         self.return_button.setToolTip(tip or "回到正在阅读的文档")
 
@@ -1700,6 +1716,7 @@ class LibraryHome(QWidget):
     def focus_search(self) -> None:
         self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.selectAll()
+        self.scroll_area.ensureWidgetVisible(self.search, 20, 20)
 
     def animate_in(self) -> None:
         """进入首页时各区块依次自下淡入（设计稿 a-fade-up，间隔 70ms）。"""
@@ -1758,8 +1775,8 @@ class LibraryHome(QWidget):
         self.heading.setText("我的文献库" if self.section == SECTIONS[0][0] else self.section)
         self.heading_count.setText(f"{len(entries):02d}")
         self.heading_desc.setText(
-            "让标记过的文字，成为下一次灵感的起点。"
-            if self.section == "阅读笔记"
+            "显示含 PDF 批注的文档；独立 Markdown 笔记请从阅读器的「工具 → 阅读笔记」打开。"
+            if self.section == "含批注文档"
             else "每一份文档，都是一个新的思考起点。"
         )
         for card in self._cards:
@@ -1776,8 +1793,16 @@ class LibraryHome(QWidget):
         self._place_cards()
         self._empty.setVisible(not entries)
         if self._entries:
-            self.empty_title.setText("这里还没有文档")
-            self.empty_body.setText("试试其他关键词或分类，新的灵感也许就在下一页。")
+            if self.section == "含批注文档":
+                filtered = bool(self.search.text().strip()) or self.folder != ALL_FOLDERS
+                self.empty_title.setText("没有匹配的批注文档" if filtered else "还没有含批注的文档")
+                self.empty_body.setText(
+                    "这里只显示记录有 PDF 批注的文档，独立 Markdown 笔记不在此列表中。"
+                    "可清除关键词或查看全部文档。"
+                )
+            else:
+                self.empty_title.setText("这里还没有文档")
+                self.empty_body.setText("试试其他关键词或分类，新的灵感也许就在下一页。")
             self.empty_button.setText("查看全部文档")
         else:
             self.empty_title.setText("文献库还是空的")
@@ -1815,11 +1840,9 @@ class LibraryHome(QWidget):
         self.width_class = cls
         narrow_nav = cls in ("sm", "xs")
         self._nav.setFixedWidth({"xl": 228, "lg": 228, "md": 195}.get(cls, 68))
-        nav_margins = {"md": (14, 33, 14, 18), "sm": (10, 25, 10, 15), "xs": (10, 25, 10, 15)}
+        nav_margins = {"md": (12, 33, 12, 18), "sm": (10, 25, 10, 15), "xs": (10, 25, 10, 15)}
         self._nav_lay.setContentsMargins(*nav_margins.get(cls, (20, 33, 20, 18)))
-        self._brand_lay.setContentsMargins(
-            12 if cls in ("xl", "lg") else (4 if cls == "md" else 0), 0, 0, 0
-        )
+        self._brand_lay.setContentsMargins(12 if cls in ("xl", "lg") else 0, 0, 0, 0)
         for w in (
             self._brand_text,
             self._ws_label,

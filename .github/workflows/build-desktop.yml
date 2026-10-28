@@ -2,6 +2,12 @@ name: Native desktop build
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Platforms to build
+        type: choice
+        options: [macos, all]
+        default: macos
 
 permissions:
   contents: read
@@ -11,23 +17,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(inputs.target == 'macos' && '["macos-15", "macos-15-intel"]' || '["windows-latest", "ubuntu-latest", "macos-15", "macos-15-intel"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     env:
       QT_QPA_PLATFORM: offscreen
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
           enable-cache: true
-      - name: Linux Qt runtime
+      - name: Linux GUI and credential libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update
-      - name: Linux GUI libraries
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 gnome-keyring dbus-x11
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 gnome-keyring dbus-x11
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -37,11 +41,49 @@ jobs:
       - name: Build native package and frozen selftest
         if: runner.os != 'Linux'
         run: uv run python scripts/build_desktop.py
+      - name: Verify extracted macOS bundle
+        if: runner.os == 'macOS'
+        run: uv run python scripts/verify_macos_package.py
       - name: Linux native build with system credential service
         if: runner.os == 'Linux'
         run: dbus-run-session -- sh scripts/ci_native_build_linux.sh
       - uses: actions/upload-artifact@v4
         with:
           name: Lumen-${{ runner.os }}-${{ runner.arch }}
-          path: dist/Lumen-*.zip
+          path: |
+            dist/Lumen-*.zip
+            dist/macos-verification-*.json
+          if-no-files-found: error
+
+  verify-newer-macos:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            artifact: Lumen-macOS-ARM64
+          - os: macos-26-intel
+            artifact: Lumen-macOS-X64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Verify macOS 15-built package on newer macOS
+        run: uv run python scripts/verify_macos_package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lumen-compatibility-${{ matrix.os }}
+          path: dist/macos-verification-*.json
           if-no-files-found: error

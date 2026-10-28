@@ -133,14 +133,15 @@ translation.status.setText("界面演示：使用合成论文与示例译文，�
 translation.grab().save(str(out / "09_parallel_translation.png"))
 translation.close(); translation.deleteLater(); pump(0.1)
 
-from pdfreader.gui.dialogs.notebook_dialog import NotebookDialog
-notebook = NotebookDialog(win._controller, win._navigate_to, win, materials=win._materials)
-notebook.show(); pump(0.5)
+win._on_notebook(); pump(0.5)
+notebook = win._notebook
+if notebook is None:
+    raise RuntimeError("伴随笔记面板没有创建")
 if notebook.sources.count():
     notebook._insert_source(notebook.sources.item(0))
 notebook.editor.document().setModified(False)
-notebook.grab().save(str(out / "10_research_notebook.png"))
-notebook.close(); notebook.deleteLater(); pump(0.1)
+win.grab().save(str(out / "10_research_notebook.png"))
+notebook.close(); pump(0.1)
 
 win.ribbon._tab_group.button(3).click()
 win.double_page_action.trigger(); win.pdf_view.fit_to_page(); pump(0.5)

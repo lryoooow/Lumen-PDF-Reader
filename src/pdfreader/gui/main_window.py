@@ -39,6 +39,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QDockWidget,
     QFileDialog,
     QGraphicsView,
     QHBoxLayout,
@@ -77,6 +78,7 @@ from pdfreader.engines.types import (
     SearchResult,
 )
 from pdfreader.gui.ai_assistant import AiAssistant
+from pdfreader.gui.dialogs.notebook_dialog import NotebookPanel
 from pdfreader.gui.document_tab import DocumentTab
 from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
 from pdfreader.gui.panels.ai_panel import AI_PANEL_MAX_WIDTH, AI_PANEL_MIN_WIDTH, AI_PANEL_WIDTH
@@ -258,12 +260,17 @@ class MainWindow(QMainWindow):
         self._tabs: list[DocumentTab] = []
         self._parked_tabs: list[DocumentTab] = []  # 已关闭、AI 请求线程还没停下的标签
         self._shutting_down = False
+        self._notebook: NotebookPanel | None = None
+        self._notebook_dock: QDockWidget | None = None
+        self._notebook_tab: DocumentTab | None = None
+        self._notebook_app_close = False
         self._search_worker: SearchWorker | None = None
         self._retired_search_workers: list[SearchWorker] = []
         self._active_query: str = ""
         self._retired_ocr_workers: list[OcrWorker] = []
         self._ocr_progress: QProgressDialog | None = None
         self._ocr_progress_owner: DocumentTab | None = None
+        self._ocr_retry: tuple[OcrWorker, Callable[[], None]] | None = None
         self._tab: DocumentTab  # 当前标签（由 _activate 设定）
         self._pending_link: tuple[int, float | None] | None = None  # 引用预览卡待跳转的目标
         self._capture_translate = False  # 本次框选是划词翻译的截图识别（否则交给 AI 解释）
@@ -459,6 +466,7 @@ class MainWindow(QMainWindow):
         controller.documentOpened.connect(lambda count: self._on_tab_opened(tab, count))
         controller.documentClosed.connect(lambda: self._on_tab_closed(tab))
         controller.openFailed.connect(self._on_open_failed)
+        controller.documentChanged.connect(lambda: self._invalidate_ocr_context(tab))
         controller.undoStateChanged.connect(lambda: self._on_tab_undo_state(tab))
 
         on = self._for_tab
@@ -769,6 +777,7 @@ class MainWindow(QMainWindow):
             act.setShortcut(shortcut)
             tip = tooltip or text
             seq = act.shortcut().toString()
+            act.setProperty("commandShortcut", seq)
             act.setToolTip(f"{tip}  ({seq})" if seq else tip)
         elif tooltip:
             act.setToolTip(tooltip)
@@ -1399,7 +1408,11 @@ class MainWindow(QMainWindow):
         self._ai_dock.setMaximumWidth(0)
         self._ai_dock.setVisible(False)
         content_layout.addWidget(self._ai_dock)
-        layout.addWidget(self._content, stretch=1)
+        # 只把阅读内容放入停靠宿主，顶部功能区/标签栏始终保留整窗宽度。
+        self._workspace = QMainWindow()
+        self._workspace.setWindowFlags(Qt.WindowType.Widget)
+        self._workspace.setCentralWidget(self._content)
+        layout.addWidget(self._workspace, stretch=1)
         # 两侧栏内侧边缘的宽度拖动条（浮在面板上，不占布局）
         self.sidebar.set_panel_width(self._sidebar_width())
         self._sidebar_grip = PanelGrip(self.sidebar, "left", self._resize_sidebar, self._content)
@@ -1412,6 +1425,7 @@ class MainWindow(QMainWindow):
         # 浮层：搜索卡片、工具提示胶囊、参考文献预览卡
         self.search_panel = SearchPanel("搜索", self._content)
         self.search_panel.searchRequested.connect(self._on_search_requested)
+        self.search_panel.queryEdited.connect(self._on_search_input_changed)
         self.search_panel.resultClicked.connect(self._on_search_result_clicked)
         self.search_panel.closed.connect(lambda: self.pdf_view.clear_search_hit())
         self.search_panel.closed.connect(lambda: self.pdf_view.setFocus())
@@ -1739,17 +1753,29 @@ class MainWindow(QMainWindow):
         self.search_panel.focus_input()
         self._content.reposition_overlay()
 
+    def _on_search_input_changed(self) -> None:
+        """防抖期间和清空输入时也拒收旧结果；请求取消不等待后台线程。"""
+        self._active_query = ""
+        self.find_next_action.setEnabled(False)
+        self.find_prev_action.setEnabled(False)
+        self.pdf_view.clear_search_hit()
+        if self._search_worker is not None:
+            self._search_worker.shutdown()
+
     def _on_search_requested(self, query: str) -> None:
         if not self._controller.has_document:
             return
         self.pdf_view.clear_search_hit()  # 新一轮搜索：旧命中高亮作废
+        self._active_query = query
+        self.find_next_action.setEnabled(False)
+        self.find_prev_action.setEnabled(False)
+        if self._search_worker is not None:
+            self._retire_search_worker(self._search_worker)
+            self._search_worker = None
         source = self._worker_source()
         if source is None:
             self.search_panel.show_error("无法生成文档快照，请先保存文档")
             return
-        if self._search_worker is not None:
-            self._retire_search_worker(self._search_worker)
-            self._search_worker = None
         worker = SearchWorker(self)
         worker.searchCompleted.connect(self._on_search_completed)
         worker.searchFailed.connect(self._on_search_failed)
@@ -1772,9 +1798,11 @@ class MainWindow(QMainWindow):
 
     def _on_search_failed(self, message: str) -> None:
         sender = self.sender()
-        if sender is not None and sender is not self._search_worker:
+        if not self._active_query or (sender is not None and sender is not self._search_worker):
             return
         self.search_panel.show_error(message)
+        self.find_next_action.setEnabled(False)
+        self.find_prev_action.setEnabled(False)
 
     def _step_search(self, step: int) -> None:
         """F3 / Shift+F3：在搜索结果间前后移动并定位。"""
@@ -2307,6 +2335,67 @@ class MainWindow(QMainWindow):
             document.meta.is_encrypted,
         )
 
+    def _command_unavailable_reason(self, action: QAction, *, ai_ready: bool | None = None) -> str:
+        """解释界面动作的前置条件，不用改变共享 QAction 的执行语义。"""
+        if any(action is registered for _, registered in self._extension_commands.values()):
+            return "扩展命令的当前条件不满足。" if not action.isEnabled() else ""
+        if action is self.notebook_action and self._notebook is not None:
+            return ""
+        document = self._controller.document
+        needs_document = bool(action.property("requiresDocument")) or action in (
+            self.undo_action,
+            self.redo_action,
+            self.back_action,
+            self.forward_action,
+            self.find_next_action,
+            self.find_prev_action,
+            self.ocr_action,
+        )
+        if needs_document and document is None:
+            return "请先打开文档（Ctrl+O）。"
+        if needs_document and self._library_visible():
+            return "请先通过首页的「返回阅读」回到当前文档。"
+        if document is not None and action.property("pdfOnly") and not document.meta.is_pdf:
+            return "当前格式只读，此操作仅支持 PDF。"
+        if (
+            action in (self.copy_merge_action, self.translate_action, self.ai_explain_action)
+            and not self.pdf_view.selected_text.strip()
+        ):
+            return "请先选中文字。"
+        if action in (
+            self.translate_action,
+            self.ai_summary_action,
+            self.ai_tldr_action,
+            self.ai_speedread_action,
+            self.ai_suggest_action,
+            self.ai_explain_action,
+            self.capture_action,
+            self.parallel_translation_action,
+            self.research_ai_action,
+            self.formula_action,
+        ):
+            ready = self._ai.is_ready() if ai_ready is None else ai_ready
+            if not ready:
+                return "请先启用并配置模型（AI 助读 → 模型设置）。"
+            provider = self._ai.settings.active()
+            if action is self.formula_action and provider is not None and not provider.vision:
+                return "公式转 LaTeX 需要支持图片输入的视觉模型。"
+        if action.isEnabled():
+            return ""
+        if action is self.ocr_action and not OCR_AVAILABLE:
+            return "OCR 依赖不可用，请检查安装或导出诊断信息。"
+        if action is self.undo_action:
+            return "没有可撤销的操作。"
+        if action is self.redo_action:
+            return "没有可重做的操作。"
+        if action in (self.find_next_action, self.find_prev_action):
+            return "请先搜索并找到匹配内容（Ctrl+F）。"
+        if action in (self.back_action, self.forward_action):
+            return "当前方向没有阅读跳转历史。"
+        if action is self.delete_page_action:
+            return "请先定位页面；不能删除文档的最后一页。"
+        return "当前条件不满足，请检查页面或任务状态。"
+
     def _on_command_palette(self) -> None:
         from pdfreader.gui.dialogs.command_palette import CommandPalette
 
@@ -2316,8 +2405,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 _logger.exception("扩展命令可用性检查失败：%s", command.id)
                 action.setEnabled(False)
+        # 凭据状态只读一次，避免每次筛选命令都反复访问系统凭据库；真正请求仍会再次验证。
+        ready = self._ai.is_ready() if self._controller.has_document else False
         dialog = CommandPalette(
-            [action for action in self.actions() if action is not self.command_palette_action], self
+            [action for action in self.actions() if action is not self.command_palette_action],
+            self,
+            unavailable_reason=lambda action: self._command_unavailable_reason(
+                action, ai_ready=ready
+            ),
         )
         dialog.exec()
         dialog.deleteLater()
@@ -2372,19 +2467,72 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
 
     def _on_notebook(self) -> None:
-        from pdfreader.gui.dialogs.notebook_dialog import NotebookDialog
+        if self._notebook is None:
+            tab = self._tab
+            document = tab.controller.document
+            if document is None:
+                return
 
-        if self._controller.has_document:
-            dialog = NotebookDialog(
-                self._controller,
-                self._navigate_to,
+            def navigate(page: int, y: float | None) -> None:
+                if tab in self._tabs and tab.controller.document is document:
+                    self._activate(tab)
+                    self._navigate_to(page, y)
+
+            def reference_changed(reference: Reference) -> None:
+                if tab in self._tabs and tab.controller.document is document:
+                    self._apply_reference(reference, tab=tab)
+
+            panel = NotebookPanel(
+                tab.controller,
+                navigate,
                 self,
                 materials=self._materials,
                 reference=self._current_reference(),
-                on_reference=self._apply_reference,
+                on_reference=reference_changed,
             )
-            dialog.exec()
-            dialog.deleteLater()
+            dock = QDockWidget("阅读笔记 · " + tab.label(), self._workspace)
+            dock.setObjectName("NotebookDock")
+            dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+            dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
+            dock.setMinimumWidth(320)
+            dock.setWidget(panel)
+            self._workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            self._notebook, self._notebook_dock, self._notebook_tab = panel, dock, tab
+            panel.readingRequested.connect(lambda: self.pdf_view.setFocus())
+            panel.closed.connect(self._release_notebook)
+            panel.closeReady.connect(self._notebook_close_ready)
+            panel.sourceStateChanged.connect(self._refresh_library)
+        self._show_reader()
+        self._set_ai_panel_visible(False)
+        assert self._notebook_dock is not None
+        self._notebook_dock.show()
+        self._workspace.resizeDocks([self._notebook_dock], [360], Qt.Orientation.Horizontal)
+        self._notebook.editor.setFocus()
+        self._set_document_state(self._controller.has_document)
+        self._refresh_library()
+
+    def _release_notebook(self) -> None:
+        panel, dock = self._notebook, self._notebook_dock
+        self._notebook = None
+        self._notebook_dock = None
+        self._notebook_tab = None
+        if dock is not None:
+            self._workspace.removeDockWidget(dock)
+            dock.deleteLater()
+        elif panel is not None:
+            panel.deleteLater()
+        self._set_document_state(self._controller.has_document)
+        self._refresh_library()
+        if not self._controller.has_document:
+            self._show_library()
+
+    def _notebook_close_ready(self) -> None:
+        if self._notebook is None:
+            return
+        if self._notebook_app_close:
+            self.close()
+        else:
+            self._notebook.close()
 
     def _current_reference(self) -> Reference:
         document = self._controller.document
@@ -2406,8 +2554,8 @@ class MainWindow(QMainWindow):
             kind=meta.citation_kind,
         )
 
-    def _apply_reference(self, reference: Reference) -> None:
-        document = self._controller.document
+    def _apply_reference(self, reference: Reference, *, tab: DocumentTab | None = None) -> None:
+        document = (tab or self._tab).controller.document
         if document is None:
             return
         old = self._settings.meta_for(document.path) or DocMeta(pages=document.page_count)
@@ -2921,6 +3069,8 @@ class MainWindow(QMainWindow):
         self.ai_panel_action.setChecked(visible)
         dock = self._ai_dock
         if visible:
+            if self._notebook_dock is not None:
+                self._notebook_dock.hide()
             self._ai.refresh_panel()
         start = dock.width() if dock.isVisible() else 0
         end = self._ai_panel_width() if visible else 0
@@ -3060,17 +3210,22 @@ class MainWindow(QMainWindow):
     def _on_ocr_all_pages(self) -> None:
         self._start_ocr(None)
 
-    def _start_ocr(self, page_nums: list[int] | None) -> None:
+    def _start_ocr(self, page_nums: list[int] | None, *, preserve_results: bool = False) -> None:
         if not self._controller.has_document:
             return
-        if any(t.ocr_worker is not None and t.ocr_worker.isRunning() for t in self._tabs):
+        if any(t.ocr_worker is not None for t in self._tabs) or any(
+            worker.isRunning() for worker in self._retired_ocr_workers
+        ):
             # 已在运行（含其他标签的）：同一时间只跑一个 OCR，进度框也只有一个
             self.status_bar.show_message("OCR 正在进行中，请等当前任务结束")
             return
         source = self._worker_source()
         if source is None:
             return
-        self._ocr_results.clear()  # 每轮独立，避免上一轮文本混进结果
+        if not preserve_results or self._tab.ocr_document is not self._controller.document:
+            self._ocr_results.clear()  # 新任务独立；同一修订的失败页重试保留成功页
+            self._tab.ocr_failures.clear()
+        self._tab.ocr_document = self._controller.document
         self._close_ocr_progress()
         self._ocr_progress = QProgressDialog("OCR 识别中…", "取消", 0, 100, self)
         self._ocr_progress_owner = self._tab
@@ -3080,6 +3235,7 @@ class MainWindow(QMainWindow):
 
         worker = OcrWorker(self)
         worker.pageOcrCompleted.connect(self._on_ocr_page_done)
+        worker.pageFailed.connect(self._on_ocr_page_failed)
         worker.progress.connect(self._on_ocr_progress)
         worker.ocrCompleted.connect(self._on_ocr_all_done)
         worker.ocrCancelled.connect(self._on_ocr_cancelled)
@@ -3090,40 +3246,91 @@ class MainWindow(QMainWindow):
         self._ocr_progress.canceled.connect(worker.shutdown)
         worker.start()
 
-    def _ocr_tab(self) -> DocumentTab:
-        """发出当前 OCR 信号的线程属于哪个标签（直接调用时视为当前标签）。"""
+    def _invalidate_ocr_context(self, tab: DocumentTab) -> None:
+        """文档改动使既有 OCR 快照过期；先解除所有权，再退休线程。"""
+        worker = tab.ocr_worker
+        if worker is None and not tab.ocr_results and not tab.ocr_failures:
+            return
+        tab.ocr_worker = None
+        tab.ocr_document = None
+        tab.ocr_results.clear()
+        tab.ocr_failures.clear()
+        tab.ai.clear_ocr_text()
+        if self._ocr_progress_owner is tab:
+            self._close_ocr_progress()
+        if worker is not None:
+            self._retire_ocr_worker(worker)
+        if tab is self._tab:
+            self.status_bar.show_message("文档已变化，旧 OCR 结果已失效，请重新识别。")
+
+    def _ocr_tab(self) -> DocumentTab | None:
+        """仅接收仍由原文档持有的任务；未知/已退休 sender 不回退当前标签。"""
         sender = self.sender()
         if sender is not None:
             for tab in self._tabs:
-                if tab.ocr_worker is sender:
+                if (
+                    tab.ocr_worker is sender
+                    and tab.has_document
+                    and tab.ocr_document is tab.controller.document
+                ):
                     return tab
-        return self._tab
+        return None
 
     def _on_ocr_page_done(self, result) -> None:  # type: ignore[no-untyped-def]
         tab = self._ocr_tab()
+        if tab is None or not 0 <= result.page_num < tab.controller.page_count:
+            return
         tab.ocr_results[result.page_num] = result.text
+        tab.ocr_failures.pop(result.page_num, None)
         tab.ai.add_ocr_text(result.page_num, result.text)
 
+    def _on_ocr_page_failed(self, page: int, message: str) -> None:
+        tab = self._ocr_tab()
+        if tab is not None:
+            tab.ocr_failures[page] = message
+
     def _on_ocr_progress(self, done: int, total: int) -> None:
-        if self._ocr_progress is not None and total > 0:
+        tab = self._ocr_tab()
+        if (
+            tab is not None
+            and tab is self._ocr_progress_owner
+            and self._ocr_progress is not None
+            and total > 0
+        ):
             self._ocr_progress.setValue(int(done * 100 / total))
 
     def _on_ocr_all_done(self, count: int) -> None:
         tab = self._ocr_tab()
-        self._close_ocr_progress()
-        self._show_ocr_results(
-            "OCR 完成", f"已识别 {count} 页，但未识别到任何文字。", False, tab=tab
-        )
+        if tab is None:
+            return
+        if self._ocr_progress_owner is tab:
+            self._close_ocr_progress()
+        failures = len(tab.ocr_failures)
+        title = "OCR 完成"
+        message = f"已尝试 {count} 页，但未识别到任何文字。"
+        if failures:
+            title = "OCR 部分完成" if tab.ocr_results else "OCR 未完成"
+            pages = "、".join(str(page + 1) for page in sorted(tab.ocr_failures))
+            message = (
+                f"已尝试 {count} 页，其中 {failures} 页失败（第 {pages} 页）；可按失败页重试。"
+            )
+        self._show_ocr_results(title, message, False, tab=tab)
 
     def _on_ocr_failed(self, message: str) -> None:
-        self._close_ocr_progress()
-        QMessageBox.warning(self, "OCR 失败", message)
+        tab = self._ocr_tab()
+        if tab is None:
+            return
+        if self._ocr_progress_owner is tab:
+            self._close_ocr_progress()
+        self._show_ocr_results("OCR 失败", message + " 已完成的页仍保留。", False, tab=tab)
 
     def _on_ocr_cancelled(self, count: int) -> None:
-        """用户取消：与「完成」区分开；已完成的页仍可查看。"""
         tab = self._ocr_tab()
-        self._close_ocr_progress()
-        self._show_ocr_results("OCR 已取消", f"已取消，取消前完成 {count} 页。", True, tab=tab)
+        if tab is None:
+            return
+        if self._ocr_progress_owner is tab:
+            self._close_ocr_progress()
+        self._show_ocr_results("OCR 已取消", f"已取消，取消前尝试 {count} 页。", True, tab=tab)
 
     def _show_ocr_results(
         self, title: str, empty_message: str, cancelled: bool, *, tab: DocumentTab | None = None
@@ -3132,18 +3339,34 @@ class MainWindow(QMainWindow):
         doc = tab.controller.document
         if tab is not self._tab and doc is not None:
             title = f"{title} · {doc.path.name}"  # 识别完成时用户已切到别的标签
-        if not any(text.strip() for text in tab.ocr_results.values()):
+        if not any(text.strip() for text in tab.ocr_results.values()) and not tab.ocr_failures:
             QMessageBox.information(self, title, empty_message)
             return
         from pdfreader.gui.dialogs import OcrResultDialog
 
-        OcrResultDialog(
+        dialog = OcrResultDialog(
             dict(tab.ocr_results),
             self,
             title=title,
             default_dir=doc.path.parent if doc is not None else None,
             cancelled=cancelled,
-        ).exec()
+            failures=tab.ocr_failures,
+            note=empty_message if not title.startswith("OCR 完成") else "",
+        )
+        dialog.exec()
+        if dialog.retry_requested and doc is not None:
+            pages = sorted(tab.ocr_failures)
+
+            def retry() -> None:
+                if tab in self._tabs and tab.controller.document is doc and tab.ocr_document is doc:
+                    self._activate(tab)
+                    self._start_ocr(pages, preserve_results=True)
+
+            if tab.ocr_worker is not None:
+                self._ocr_retry = (tab.ocr_worker, retry)
+            else:
+                QTimer.singleShot(0, self, retry)
+        dialog.deleteLater()
 
     def _close_ocr_progress(self) -> None:
         if self._ocr_progress is not None:
@@ -3157,6 +3380,10 @@ class MainWindow(QMainWindow):
         for tab in self._tabs:
             if worker is not None and tab.ocr_worker is worker:
                 tab.ocr_worker = None
+        if self._ocr_retry is not None and self._ocr_retry[0] is worker:
+            retry = self._ocr_retry[1]
+            self._ocr_retry = None
+            QTimer.singleShot(0, self, retry)
         if isinstance(worker, OcrWorker):
             with contextlib.suppress(ValueError):
                 self._retired_ocr_workers.remove(worker)
@@ -3166,6 +3393,7 @@ class MainWindow(QMainWindow):
         """取消并回收 OCR 线程：断信号 + 请求取消（当前页跑完即停），不长时间阻塞。"""
         for signal in (
             worker.pageOcrCompleted,
+            worker.pageFailed,
             worker.progress,
             worker.ocrCompleted,
             worker.ocrCancelled,
@@ -3601,42 +3829,49 @@ class MainWindow(QMainWindow):
             self.signature_action,
             self.timestamp_action,
         ):
+            act.setProperty("requiresDocument", True)
             act.setEnabled(active)
+        self.notebook_action.setEnabled(active or self._notebook is not None)
+        self.notebook_action.setProperty("requiresDocument", self._notebook is None)
         self.reading_mode_action.setChecked(self.pdf_view.reading_mode != ReadingMode.NORMAL)
         self.double_page_action.setChecked(self.pdf_view.double_page)
         for key, act in self._mode_actions.items():
             act.setChecked(key == self.pdf_view.reading_mode)
         self.status_bar.set_document_active(active)
         document = self._controller.document
+        self.search_panel.set_document_label(document.path.name if active and document else None)
         self.pdf_view.set_read_only(document is not None and not document.meta.is_pdf)
-        if active and document is not None and not document.meta.is_pdf:
-            for action in (
-                self.save_action,
-                self.save_as_action,
-                self.zotero_action,
-                self.zotero_export_action,
-                self.rotate_action,
-                self.merge_action,
-                self.watermark_action,
-                self.export_action,
-                self.ocr_action,
-                self.highlight_action,
-                self.underline_action,
-                self.ink_action,
-                self.note_action,
-                self.freetext_action,
-                self.eraser_action,
-                self.signature_action,
-                self.timestamp_action,
-                self.table_action,
-            ):
+        for action in (
+            self.save_action,
+            self.save_as_action,
+            self.zotero_action,
+            self.zotero_export_action,
+            self.rotate_action,
+            self.merge_action,
+            self.watermark_action,
+            self.export_action,
+            self.ocr_action,
+            self.highlight_action,
+            self.underline_action,
+            self.ink_action,
+            self.note_action,
+            self.freetext_action,
+            self.eraser_action,
+            self.signature_action,
+            self.timestamp_action,
+            self.table_action,
+        ):
+            action.setProperty("pdfOnly", True)
+            if active and document is not None and not document.meta.is_pdf:
                 action.setEnabled(False)
         if active:
             self.status_bar.set_reading_mode(_MODE_CHIP.get(self.pdf_view.reading_mode, ""))
         self._update_page_actions()
         self._update_history_actions()
         # OCR 仅在依赖可用时启用
-        self.ocr_action.setEnabled(active and OCR_AVAILABLE)
+        self.ocr_action.setEnabled(
+            active and OCR_AVAILABLE and document is not None and document.meta.is_pdf
+        )
         if not OCR_AVAILABLE:
             self.ocr_action.setToolTip("OCR 不可用：未安装 rapidocr-onnxruntime")
         if not active:
@@ -3712,7 +3947,11 @@ class MainWindow(QMainWindow):
             self._parked_shortcuts.clear()
             return
         for act in self.actions():
-            if act is self.open_action or act in self._parked_shortcuts or not act.shortcuts():
+            if (
+                act in (self.open_action, self.command_palette_action)
+                or act in self._parked_shortcuts
+                or not act.shortcuts()
+            ):
                 continue
             self._parked_shortcuts[act] = act.shortcuts()
             act.setShortcuts([])
@@ -3728,6 +3967,8 @@ class MainWindow(QMainWindow):
         if self._tab.has_document:
             self._show_reader()
             self._tab.view.setFocus()
+        elif self._notebook is not None:
+            self._on_notebook()
 
     def _refresh_library(self) -> None:
         """按最新设置重建文献库卡片，并更新「返回阅读」。"""
@@ -3736,7 +3977,9 @@ class MainWindow(QMainWindow):
         if doc is not None:
             self.library.set_can_return(True, f"回到 {doc.path.name}")
         else:
-            self.library.set_can_return(False)
+            self.library.set_can_return(
+                self._notebook is not None, "回到尚未关闭的笔记草稿", label="返回笔记"
+            )
 
     def _library_entries(self) -> list[LibraryEntry]:
         """最近文件（按最近打开排序）→ 文献库卡片；找不到的文件不列出（设置里仍保留）。"""
@@ -4112,11 +4355,23 @@ class MainWindow(QMainWindow):
             self._settings_store.save(self._settings)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        # 草稿预检必须早于关闭文档/释放恢复锁；只读扫描结束后重入并复核文档。
+        if self._notebook is not None:
+            self._notebook_app_close = True
+            if not self._notebook.prepare_close():
+                if not self._notebook._closing:
+                    self._notebook_app_close = False
+                    self._notebook.cancel_close()
+                event.ignore()
+                return
         # 未保存改动：逐个标签切过去询问；任一处取消则不关闭
         for tab in list(self._tabs):
             if tab.has_document and tab.controller.is_modified:
                 self._activate(tab)
                 if not self._maybe_save():
+                    if self._notebook is not None:
+                        self._notebook.cancel_close()
+                    self._notebook_app_close = False
                     event.ignore()
                     return
         for tab in self._tabs:
@@ -4129,6 +4384,8 @@ class MainWindow(QMainWindow):
             self._settings.window_width = self.width()
             self._settings.window_height = self.height()
         self._save_settings()
+        if self._notebook is not None:
+            self._notebook.finish_close()
         self._autosave_timer.stop()
         open_paths = [tab.path for tab in self._tabs if tab.path is not None]
         self._shutting_down = True  # 下面逐个关文档时不再切换标签 / 刷新界面

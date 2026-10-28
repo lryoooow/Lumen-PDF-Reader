@@ -364,6 +364,7 @@ def test_ocr_results_go_to_the_tab_that_started_it(window: MainWindow, docs: lis
     b = window.current_tab
     worker = OcrWorker(window)
     a.ocr_worker = worker
+    a.ocr_document = a.controller.document
     worker.pageOcrCompleted.connect(window._on_ocr_page_done)
     worker.pageOcrCompleted.emit(OcrResult(page_num=1, text="扫描页文字", blocks=()))
     assert a.ocr_results == {1: "扫描页文字"} and b.ocr_results == {}

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 
+import httpx
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt, QThread, Signal
 from PySide6.QtWidgets import QWidget
@@ -110,6 +112,88 @@ def rig(qtbot, tmp_path):  # type: ignore[no-untyped-def]
     yield factory
     for r in made:
         r.close()
+
+
+def _trigger_quick(r: Rig, kind: str) -> None:
+    """经过三个真实入口发请求；查词使用本机词典没有收录的词。"""
+    if kind == "image":
+        r.tr.translate_area(0, Rect(60, 60, 400, 140))
+    else:
+        r.select("hyperparameterization" if kind == "word" else "Attention is all you need")
+        r.tr.translate_selection()
+
+
+@pytest.mark.parametrize("kind", ["text", "word", "image"])
+class TestQuickLifecycle:
+    @pytest.mark.parametrize("status", [200, 401])
+    def test_fast_reply_before_quick_method_returns_is_not_lost(  # type: ignore[no-untyped-def]
+        self, qtbot, rig, monkeypatch, kind: str, status: int
+    ) -> None:
+        """用线程完成屏障强制快响应早于 quick 方法返回，不靠负载或 sleep。"""
+        server = FakeServer("注意力就是一切")
+        server.status = status
+        r = rig(settings=_configured(vision=True), server=server)
+        method = "quick_word" if kind == "word" else "quick_translate"
+        original = getattr(r.ai, method)
+
+        def finish_before_return(*args, **kwargs):  # type: ignore[no-untyped-def]
+            worker = original(*args, **kwargs)
+            assert worker is not None and worker.wait(5000)
+            return worker
+
+        monkeypatch.setattr(r.ai, method, finish_before_return)
+        _trigger_quick(r, kind)
+        r.wait(qtbot)
+        assert len(server.requests) == 1
+        assert r.tr.popup.isVisible()
+        if status == 200:
+            assert r.tr.popup.answer == "注意力就是一切"
+            assert "注意力就是一切" in r.tr.popup.body.text()
+            assert r.tr.popup.actions.isVisibleTo(r.tr.popup)
+        else:
+            assert r.tr.popup.answer == ""
+            assert r.tr.popup.notice.isVisibleTo(r.tr.popup)
+            assert "⚠️" in r.tr.popup.notice.text()
+            assert "API Key" in r.tr.popup.notice.text()
+        assert r.tr._worker is None and not r.ai.workers()
+
+    def test_privacy_cancel_does_not_prepare_popup_or_start_request(  # type: ignore[no-untyped-def]
+        self, rig, monkeypatch, kind: str
+    ) -> None:
+        r = rig(settings=_configured(vision=True))
+        monkeypatch.setattr(r.ai, "confirm", lambda *args, **kwargs: (False, False))
+        _trigger_quick(r, kind)
+        assert not r.server.requests
+        assert not r.tr.popup.isVisible()
+        assert r.tr._worker is None and not r.ai.workers()
+
+    def test_reset_ignores_response_from_cancelled_request(  # type: ignore[no-untyped-def]
+        self, qtbot, rig, kind: str
+    ) -> None:
+        class HeldServer(FakeServer):
+            def __init__(self) -> None:
+                super().__init__("已取消请求的结果")
+                self.entered = Event()
+                self.release = Event()
+
+            def handler(self, request: httpx.Request) -> httpx.Response:
+                self.entered.set()
+                assert self.release.wait(5)
+                return super().handler(request)
+
+        server = HeldServer()
+        r = rig(settings=_configured(vision=True), server=server)
+        try:
+            _trigger_quick(r, kind)
+            qtbot.waitUntil(server.entered.is_set, timeout=3000)
+            assert r.tr.popup.isVisible() and r.tr._worker is not None
+            r.tr.reset()
+            assert not r.tr.popup.isVisible() and r.tr._worker is None
+        finally:
+            server.release.set()
+        r.wait(qtbot)
+        assert not r.tr.popup.isVisible()
+        assert r.tr.popup.answer == ""
 
 
 class TestTrigger:

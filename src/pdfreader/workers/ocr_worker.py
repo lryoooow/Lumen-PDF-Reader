@@ -39,6 +39,7 @@ class OcrWorker(QThread):
         progress(int, int): (已完成页数, 总页数)
     """
 
+    pageFailed = Signal(int, str)
     pageOcrCompleted = Signal(object)  # OcrResult
     ocrCompleted = Signal(int)  # processed_count
     ocrCancelled = Signal(int)  # 取消：已处理页数（结果未使用）
@@ -53,6 +54,12 @@ class OcrWorker(QThread):
         self._password: str | None = None
         self._page_nums: list[int] | None = None  # None=全部页
         self._running = True
+        self._page_failures: dict[int, str] = {}
+
+    @property
+    def page_failures(self) -> dict[int, str]:
+        """已跳过页的可读失败摘要；处理计数仍表示尝试页数。"""
+        return dict(self._page_failures)
 
     def setup(
         self,
@@ -68,6 +75,7 @@ class OcrWorker(QThread):
             password: 加密 PDF 密码
         """
         self._path = path
+        self._page_failures.clear()
         self._page_nums = page_nums
         self._password = password
 
@@ -124,6 +132,9 @@ class OcrWorker(QThread):
         except RenderError as exc:
             # 单页渲染失败（如页面内容损坏）：跳过该页，留日志便于排查
             _logger.warning("第 %d 页渲染失败，OCR 跳过该页：%s", page_num + 1, exc)
+            message = "页面渲染失败，可对该页重新运行 OCR。"
+            self._page_failures[page_num] = message
+            self.pageFailed.emit(page_num, message)
             return None
         # PNG 编码失败与具体页面无关，向上抛出以整体报错，避免"跑完但无结果"
         return self._ocr_pixmap_data(pixmap, page_num)

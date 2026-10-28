@@ -20,7 +20,7 @@ TEMPLATES = {
     "实验": ("目的与假设", "材料与步骤", "观察与结果", "异常与解释", "下一步"),
 }
 _SOURCE = re.compile(r"<!-- lumen-source:(\{[^\n]*\}) -->")
-_WIKILINK = re.compile(r"\[\[([^\]\n]+)\]\]")
+_WIKILINK = re.compile(r"(?<!\\)\[\[([^\]\n]+)\]\]")
 
 
 @dataclass(frozen=True)
