@@ -45,9 +45,13 @@ class OcrResultDialog(QDialog):
         title: str = "OCR 结果",
         default_dir: Path | None = None,
         cancelled: bool = False,
+        failures: Mapping[int, str] | None = None,
+        note: str = "",
     ) -> None:
         super().__init__(parent)
         self._default_dir = default_dir or Path.home()
+        self.retry_requested = False
+        failures = dict(failures or {})
         self.setWindowTitle(title)
         self.resize(640, 520)
 
@@ -57,13 +61,23 @@ class OcrResultDialog(QDialog):
         summary = f"已识别 {len(results)} 页" + (
             "（任务已取消，以下为取消前完成的页）" if cancelled else ""
         )
+        if failures:
+            summary += f"；{len(failures)} 页失败，可单独重试。"
+        if note:
+            summary += "\n" + note
         info = QLabel(summary)
+        info.setWordWrap(True)
         info.setProperty("variant", "muted")
         layout.addWidget(info)
 
         self.text_edit = QPlainTextEdit()
         self.text_edit.setReadOnly(True)
-        self.text_edit.setPlainText(format_ocr_text(results))
+        text = format_ocr_text(results)
+        if failures:
+            text += "\n\n—— 未完成页 ——\n" + "\n".join(
+                f"第 {page + 1} 页：{message}" for page, message in sorted(failures.items())
+            )
+        self.text_edit.setPlainText(text)
         font = QFont(self.text_edit.font())
         font.setPointSizeF(max(font.pointSizeF(), 10.5))
         self.text_edit.setFont(font)
@@ -80,9 +94,17 @@ class OcrResultDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         buttons.addWidget(copy_btn)
         buttons.addWidget(save_btn)
+        if failures:
+            retry_btn = QPushButton("重试失败页")
+            retry_btn.clicked.connect(self._request_retry)
+            buttons.addWidget(retry_btn)
         buttons.addStretch(1)
         buttons.addWidget(close_btn)
         layout.addLayout(buttons)
+
+    def _request_retry(self) -> None:
+        self.retry_requested = True
+        self.accept()
 
     def _copy_all(self) -> None:
         clipboard = QGuiApplication.clipboard()

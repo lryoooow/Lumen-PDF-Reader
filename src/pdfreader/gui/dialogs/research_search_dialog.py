@@ -48,6 +48,9 @@ class ResearchSearchDialog(QDialog):
         self.setWindowTitle("高级搜索与全文索引")
         self.resize(900, 650)
         self._controller = controller
+        self._revision = 0
+        self._index_revision = -1
+        self._index_document = controller.document
         self._navigate = navigate
         self._open_result = open_result
         self._database = database or default_settings_path().with_name("research.db")
@@ -98,6 +101,10 @@ class ResearchSearchDialog(QDialog):
         ):
             options.addWidget(widget)
         root.addLayout(options)
+        self.scope_summary = QLabel()
+        self.scope_summary.setWordWrap(True)
+        self.scope_summary.setProperty("variant", "muted")
+        root.addWidget(self.scope_summary)
         labels = QHBoxLayout()
         self.tags = QLineEdit()
         self.tags.setPlaceholderText("标签，逗号分隔")
@@ -118,8 +125,64 @@ class ResearchSearchDialog(QDialog):
         )
         self.status.setWordWrap(True)
         root.addWidget(self.status)
-        controller.documentClosed.connect(self.stop)
-        controller.documentChanged.connect(self.stop)
+        self.scope.currentIndexChanged.connect(self._scope_changed)
+        for spin in (self.first_page, self.last_page):
+            spin.valueChanged.connect(self._conditions_changed)
+        for option in (self.case, self.whole, self.regex):
+            option.toggled.connect(self._conditions_changed)
+        self._refresh_scope_summary()
+        self.query.textChanged.connect(self._conditions_changed)
+        controller.documentClosed.connect(self._source_changed)
+        controller.documentChanged.connect(self._source_changed)
+
+    def _refresh_scope_summary(self) -> None:
+        local = self.scope.currentIndex() == 0
+        for widget in (self.first_page, self.last_page, self.case, self.whole, self.regex):
+            widget.setEnabled(local)
+        if not local:
+            self.scope_summary.setText(
+                "范围：文献库全文 · 本机索引快照 · 短语匹配；不使用当前文档页范围或高级选项。"
+                "文档编辑后需更新索引。"
+            )
+            return
+        document = self._controller.document
+        name = document.path.name if document is not None else "未打开文档"
+        options = [
+            label
+            for option, label in (
+                (self.case, "区分大小写"),
+                (self.whole, "整词"),
+                (self.regex, "正则"),
+            )
+            if option.isChecked()
+        ]
+        self.scope_summary.setText(
+            f"范围：{name} · 第 {self.first_page.value()}–{self.last_page.value()} 页 · 正文"
+            + (" · " + "、".join(options) if options else " · 普通文本匹配")
+        )
+
+    def _scope_changed(self) -> None:
+        self._conditions_changed()
+        self.status.setText("搜索范围已切换，请重新搜索。")
+
+    def _conditions_changed(self) -> None:
+        self.stop()
+        self._search = None
+        self._hits.clear()
+        self._library_hits.clear()
+        self.results.clear()
+        self._refresh_scope_summary()
+        self.status.setText("搜索条件已变化，请重新搜索。")
+
+    def _source_changed(self) -> None:
+        self._revision += 1
+        self._conditions_changed()
+        for spin in (self.first_page, self.last_page):
+            spin.blockSignals(True)
+            spin.setMaximum(max(1, self._controller.page_count))
+            spin.blockSignals(False)
+        self._refresh_scope_summary()
+        self.status.setText("来源文档已变化，旧定位已清除；索引需更新。")
 
     def stop(self) -> None:
         self._timer.stop()
@@ -143,9 +206,6 @@ class ResearchSearchDialog(QDialog):
         self._hits.clear()
         self._library_hits.clear()
         if self.scope.currentIndex() == 1:
-            if self.case.isChecked() or self.whole.isChecked() or self.regex.isChecked():
-                self.status.setText("库全文搜索使用短语匹配；高级选项仅用于当前文档。")
-                return
             library: ResearchLibrary | None = None
             try:
                 library = ResearchLibrary(self._database)
@@ -220,6 +280,8 @@ class ResearchSearchDialog(QDialog):
                 self._commit_index()
 
     def index_document(self) -> None:
+        if self._worker is not None:
+            return
         if self._controller.is_encrypted:
             self.status.setText("加密文档不建立明文索引。")
             return
@@ -236,6 +298,8 @@ class ResearchSearchDialog(QDialog):
             return
         self.stop()
         self._indexing = True
+        self._index_revision = self._revision
+        self._index_document = self._controller.document
         self._page = 0
         self._last = self._controller.page_count
         self._timer.start()
@@ -250,13 +314,20 @@ class ResearchSearchDialog(QDialog):
             self._database, str(document.path), document.title, self._text_pages
         )
         self._text_pages = []
-        self._worker.succeeded.connect(
-            lambda: self.status.setText("索引已更新，可切换到文献库全文搜索。")
-        )
+        self._worker.succeeded.connect(self._index_succeeded)
         self._worker.failed.connect(self.status.setText)
         self._worker.finished.connect(self._index_finished)
         self._indexing = False
         self._worker.start()
+
+    def _index_succeeded(self) -> None:
+        if (
+            self._index_revision != self._revision
+            or self._index_document is not self._controller.document
+        ):
+            self.status.setText("已保存提取时的索引快照；来源文档已变化，需更新索引。")
+        else:
+            self.status.setText("索引已更新，可切换到文献库全文搜索。")
 
     def _index_finished(self) -> None:
         if self._worker is not None:

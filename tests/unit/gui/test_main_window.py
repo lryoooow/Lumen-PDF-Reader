@@ -331,8 +331,16 @@ def test_ocr_cancel_message_differs_from_done(qtbot, monkeypatch) -> None:  # ty
     window = MainWindow()
     qtbot.addWidget(window)
 
-    window._on_ocr_all_done(3)
-    window._on_ocr_cancelled(2)
+    from pdfreader.workers import OcrWorker
+
+    assert window._controller.open_file(SAMPLES / "simple_text.pdf")
+    worker = OcrWorker(window)
+    window._ocr_worker = worker
+    window.current_tab.ocr_document = window._controller.document
+    worker.ocrCompleted.connect(window._on_ocr_all_done)
+    worker.ocrCancelled.connect(window._on_ocr_cancelled)
+    worker.ocrCompleted.emit(3)
+    worker.ocrCancelled.emit(2)
 
     assert titles == ["OCR 完成", "OCR 已取消"]
 

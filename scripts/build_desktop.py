@@ -11,17 +11,22 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
+COLLECT_ALL = ("rapidocr_onnxruntime", "onnxruntime", "pdf2docx", "pdfplumber", "openpyxl",
+               "shapely", "keyring", "certifi", "bibtexparser", "regex", "docx")
 
 
 def build_command(target: str) -> list[str]:
+    if target == "Darwin":
+        return [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
+                f"--distpath={ROOT / 'dist' / 'native'}",
+                f"--workpath={ROOT / 'build' / 'native'}", str(ROOT / "scripts/lumen_macos.spec")]
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
                "--name=PDFReader", f"--paths={ROOT / 'src'}",
                f"--distpath={ROOT / 'dist' / 'native'}",
                f"--workpath={ROOT / 'build' / 'native'}", f"--specpath={ROOT / 'build' / 'native'}"]
     if target in ("Windows", "Darwin"):
         command.append("--windowed")
-    for package in ("rapidocr_onnxruntime", "onnxruntime", "pdf2docx", "pdfplumber", "openpyxl",
-                    "shapely", "keyring", "certifi", "bibtexparser", "regex", "docx"):
+    for package in COLLECT_ALL:
         command.extend(["--collect-all", package])
     command.extend(["--hidden-import=PySide6.QtPrintSupport", "--hidden-import=PySide6.QtTextToSpeech"])
     dictionary = ROOT / "src" / "pdfreader" / "resources" / "dict"
@@ -62,7 +67,12 @@ def main() -> int:
     from pdfreader import __version__
     name = ROOT / "dist" / f"Lumen-{__version__}-{arguments.target}-{platform.machine()}"
     source = "PDFReader.app" if arguments.target == "Darwin" else "PDFReader"
-    shutil.make_archive(str(name), "zip", root_dir=native, base_dir=source)
+    if arguments.target == "Darwin":
+        # .app 内的框架依赖符号链接和可执行权限；普通 shutil ZIP 会损坏分发语义。
+        subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
+                        str(native / source), str(name) + ".zip"], check=True)
+    else:
+        shutil.make_archive(str(name), "zip", root_dir=native, base_dir=source)
     print(str(name) + ".zip")
     return 0
 

@@ -314,7 +314,16 @@ class TestOcrResults:
 
         monkeypatch.setattr(ocr_result_dialog.OcrResultDialog, "exec", fake_exec)
         window._ocr_results = {1: "第二页文字", 0: "第一页文字"}
-        window._on_ocr_all_done(2)
+        # 无 sender 的事件没有来源身份，应由真实任务信号触发。
+        from pdfreader.workers import OcrWorker
+
+        assert window._controller.open_file(SAMPLES / "simple_text.pdf")
+        worker = OcrWorker(window)
+        window._ocr_worker = worker
+        window.current_tab.ocr_document = window._controller.document
+        worker.ocrCompleted.connect(window._on_ocr_all_done)
+        window._ocr_results = {1: "第二页文字", 0: "第一页文字"}
+        worker.ocrCompleted.emit(2)
         assert shown and shown[0].index("第一页文字") < shown[0].index("第二页文字")
 
 

@@ -75,3 +75,31 @@ def test_focus_input(qtbot) -> None:  # type: ignore[no-untyped-def]
     qtbot.addWidget(panel)
     panel.focus_input()
     assert panel.isVisible()
+
+
+def test_scope_remains_visible_and_errors_cannot_navigate_old_hits(qtbot) -> None:  # type: ignore[no-untyped-def]
+    panel = SearchPanel()
+    qtbot.addWidget(panel)
+    panel.set_document_label("研究论文.pdf")
+    panel.show()
+    panel.show_results("旧查询", (SearchHit(page_num=1, rect=Rect(0, 0, 1, 1)),))
+    assert "研究论文.pdf" in panel._scope_label.text()
+    assert "全部页面" in panel._scope_label.text()
+    panel.show_error("无法读取当前快照")
+    assert panel._scope_label.isVisible()
+    assert panel._result_list.count() == 0
+    assert not panel.select_relative(1)
+
+
+def test_close_cancels_query_that_is_still_debouncing(qtbot) -> None:  # type: ignore[no-untyped-def]
+    from pdfreader.gui.panels.search_panel import SearchPanel
+
+    panel = SearchPanel("搜索")
+    qtbot.addWidget(panel)
+    requested = []
+    panel.searchRequested.connect(requested.append)
+    panel._input.setText("do not start after closing")
+    assert panel._debounce.isActive()
+    panel._on_close()
+    qtbot.wait(400)
+    assert requested == []

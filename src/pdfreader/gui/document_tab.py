@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pdfreader.controllers import DocumentController
+    from pdfreader.core.document import Document
     from pdfreader.gui.ai_assistant import AiAssistant
     from pdfreader.gui.panels.ai_panel import AiPanel
     from pdfreader.gui.selection_translator import SelectionTranslator
@@ -36,6 +37,8 @@ class DocumentTab:
         self.forward_stack: list[tuple[int, float]] = []
         self.ocr_worker: OcrWorker | None = None
         self.ocr_results: dict[int, str] = {}
+        self.ocr_failures: dict[int, str] = {}
+        self.ocr_document: Document | None = None
         self.annotations_stale = True
         self.annotation_count: int | None = None  # 最近一次全文扫描到的批注数（文献库卡片用）
 

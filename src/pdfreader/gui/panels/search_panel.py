@@ -59,6 +59,7 @@ class SearchPanel(QWidget):
 
     resultClicked = Signal(int, object)  # page_num, Rect
     searchRequested = Signal(str)  # query
+    queryEdited = Signal()  # 输入一变即失效旧任务，不等防抖定时器
     closed = Signal()
 
     def __init__(self, title: str = "搜索", parent: QWidget | None = None) -> None:
@@ -113,6 +114,12 @@ class SearchPanel(QWidget):
             row.addWidget(btn)
         layout.addWidget(header)
 
+        self._scope_label = QLabel("范围：当前文档 · 全部页面 · 正文")
+        self._scope_label.setWordWrap(True)
+        self._scope_label.setContentsMargins(12, 4, 12, 0)
+        self._scope_label.setProperty("variant", "muted")
+        layout.addWidget(self._scope_label)
+
         body = QVBoxLayout()
         body.setContentsMargins(6, 6, 6, 6)
         body.setSpacing(4)
@@ -155,7 +162,11 @@ class SearchPanel(QWidget):
 
     # ------------------------------------------------------------------ 输入
     def _on_text_changed(self, text: str) -> None:
+        self._query = ""
+        self._set_results("", ())
+        self.queryEdited.emit()
         if text.strip():
+            self._set_status("等待搜索当前文档正文…")
             self._debounce.start()
         else:
             self._debounce.stop()
@@ -187,6 +198,7 @@ class SearchPanel(QWidget):
             self._select_row(row)
 
     def _on_close(self) -> None:
+        self._debounce.stop()
         self.setVisible(False)
         self.closed.emit()
 
@@ -261,8 +273,14 @@ class SearchPanel(QWidget):
             self._set_status("")
 
     def show_error(self, message: str) -> None:
+        self._query = ""
+        self._set_results("", ())
         self._set_status(f"错误：{message}")
         self._count.setText("0")
+
+    def set_document_label(self, name: str | None) -> None:
+        """显示真正的搜索对象；错误和空结果不隐藏搜索范围。"""
+        self._scope_label.setText(f"范围：{name} · 全部页面 · 正文" if name else "范围：未打开文档")
 
     def select_relative(self, step: int) -> bool:
         """选中上一个 / 下一个结果并发出 ``resultClicked``（F3 / Shift+F3）；无结果返回 False。

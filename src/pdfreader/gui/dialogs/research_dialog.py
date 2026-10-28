@@ -74,6 +74,11 @@ class ResearchDialog(QDialog):
         self._cache_key = ""
         self._worker: ResearchWorker | None = None
         self._running = False
+        self._generation = 0
+        self._answer_valid = False
+        self._prepared_scope = ""
+        self._answer_scope = ""
+        self._cancelling = False
         self._closing = False
         self._timer = QTimer(self)
         self._timer.setInterval(10)
@@ -132,6 +137,12 @@ class ResearchDialog(QDialog):
         for widget in (self.preview_btn, self.run_btn, stop):
             controls.addWidget(widget)
         root.addLayout(controls)
+        self.scope_summary = QLabel()
+        self.scope_summary.setWordWrap(True)
+        root.addWidget(self.scope_summary)
+        self.answer_state = QLabel("尚未生成结果。")
+        self.answer_state.setWordWrap(True)
+        root.addWidget(self.answer_state)
         self.answer = QTextBrowser()
         self.answer.setOpenLinks(False)
         self.answer.setOpenExternalLinks(False)
@@ -151,7 +162,24 @@ class ResearchDialog(QDialog):
         self.embedding_model.textChanged.connect(self.invalidate)
         self.first_page.valueChanged.connect(self.invalidate)
         self.last_page.valueChanged.connect(self.invalidate)
+        self._refresh_scope()
         self._controls()
+
+    def _refresh_scope(self) -> None:
+        names = [
+            title
+            for index, (title, controller) in enumerate(self._sources)
+            if (item := self.documents.item(index)) is not None
+            and item.checkState() == Qt.CheckState.Checked
+            and controller.has_document
+        ]
+        provider = self._assistant.settings.active()
+        model = f"{provider.name} / {provider.model}" if provider else "尚未配置模型"
+        self.scope_summary.setText(
+            "范围："
+            + ("、".join(names) or "没有有效文献")
+            + f" · 第 {self.first_page.value()}–{self.last_page.value()} 页 · {model}"
+        )
 
     def _controls(self) -> None:
         busy = self._timer.isActive() or self._worker is not None
@@ -162,32 +190,56 @@ class ResearchDialog(QDialog):
             self.embedding_model,
             self.first_page,
             self.last_page,
+            self.budget,
             self.preview_btn,
         ):
             widget.setEnabled(not busy)
         self.run_btn.setEnabled(not busy and bool(self._batches))
 
     def stop(self) -> None:
+        active = self._running or self._timer.isActive()
         self._timer.stop()
         self._queue.clear()
         self._running = False
         if self._worker is not None:
             self._worker.shutdown()
-        self.status.setText("已停止；未生成完整结果的任务不会标为完成。")
+        if self._answer_valid and not active:
+            self.status.setText(
+                "已生成；正在等待连接收尾。" if self._worker else "已生成；请核对原文与语义。"
+            )
+        elif active:
+            self._cancelling = self._worker is not None
+            self.status.setText(
+                "取消中，等待连接收尾；未生成完整结果，不计为完成。"
+                if self._cancelling
+                else "已取消；未生成完整结果，不计为完成。"
+            )
         self._controls()
 
     def invalidate(self) -> None:
+        self._generation += 1
         self.stop()
+        self._cancelling = False
         self._buffers.clear()
         self._documents.clear()
         self._batches.clear()
         self._chunks.clear()
         self._evidence.clear()
         self.evidence.clear()
+        self._answer_valid = False
+        if self.answer.toPlainText():
+            self.answer_state.setText(
+                "结果已过期：来源或条件已变化；以下内容仅供参考，旧定位已停用。"
+            )
+        self._refresh_scope()
+        self.status.setText("来源或条件已变化，请重新提取；旧答案与定位已过期。")
         self._controls()
 
     def prepare(self) -> None:
+        if self._worker is not None:
+            return
         self.invalidate()
+        self._prepared_scope = self.scope_summary.text() + " · " + self.task.currentText()
         self._characters = 0
         if self.first_page.value() > self.last_page.value():
             self.status.setText("页范围无效。")
@@ -284,7 +336,11 @@ class ResearchDialog(QDialog):
             self.status.setText("预计请求次数超过上限，请缩小范围或调整预算。")
             return
         size = sum(len(batch) for batch in self._batches)
+        generation = self._generation
         provider = self._assistant.authorize_request(size)
+        if generation != self._generation:
+            self.status.setText("来源或条件已变化，未发送，请重新提取。")
+            return
         if provider is None:
             return
         encrypted = any(controller.is_encrypted for _title, controller in self._sources)
@@ -308,6 +364,13 @@ class ResearchDialog(QDialog):
         embedding_model = (
             self.embedding_model.text().strip() if self.task.currentIndex() == 3 else ""
         )
+        self._answer_scope = self._prepared_scope + f" · 服务：{provider.name} / {provider.model}"
+        self._answer_valid = False
+        self._cancelling = False
+        if self.answer.toPlainText():
+            self.answer_state.setText("新任务运行中；以下保留上次结果，当前条件下的定位已停用。")
+        self._evidence.clear()
+        self.evidence.clear()
         self._cache_key = workflow_key(
             self._documents, task, provider.model + "|" + embedding_model, provider.base_url
         )
@@ -334,7 +397,7 @@ class ResearchDialog(QDialog):
             embedding_model=embedding_model,
             query=self.query.text(),
         )
-        self._worker.progress.connect(self.status.setText)
+        self._worker.progress.connect(self._progress)
         self._worker.failed.connect(self._failed)
         self._worker.result.connect(self._result)
         self._worker.finished.connect(self._finished)
@@ -342,9 +405,18 @@ class ResearchDialog(QDialog):
         self._controls()
         self._worker.start()
 
+    def _progress(self, message: str) -> None:
+        if self._running and self.sender() is self._worker and not self._closing:
+            self.status.setText(message)
+
     def _result(self, answer: str) -> None:
         if not self._running:
             return
+        if not answer.strip():
+            self._failed("服务返回空结果，请重试。")
+            return
+        self._answer_valid = True
+        self.answer_state.setText("已生成 · " + self._answer_scope)
         self._cache[self._cache_key] = answer
         self._cache.move_to_end(self._cache_key)
         while len(self._cache) > 8:
@@ -375,13 +447,18 @@ class ResearchDialog(QDialog):
         if self._worker is not None:
             self._worker.deleteLater()
             self._worker = None
+        if self._cancelling:
+            self._cancelling = False
+            self.status.setText("已取消；未生成完整结果，不计为完成。")
+        elif self._answer_valid:
+            self.status.setText("已生成。原文短引可定位不代表结论正确，请核对语义。")
         self._controls()
         if self._closing:
             self.close()
 
     def locate(self) -> None:
         row = self.evidence.currentRow()
-        if 0 <= row < len(self._evidence):
+        if self._answer_valid and 0 <= row < len(self._evidence):
             item = self._evidence[row]
             if item.found:
                 self._navigate(item.document - 1, item.page)

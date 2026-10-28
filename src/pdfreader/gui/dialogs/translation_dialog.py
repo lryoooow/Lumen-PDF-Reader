@@ -56,8 +56,12 @@ class TranslationDialog(QDialog):
         self._cache = TranslationCache()
         self._worker: AiWorker | None = None
         self._running = False
+        self._row_completed = False
+        self._cancelling = False
+        self._generation = 0
         self._closing = False
         self._extract_page = 0
+        self._extract_start = 0
         self._extract_end = 0
         self._row = -1
         self._key = ""
@@ -102,6 +106,9 @@ class TranslationDialog(QDialog):
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
+        self.scope_summary = QLabel()
+        self.scope_summary.setWordWrap(True)
+        root.addWidget(self.scope_summary)
         self.table = QTableWidget(0, 3)
         self.mode.currentIndexChanged.connect(
             lambda index: self.table.setColumnHidden(1, index == 1)
@@ -119,24 +126,54 @@ class TranslationDialog(QDialog):
         self.status = QLabel("提取不联网。费用由所选服务计价；本工具显示字符量，不猜测费用。")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
+        self.first_page.valueChanged.connect(self._range_changed)
+        self.last_page.valueChanged.connect(self._range_changed)
         controller.documentClosed.connect(self.close)
         controller.documentChanged.connect(self._invalidate)
+        self._refresh_scope()
         self._controls()
+
+    def _refresh_scope(self) -> None:
+        document = self._controller.document
+        name = document.path.name if document else "来源已关闭"
+        provider = self._assistant.settings.active()
+        model = f"{provider.name} / {provider.model}" if provider else "尚未配置模型"
+        self.scope_summary.setText(
+            f"范围：{name} · 第 {self.first_page.value()}–{self.last_page.value()} 页 · {model}。"
+            "仅发送已勾选段落；运行时锁定本次队列，停止后可改选。"
+        )
+
+    def _range_changed(self) -> None:
+        self._invalidate()
+        self._refresh_scope()
+        self.status.setText("页范围已变化，请重新提取并勾选段落。")
 
     def _controls(self) -> None:
         busy = self._running or self._timer.isActive() or self._worker is not None
         for widget in (self.preview_btn, self.first_page, self.last_page):
             widget.setEnabled(not busy)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None:
+                flags = item.flags()
+                item.setFlags(
+                    flags & ~Qt.ItemFlag.ItemIsEnabled
+                    if busy
+                    else flags | Qt.ItemFlag.ItemIsEnabled
+                )
         self.start_btn.setEnabled(not busy and bool(self._paragraphs))
         self.stop_btn.setEnabled(busy)
 
     def extract(self) -> None:
+        if self._worker is not None or self._timer.isActive():
+            return
         if not self._controller.has_document or self.first_page.value() > self.last_page.value():
             self.status.setText("请选择有效的页范围。")
             return
         self._paragraphs.clear()
         self.table.setRowCount(0)
         self._extract_page = self.first_page.value() - 1
+        self._extract_start = self._extract_page
         self._extract_end = self.last_page.value()
         self._timer.start()
         self._controls()
@@ -160,7 +197,9 @@ class TranslationDialog(QDialog):
             self._paragraphs.append(paragraph)
             self.table.insertRow(row)
             selection = QTableWidgetItem(f"第 {page + 1} 页")
-            selection.setFlags(selection.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            selection.setFlags(
+                (selection.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEnabled
+            )
             selection.setCheckState(
                 Qt.CheckState.Unchecked if paragraph.skip_reason else Qt.CheckState.Checked
             )
@@ -178,6 +217,9 @@ class TranslationDialog(QDialog):
             self._controls()
 
     def start_translation(self) -> None:
+        if self._running or self._worker is not None or self._timer.isActive():
+            return
+        generation = self._generation
         rows = [
             i
             for i in range(len(self._paragraphs))
@@ -190,6 +232,9 @@ class TranslationDialog(QDialog):
         size = sum(len(self._paragraphs[i].text) for i in rows)
         self.status.setText(f"所选 {len(rows)} 段，约 {size:,} 字符；正在等待确认。")
         provider = self._assistant.authorize_request(size)
+        if generation != self._generation:
+            self.status.setText("来源或范围已变化，未发送，请重新提取。")
+            return
         if provider is None:
             self.status.setText("未发送。请检查配置或重新确认。")
             return
@@ -208,6 +253,7 @@ class TranslationDialog(QDialog):
             return
         while self._queue:
             self._row = self._queue.pop(0)
+            self._row_completed = False
             paragraph = self._paragraphs[self._row]
             self._terms = self._assistant.glossary_for(paragraph.text)
             self._key = translation_key(
@@ -249,6 +295,7 @@ class TranslationDialog(QDialog):
         self._controls()
 
     def _show_result(self, text: str) -> None:
+        self._row_completed = True
         paragraph = self._paragraphs[self._row]
         warnings = quality_warnings(paragraph.text, text, self._terms)
         item = self._result_item()
@@ -284,6 +331,11 @@ class TranslationDialog(QDialog):
         self._worker = None
         if worker is not None:
             worker.deleteLater()
+        if self._cancelling:
+            self._cancelling = False
+            self.status.setText("已取消；已完成译文保留，可重试未完成段落。")
+        elif self._row_completed and not self._queue and not self._running:
+            self.status.setText("所选段落已完成。黄色提示需要对照原文核对。")
         self._controls()
         if self._closing:
             self.close()
@@ -297,19 +349,44 @@ class TranslationDialog(QDialog):
         return item
 
     def stop(self) -> None:
+        extracting, running = self._timer.isActive(), self._running
+        complete = running and self._row_completed and not self._queue and not extracting
         self._timer.stop()
         self._running = False
         self._queue.clear()
-        if self._worker is not None:
+        if self._worker is not None and not complete:
             self._worker.shutdown()
             item = self.table.item(self._row, 2)
-            if item is not None:
-                item.setText("已停止，可重试")
-        self.status.setText("已停止；完成的译文仍保留在本窗口。")
+            if running and not self._row_completed and item is not None:
+                item.setText("已取消，可重试")
+        if extracting:
+            self.status.setText(
+                f"已取消提取；从第 {self._extract_start + 1} 页起已读取 {self._extract_page - self._extract_start} 页，后续页未读取。"
+            )
+        elif complete:
+            self._cancelling = False
+            self.status.setText(
+                "所选段落已完成，等待连接收尾。" if self._worker else "所选段落已完成。"
+            )
+        elif running:
+            self._cancelling = self._worker is not None
+            self.status.setText(
+                "正在取消后续段落，等待连接收尾；已完成译文保留，可重试未完成段落。"
+                if self._worker is not None
+                else "已取消；已完成译文保留，可重试未完成段落。"
+            )
         self._controls()
 
     def _invalidate(self) -> None:
+        self._generation += 1
         self.stop()
+        self._cancelling = False
+        self._row_completed = False
+        for spin in (self.first_page, self.last_page):
+            spin.blockSignals(True)
+            spin.setMaximum(max(1, self._controller.page_count))
+            spin.blockSignals(False)
+        self._refresh_scope()
         self._cache.clear()
         self._paragraphs.clear()
         self.table.setRowCount(0)

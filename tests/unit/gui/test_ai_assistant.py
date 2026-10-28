@@ -562,11 +562,15 @@ def test_ocr_text_dropped_when_page_count_changes(make) -> None:  # type: ignore
     assert "ocr" not in "".join(h.ai._page_texts())
 
 
-def test_main_window_feeds_ocr_pages_to_ai(window, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+def test_main_window_feeds_ocr_pages_to_ai(window, tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from types import SimpleNamespace
 
     window.open_path(_blank_doc(tmp_path / "scan.pdf"))
-    window._on_ocr_page_done(SimpleNamespace(page_num=1, text="识别文字"))
+    from pdfreader.workers import OcrWorker
+
+    monkeypatch.setattr(OcrWorker, "start", lambda self: None)
+    window._start_ocr([1])
+    window._ocr_worker.pageOcrCompleted.emit(SimpleNamespace(page_num=1, text="识别文字"))
     assert window._ai._page_texts()[1] == "识别文字"
     window._reset_document_session()
     assert window._ai._ocr == {}
