@@ -33,6 +33,9 @@ dependencies = [
     "PySide6>=6.8,<6.10",
     "pymupdf>=1.28,<1.29",  # 引擎依赖 1.28 的内部 _get_textpage 与日志守卫补丁，升级需复核
     "rapidocr-onnxruntime>=1.4,<1.5",
+    # 1.24 起上游不再提供 Intel macOS wheel；保持该架构可安装且能运行 OCR。
+    "onnxruntime>=1.23.2,<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "onnxruntime>=1.24; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "pdf2docx>=0.5,<0.6",
     "pdfplumber>=0.11,<0.12",
     "openpyxl>=3.1,<4.0",
