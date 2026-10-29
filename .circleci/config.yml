@@ -1,0 +1,138 @@
+version: 2.1
+
+# 默认不运行，只有手动触发并设置 build_macos=true 才消耗免费额度。
+parameters:
+  build_macos:
+    type: boolean
+    default: false
+
+commands:
+  prepare-macos:
+    parameters:
+      architecture:
+        type: enum
+        enum: [arm64, x86_64]
+    steps:
+      - run:
+          name: 安装固定版本 uv 和对应架构 Python 3.13
+          command: |
+            set -euo pipefail
+            curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$BASH_ENV"
+            python_request=cpython-3.13-macos-aarch64-none
+            if [ "<< parameters.architecture >>" = x86_64 ]; then
+              # 只使用镜像已有的 Rosetta；不静默安装或接受额外许可。
+              /usr/bin/arch -x86_64 /usr/bin/true || {
+                echo '此镜像没有可用的 Rosetta 2，无法构建和运行 Intel 包。' >&2
+                exit 1
+              }
+              python_request=cpython-3.13-macos-x86_64-none
+            fi
+            printf 'export UV_PYTHON=%q\n' "$python_request" >> "$BASH_ENV"
+            export UV_PYTHON="$python_request"
+            uv python install "$python_request"
+            uv sync --frozen --python "$python_request"
+            uv run --frozen python -c "import platform; actual = platform.machine(); print('Python architecture:', actual); assert actual == '<< parameters.architecture >>', actual"
+
+jobs:
+  build-macos:
+    parameters:
+      architecture:
+        type: enum
+        enum: [arm64, x86_64]
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+    environment:
+      QT_QPA_PLATFORM: offscreen
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      UV_NO_PROGRESS: "1"
+    steps:
+      - checkout
+      - prepare-macos:
+          architecture: << parameters.architecture >>
+      - run:
+          name: 静态检查与核心回归
+          no_output_timeout: 10m
+          command: |
+            uv run --frozen ruff check .
+            uv run --frozen ruff format --check .
+            uv run --frozen mypy
+            uv run --frozen pytest tests/unit/core tests/unit/engines tests/unit/services tests/unit/test_layering.py --no-cov --junitxml=dist/test-results/core.xml
+      - store_test_results:
+          path: dist/test-results
+      - run:
+          name: 构建并验证实际分发包
+          no_output_timeout: 20m
+          command: |
+            # 为打包设置总时限，异常时不无限消耗额度。
+            uv run --frozen python -c "import subprocess, sys; subprocess.run([sys.executable, 'scripts/build_desktop.py'], check=True, timeout=1800)"
+            uv run --frozen python scripts/verify_macos_package.py
+      - run:
+          name: 保存分架构产物、校验和和源码提交
+          command: |
+            set -euo pipefail
+            package_dir="dist/circleci-<< parameters.architecture >>"
+            mkdir -p "$package_dir/macos15"
+            cp dist/Lumen-*-Darwin-<< parameters.architecture >>.zip "$package_dir/"
+            cp dist/macos-verification-<< parameters.architecture >>.json "$package_dir/macos15/"
+            git rev-parse HEAD > "$package_dir/SOURCE_COMMIT.txt"
+            (cd "$package_dir" && shasum -a 256 Lumen-*.zip > SHA256SUMS.txt)
+      - store_artifacts:
+          path: dist/circleci-<< parameters.architecture >>
+          destination: macos15-<< parameters.architecture >>
+      - persist_to_workspace:
+          root: dist
+          paths:
+            - circleci-<< parameters.architecture >>
+
+  verify-macos26:
+    parameters:
+      architecture:
+        type: enum
+        enum: [arm64, x86_64]
+    macos:
+      xcode: "26.5"
+    resource_class: m4pro.medium
+    environment:
+      QT_QPA_PLATFORM: offscreen
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      UV_NO_PROGRESS: "1"
+    steps:
+      - checkout
+      - prepare-macos:
+          architecture: << parameters.architecture >>
+      - attach_workspace:
+          at: /tmp/lumen-packages
+      - run:
+          name: 在 macOS 26 验证同一 ZIP
+          no_output_timeout: 10m
+          command: |
+            set -euo pipefail
+            package_dir="/tmp/lumen-packages/circleci-<< parameters.architecture >>"
+            (cd "$package_dir" && shasum -a 256 -c SHA256SUMS.txt)
+            test "$(cat "$package_dir/SOURCE_COMMIT.txt")" = "$(git rev-parse HEAD)"
+            mkdir -p dist
+            cp "$package_dir"/Lumen-*.zip dist/
+            uv run --frozen python scripts/verify_macos_package.py
+      - store_artifacts:
+          path: dist/macos-verification-<< parameters.architecture >>.json
+          destination: macos26-<< parameters.architecture >>.json
+
+workflows:
+  macos-release:
+    when: << pipeline.parameters.build_macos >>
+    jobs:
+      - build-macos:
+          name: build-macos15-<< matrix.architecture >>
+          matrix:
+            parameters:
+              architecture: [arm64, x86_64]
+      - verify-macos26:
+          name: verify-macos26-<< matrix.architecture >>
+          matrix:
+            parameters:
+              architecture: [arm64, x86_64]
+          requires:
+            - build-macos15-<< matrix.architecture >>
