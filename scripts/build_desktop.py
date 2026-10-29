@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 
+from package_names import desktop_archive_name
+
 ROOT = Path(__file__).resolve().parent.parent
 COLLECT_ALL = ("rapidocr_onnxruntime", "onnxruntime", "pdf2docx", "pdfplumber", "openpyxl",
                "shapely", "keyring", "certifi", "bibtexparser", "regex", "docx")
@@ -65,15 +67,15 @@ def main() -> int:
         return 1
     sys.path.insert(0, str(ROOT / "src"))
     from pdfreader import __version__
-    name = ROOT / "dist" / f"Lumen-{__version__}-{arguments.target}-{platform.machine()}"
+    archive = ROOT / "dist" / desktop_archive_name(__version__, arguments.target, platform.machine())
     source = "PDFReader.app" if arguments.target == "Darwin" else "PDFReader"
     if arguments.target == "Darwin":
         # .app 内的框架依赖符号链接和可执行权限；普通 shutil ZIP 会损坏分发语义。
         subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
-                        str(native / source), str(name) + ".zip"], check=True)
+                        str(native / source), str(archive)], check=True)
     else:
-        shutil.make_archive(str(name), "zip", root_dir=native, base_dir=source)
-    print(str(name) + ".zip")
+        shutil.make_archive(str(archive.with_suffix("")), "zip", root_dir=native, base_dir=source)
+    print(archive)
     return 0
 
 

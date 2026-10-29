@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 
+from package_names import macos_archive_name
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from pdfreader import __version__
@@ -18,7 +20,7 @@ from pdfreader import __version__
 def main() -> int:
     if platform.system() != "Darwin":
         raise SystemExit("此验证必须在 macOS 执行")
-    archive = ROOT / "dist" / f"Lumen-{__version__}-Darwin-{platform.machine()}.zip"
+    archive = ROOT / "dist" / macos_archive_name(__version__, platform.machine())
     with tempfile.TemporaryDirectory(prefix="lumen-package-test-") as directory:
         extracted = Path(directory)
         subprocess.run(["ditto", "-x", "-k", str(archive), str(extracted)], check=True)

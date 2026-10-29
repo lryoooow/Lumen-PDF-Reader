@@ -9,7 +9,7 @@
 
 产物:
     dist/PDFReader/                         程序目录（onedir）
-    dist/PDFReader-Setup-<version>.exe      安装程序（需 NSIS / makensis）
+    dist/Lumen-<version>-Windows-x64-Setup.exe  安装程序（需 NSIS / makensis）
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from package_names import windows_installer_name
 
 # 让 Windows 控制台也能输出中文（避免 cp936/cp950 报错）
 with contextlib.suppress(Exception):
@@ -177,7 +179,7 @@ def _mismatched_dlls(internal: Path) -> list[str]:
 
 
 def make_installer() -> int:
-    """用 NSIS（makensis）编译正规向导式安装程序 PDFReader-Setup-<version>.exe。
+    """用 NSIS（makensis）编译明确标注 Windows x64 的向导式安装程序。
 
     优先使用系统 makensis；否则复用 electron-builder 缓存的 NSIS（本机常见）。
     """
@@ -197,7 +199,7 @@ def make_installer() -> int:
 
     version = _version()
     sourcedir = ROOT / "dist" / "PDFReader"
-    outfile = ROOT / "dist" / f"PDFReader-Setup-{version}.exe"
+    outfile = ROOT / "dist" / windows_installer_name(version)
     print(f"\n使用 NSIS 编译安装程序: {makensis}")
     # 传绝对路径的 /D 定义（避免 cwd 依赖）；脚本带 UTF-8 BOM，makensis 自动识别编码。
     result = subprocess.run(
@@ -212,7 +214,7 @@ def make_installer() -> int:
         cwd=str(ROOT),
         check=False,
     )
-    setup = ROOT / "dist" / f"PDFReader-Setup-{version}.exe"
+    setup = outfile
     if result.returncode == 0 and setup.exists():
         size_mb = setup.stat().st_size / (1024 * 1024)
         print(f"\n✅ 安装程序已生成: {setup}  ({size_mb:.1f} MB)")

@@ -28,6 +28,7 @@
 
 ### Changed
 
+- 发布下载区提供 Windows / macOS Apple 芯片 / macOS Intel 的中文直达链接，安装包文件名明确标注平台与芯片；原始 JSON 验收报告集中为可选 ZIP，构建、自检、CI 与安装说明共用一致命名
 - 在现有 1.28 版本约束内将 PyMuPDF 锁定版本更新为 1.28.2；CircleCI 可按架构分别手动运行，Rosetta 安装及 Apple 许可接受均须显式开启参数
 - macOS 构建使用 SWIG 4.4.1 从锁定源码生成 PyMuPDF 原生扩展，避开旧绑定在严格警告模式下的导入崩溃；保留严格警告与全部回归断言，并核对实际构建版本
 - Intel macOS 的 OCR 运行时采用仍提供该架构安装包的 ONNXRuntime 1.23 系列，其他平台保留现有锁定版本
