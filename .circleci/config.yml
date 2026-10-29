@@ -5,6 +5,13 @@ parameters:
   build_macos:
     type: boolean
     default: false
+  architecture:
+    type: enum
+    enum: [arm64, x86_64]
+    default: arm64
+  accept_rosetta_license:
+    type: boolean
+    default: false
 
 commands:
   prepare-macos:
@@ -22,11 +29,15 @@ commands:
             printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$BASH_ENV"
             python_request=cpython-3.13-macos-aarch64-none
             if [ "<< parameters.architecture >>" = x86_64 ]; then
-              # 只使用镜像已有的 Rosetta；不静默安装或接受额外许可。
-              /usr/bin/arch -x86_64 /usr/bin/true || {
-                echo '此镜像没有可用的 Rosetta 2，无法构建和运行 Intel 包。' >&2
-                exit 1
-              }
+              if ! /usr/bin/arch -x86_64 /usr/bin/true; then
+                # 只有维护者明确同意 Apple 许可并手动开启参数，才安装到临时 CI 机器。
+                if [ "<< pipeline.parameters.accept_rosetta_license >>" != true ]; then
+                  echo 'Intel 构建需要 Rosetta 2；请先核对 Apple 许可，再手动开启安装参数。' >&2
+                  exit 1
+                fi
+                sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+                /usr/bin/arch -x86_64 /usr/bin/true
+              fi
               python_request=cpython-3.13-macos-x86_64-none
             fi
             printf 'export UV_PYTHON=%q\n' "$python_request" >> "$BASH_ENV"
@@ -53,12 +64,16 @@ jobs:
       - prepare-macos:
           architecture: << parameters.architecture >>
       - run:
-          name: 静态检查与核心回归
+          name: 静态检查
           no_output_timeout: 10m
           command: |
             uv run --frozen ruff check .
             uv run --frozen ruff format --check .
             uv run --frozen mypy
+      - run:
+          name: 核心与原生依赖回归
+          no_output_timeout: 10m
+          command: |
             uv run --frozen pytest tests/unit/core tests/unit/engines tests/unit/services tests/unit/test_layering.py --no-cov --junitxml=dist/test-results/core.xml
       - store_test_results:
           path: dist/test-results
@@ -125,14 +140,10 @@ workflows:
     when: << pipeline.parameters.build_macos >>
     jobs:
       - build-macos:
-          name: build-macos15-<< matrix.architecture >>
-          matrix:
-            parameters:
-              architecture: [arm64, x86_64]
+          name: build-macos15-<< pipeline.parameters.architecture >>
+          architecture: << pipeline.parameters.architecture >>
       - verify-macos26:
-          name: verify-macos26-<< matrix.architecture >>
-          matrix:
-            parameters:
-              architecture: [arm64, x86_64]
+          name: verify-macos26-<< pipeline.parameters.architecture >>
+          architecture: << pipeline.parameters.architecture >>
           requires:
-            - build-macos15-<< matrix.architecture >>
+            - build-macos15-<< pipeline.parameters.architecture >>
