@@ -77,6 +77,13 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdfreader"]
 
+[tool.uv]
+# Mac 稳定 ABI wheel 可能使用旧 SWIG；源码构建使用已修复严格警告导入崩溃的版本。
+# 仅约束 macOS/Python 3.13+，不影响其它平台或上游要求旧 SWIG 的旧 Python。
+build-constraint-dependencies = [
+    "swig==4.4.1; sys_platform == 'darwin' and python_version >= '3.13'",
+]
+
 # ----------------------------------------------------------------------------
 # Ruff：格式化 + Lint（取代 black + flake8 + isort）
 # ----------------------------------------------------------------------------
