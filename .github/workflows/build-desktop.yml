@@ -32,7 +32,14 @@ jobs:
       - name: Linux GUI and credential libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 gnome-keyring dbus-x11
-      - run: uv sync --frozen
+      - name: Install dependencies
+        if: runner.os != 'macOS'
+        run: uv sync --frozen
+      - name: Build macOS PDF bindings with fixed SWIG
+        if: runner.os == 'macOS'
+        run: |
+          uv sync --frozen --no-binary-package pymupdf
+          uv run --frozen python -c "from pymupdf import _build; print('SWIG:', _build.swig_version); assert _build.swig_version_tuple >= (4, 4)"
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
