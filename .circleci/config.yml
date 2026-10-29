@@ -16,12 +16,16 @@ parameters:
 commands:
   prepare-macos:
     parameters:
+      source_pdf:
+        type: boolean
+        default: false
       architecture:
         type: enum
         enum: [arm64, x86_64]
     steps:
       - run:
           name: 安装固定版本 uv 和对应架构 Python 3.13
+          no_output_timeout: 20m
           command: |
             set -euo pipefail
             curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
@@ -43,7 +47,14 @@ commands:
             printf 'export UV_PYTHON=%q\n' "$python_request" >> "$BASH_ENV"
             export UV_PYTHON="$python_request"
             uv python install "$python_request"
-            uv sync --frozen --python "$python_request"
+            if [ "<< parameters.source_pdf >>" = true ]; then
+              # 上游 #4392：旧 SWIG 的原生绑定在 -Werror 下可能 SIGSEGV。
+              # 以 pyproject.toml 中约束的 SWIG 重建，保留严格警告和全部断言。
+              uv sync --frozen --python "$python_request" --no-binary-package pymupdf
+              uv run --frozen python -c "import pymupdf; from pymupdf import _build; print('PyMuPDF:', pymupdf.VersionBind, 'SWIG:', _build.swig_version); assert _build.swig_version_tuple >= (4, 4)"
+            else
+              uv sync --frozen --python "$python_request"
+            fi
             uv run --frozen python -c "import platform; actual = platform.machine(); print('Python architecture:', actual); assert actual == '<< parameters.architecture >>', actual"
 
 jobs:
@@ -63,6 +74,7 @@ jobs:
       - checkout
       - prepare-macos:
           architecture: << parameters.architecture >>
+          source_pdf: true
       - run:
           name: 静态检查
           no_output_timeout: 10m

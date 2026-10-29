@@ -8,6 +8,9 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+build-constraints = [{ name = "swig", marker = "python_full_version >= '3.13' and sys_platform == 'darwin'", specifier = "==4.4.1" }]
+
 [[package]]
 name = "altgraph"
 version = "0.17.5"
