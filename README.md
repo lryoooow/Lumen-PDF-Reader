@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.6-C96A49"></a>
-  <img alt="平台" src="https://img.shields.io/badge/平台-Windows-0078D4">
+  <img alt="平台" src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS-0078D4">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/许可证-AGPL--3.0-7C3AED"></a>
   <img alt="免费" src="https://img.shields.io/badge/价格-免费-10B981">
 </p>
@@ -92,7 +92,7 @@
 - 满意的回答可**存为批注**，和你的笔记放在一起。
 
 AI 默认关闭，只在你主动发起时才把所选内容发送给**你自己配置**的服务；首次发送前会征得同意，
-API Key 保存在 Windows 凭据管理器中，不写入任何文件。
+API Key 保存在系统凭据管理器中，不写入应用配置或日志。
 
 ## 0.0.6 开发分支：桌面研究工具
 
@@ -109,11 +109,15 @@ API Key 保存在 Windows 凭据管理器中，不写入任何文件。
 
 ## 下载安装
 
-1. 前往 [Releases](https://github.com/lryoooow/Lumen-PDF-Reader/releases) 下载最新的 `PDFReader-Setup-<版本>.exe`；
-2. 双击运行安装向导，按提示完成安装；
-3. 打开 Lumen，或在任意 PDF 上右键 →「打开方式」选择 Lumen。
+前往 [最新 Release](https://github.com/lryoooow/Lumen-PDF-Reader/releases/latest)，在页面顶部按电脑平台选择一个安装包，无需安装 Python：
 
-目前支持 **Windows 10 / 11（64 位）**，无需安装 Python 或其他依赖。
+| 你的电脑 | 文件名 | 安装方式 |
+| --- | --- | --- |
+| Windows 10 / 11（64 位） | `Lumen-<版本>-Windows-x64-Setup.exe` | 双击运行安装向导 |
+| macOS · Apple 芯片（M 系列） | `Lumen-<版本>-macOS-Apple-Silicon.zip` | 解压，将 `PDFReader.app` 拖入「应用程序」 |
+| macOS · Intel 芯片 | `Lumen-<版本>-macOS-Intel.zip` | 解压，将 `PDFReader.app` 拖入「应用程序」 |
+
+Mac 最低系统为 macOS 15，已在 15/26 验证；27 未实测，应用未做 Apple 商业签名或公证。文件校验和与验证报告供核验使用，`Source code` 为开发源码。
 
 <p align="center">
   <img src="docs/images/library.png" alt="Lumen 文献库首页" width="760">

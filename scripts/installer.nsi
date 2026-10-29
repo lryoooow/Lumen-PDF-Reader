@@ -1,7 +1,7 @@
 ﻿; PDF Reader —— NSIS 安装程序脚本（Modern UI 2）
 ; 由 scripts/build_windows.py --installer 用缓存的 makensis 编译。
 ; 运行目录约定为项目根，故下列默认路径为相对根目录的相对路径。
-; 产物：dist/PDFReader-Setup-<version>.exe（正规向导式安装程序，非 zip）
+; 产物：dist/Lumen-<version>-Windows-x64-Setup.exe（向导式安装程序）
 
 Unicode true
 
@@ -17,7 +17,7 @@ Unicode true
   !define SOURCEDIR "dist\PDFReader"
 !endif
 !ifndef OUTFILE
-  !define OUTFILE "dist\PDFReader-Setup-${VERSION}.exe"
+  !define OUTFILE "dist\Lumen-${VERSION}-Windows-x64-Setup.exe"
 !endif
 !ifndef ICON
   !define ICON "src\pdfreader\resources\icons\app.ico"

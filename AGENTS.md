@@ -66,7 +66,7 @@
 ## 打包与发布
 
 * `scripts/build_windows.py`：PyInstaller **onedir** 打包 + NSIS 向导式安装程序
-  （`scripts/installer.nsi`，产物 `dist/PDFReader-Setup-<version>.exe`）。
+  （`scripts/installer.nsi`，产物 `dist/Lumen-<version>-Windows-x64-Setup.exe`）。
 * 版本号三处同步：`pyproject.toml`、`src/pdfreader/__init__.py`、`scripts/installer.nsi`；
   变更同步写入 `CHANGELOG.md`（Keep a Changelog 格式）。
 

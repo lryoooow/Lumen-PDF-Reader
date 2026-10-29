@@ -102,7 +102,8 @@ jobs:
             set -euo pipefail
             package_dir="dist/circleci-<< parameters.architecture >>"
             mkdir -p "$package_dir/macos15"
-            cp dist/Lumen-*-Darwin-<< parameters.architecture >>.zip "$package_dir/"
+            archive_name="$(uv run --frozen python -c "from scripts.package_names import macos_archive_name; from pdfreader import __version__; print(macos_archive_name(__version__, '<< parameters.architecture >>'))")"
+            cp "dist/$archive_name" "$package_dir/"
             cp dist/macos-verification-<< parameters.architecture >>.json "$package_dir/macos15/"
             git rev-parse HEAD > "$package_dir/SOURCE_COMMIT.txt"
             (cd "$package_dir" && shasum -a 256 Lumen-*.zip > SHA256SUMS.txt)
