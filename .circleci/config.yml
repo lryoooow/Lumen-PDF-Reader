@@ -50,10 +50,10 @@ commands:
             if [ "<< parameters.source_pdf >>" = true ]; then
               # 上游 #4392：旧 SWIG 的原生绑定在 -Werror 下可能 SIGSEGV。
               # 以 pyproject.toml 中约束的 SWIG 重建，保留严格警告和全部断言。
-              uv sync --frozen --python "$python_request" --no-binary-package pymupdf
+              uv sync --frozen --python "$python_request" --no-binary-package pymupdf --no-build-package cryptography
               uv run --frozen python -c "import pymupdf; from pymupdf import _build; print('PyMuPDF:', pymupdf.VersionBind, 'SWIG:', _build.swig_version); assert _build.swig_version_tuple >= (4, 4)"
             else
-              uv sync --frozen --python "$python_request"
+              uv sync --frozen --python "$python_request" --no-build-package cryptography
             fi
             uv run --frozen python -c "import platform; actual = platform.machine(); print('Python architecture:', actual); assert actual == '<< parameters.architecture >>', actual"
 

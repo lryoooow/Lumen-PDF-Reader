@@ -36,6 +36,9 @@ dependencies = [
     # 1.24 起上游不再提供 Intel macOS wheel；保持该架构可安装且能运行 OCR。
     "onnxruntime>=1.23.2,<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "onnxruntime>=1.24; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    # 49 起不再发布 Intel macOS wheel；避免源码构建误链接系统 OpenSSL。
+    "cryptography>=48.0.1,<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography>=49; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "pdf2docx>=0.5,<0.6",
     "pdfplumber>=0.11,<0.12",
     "openpyxl>=3.1,<4.0",
