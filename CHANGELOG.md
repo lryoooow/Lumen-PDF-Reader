@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- CircleCI 手动 macOS 构建入口：复用原有打包、自检和同包复验，默认不触发；Apple 芯片原生、Intel 使用 Rosetta 的独立环境，保留校验和与源码提交，实际兼容性以运行结果为准
+
 ## [Lumen 0.0.6 构建 20261028] - 2026-10-28
 
 ### Added
