@@ -15,6 +15,8 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from pdfreader.utils.profile import profile_directory
+
 __all__ = [
     "SELECTION_TRANSLATE_MODES",
     "Bookmark",
@@ -39,7 +41,7 @@ SELECTION_TRANSLATE_MODES = ("button", "auto", "off")
 
 def default_settings_path() -> Path:
     """返回默认设置文件路径(用户主目录下)。"""
-    return Path.home() / ".pdfreader" / "settings.json"
+    return profile_directory() / "settings.json"
 
 
 @dataclass(frozen=True)
@@ -320,10 +322,12 @@ class SettingsStore:
         """保存设置（自动创建目录；先写临时文件再原子替换）。"""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8")
         try:
+            tmp.write_text(
+                json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             tmp.replace(self._path)
-        except OSError:
+        except (OSError, UnicodeError):
             with contextlib.suppress(OSError):
                 tmp.unlink()
             raise

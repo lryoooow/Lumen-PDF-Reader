@@ -217,6 +217,13 @@ def test_overview_context_short_and_long() -> None:
     assert len(text) < 9000 + 600
 
 
+@pytest.mark.parametrize("pages", [["", "a" * 200, "结论"], ["开头" + "a" * 200 + "结论"]])
+def test_overview_keeps_conclusion(pages: list[str]) -> None:
+    text, truncated = context.overview_context(pages, budget=100)
+    assert truncated
+    assert text.endswith("结论")
+
+
 def test_question_context_uses_retrieval_for_long_docs() -> None:
     pages = ["Title and abstract of the paper."] + [
         ("filler text " * 200)

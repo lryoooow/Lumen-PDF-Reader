@@ -18,6 +18,19 @@ def test_default_server_name_is_user_scoped() -> None:
     assert len(name) > len("Lumen-PDF-Reader-")
 
 
+def test_validation_profile_does_not_share_instance_or_data(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from pdfreader.utils.profile import profile_directory
+
+    default = default_server_name()
+    first, second = tmp_path / "first", tmp_path / "second"
+    monkeypatch.setenv("LUMEN_PROFILE_DIR", str(first))
+    assert profile_directory() == first
+    first_name = default_server_name()
+    assert first_name != default
+    monkeypatch.setenv("LUMEN_PROFILE_DIR", str(second))
+    assert default_server_name() not in {default, first_name}
+
+
 def test_second_instance_forwards_paths(qtbot) -> None:  # type: ignore[no-untyped-def]
     key = f"Lumen-Test-{uuid4().hex}"
     primary = SingleInstance(key)

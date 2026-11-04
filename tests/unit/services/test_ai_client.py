@@ -324,3 +324,15 @@ def test_base_url_is_normalized() -> None:
 
     ChatClient(BASE + "/chat/completions/", transport=httpx.MockTransport(handler)).list_models()
     assert seen == [f"{BASE}/models"]
+
+
+@pytest.mark.parametrize("url", ["http://", "http://[::1", "http://example.com:badport"])
+def test_invalid_base_url_is_reported_without_network(url: str) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        pytest.fail("invalid URL reached transport")
+
+    client = ChatClient(url, transport=httpx.MockTransport(handler))
+    with pytest.raises(AiError, match="Base URL"):
+        client.list_models()
+    with pytest.raises(AiError, match="Base URL"):
+        list(client.stream_chat([{"role": "user", "content": "hello"}], model="test"))

@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pdfreader.utils.profile import profile_directory
+
 __all__ = [
     "KINDS",
     "KIND_LABELS",
@@ -68,7 +70,7 @@ class Material:
 
 
 def default_materials_path() -> Path:
-    return Path.home() / ".pdfreader" / "materials.db"
+    return profile_directory() / "materials.db"
 
 
 class MaterialStore:
@@ -91,6 +93,7 @@ class MaterialStore:
                 _logger.warning("素材库打开失败：%s（%s）", self._path, exc)
                 raise MaterialError(f"素材库无法打开：{exc}") from exc
             try:
+                db.create_function("casefold", 1, str.casefold, deterministic=True)
                 db.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS materials(
@@ -214,11 +217,14 @@ class MaterialStore:
     def items(self, kind: str, query: str = "") -> list[Material]:
         """某类素材，最新的在前；``query`` 在原文 / 备注 / 来源里查（不分大小写）。"""
         if query.strip():
-            like = f"%{_escape_like(query.strip().lower())}%"
+            like = f"%{_escape_like(query.strip().casefold())}%"
             return self._select(
-                "WHERE kind = ? AND (key LIKE ? ESCAPE '\\' OR lower(note) LIKE ? ESCAPE '\\'"
-                " OR lower(doc_title) LIKE ? ESCAPE '\\') ORDER BY created DESC",
-                (kind, like, like, like),
+                "WHERE kind = ? AND (casefold(text) LIKE ? ESCAPE '\\'"
+                " OR casefold(note) LIKE ? ESCAPE '\\'"
+                " OR casefold(doc_title) LIKE ? ESCAPE '\\'"
+                " OR (doc_title = '' AND casefold(doc_path) LIKE ? ESCAPE '\\'))"
+                " ORDER BY created DESC",
+                (kind, like, like, like, like),
             )
         return self._select("WHERE kind = ? ORDER BY created DESC", (kind,))
 

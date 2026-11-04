@@ -1,16 +1,18 @@
 """在 macOS 验证实际分发 ZIP：元数据、签名完整性、权限、冻结自检与 GUI 启动。"""
+
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import platform
 import plistlib
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 from package_names import macos_archive_name
+from package_smoke import check_gui_startup, frozen_selftest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -26,39 +28,25 @@ def main() -> int:
         subprocess.run(["ditto", "-x", "-k", str(archive), str(extracted)], check=True)
         app = extracted / "PDFReader.app"
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-        assert info["CFBundleShortVersionString"] == __version__
-        assert info["CFBundleVersion"] == __version__
-        assert info["LSMinimumSystemVersion"] == "15.0"
+        if (
+            info["CFBundleShortVersionString"] != __version__
+            or info["CFBundleVersion"] != __version__
+            or info["LSMinimumSystemVersion"] != "15.0"
+        ):
+            raise RuntimeError("应用包版本或最低系统版本不正确")
         executable = app / "Contents/MacOS" / info["CFBundleExecutable"]
-        assert executable.is_file() and os.access(executable, os.X_OK)
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise RuntimeError("应用包缺少可执行文件或执行权限")
+        architectures = subprocess.check_output(["lipo", "-archs", str(executable)], text=True)
+        if architectures.split() != [platform.machine()]:
+            raise RuntimeError("实际 Mach-O 架构与归档名不一致")
         links = [item for item in app.rglob("*") if item.is_symlink()]
-        assert links and all(item.exists() for item in links), "框架符号链接丢失或损坏"
+        if not links or not all(item.exists() for item in links):
+            raise RuntimeError("框架符号链接丢失或损坏")
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-        subprocess.run([str(executable), "--selftest"], check=True)
-        selftest = json.loads((Path.home() / ".pdfreader/selftest.json").read_text("utf-8"))
-        assert selftest["ok"] and selftest["frozen"] and selftest["version"] == __version__
-
-        import pymupdf
-
-        sample = extracted / "native-smoke.pdf"
-        with pymupdf.open() as document:
-            page = document.new_page()
-            page.insert_text((72, 72), "Lumen native macOS launch check")
-            document.save(sample)
-        # 单独启动本次创建的进程。这里只确认未在启动阶段退出，不替代手工阅读/保存验收。
-        with (extracted / "gui-startup.log").open("wb") as log:
-            process = subprocess.Popen([str(executable), str(sample)], stdout=log, stderr=log)
-            try:
-                try:
-                    process.wait(timeout=6)
-                except subprocess.TimeoutExpired:
-                    pass
-                else:
-                    raise RuntimeError("GUI 提前退出：" + (extracted / "gui-startup.log").read_text(errors="replace"))
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                    process.wait(timeout=10)
+        profile = extracted / "profile"
+        selftest = frozen_selftest(executable, profile, __version__)
+        check_gui_startup(executable, extracted, extracted / "gui-profile")
         report = {
             "version": __version__,
             "architecture": platform.machine(),

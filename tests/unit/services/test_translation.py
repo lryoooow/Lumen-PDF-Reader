@@ -42,6 +42,8 @@ def test_hyphen_cjk_and_skip_candidates() -> None:
 def test_numeric_counts_and_glossary() -> None:
     assert quality_warnings("12 and 12", "12")
     assert not quality_warnings("−1.5 and 1,000", "-1.5 和 1000")
+    assert not quality_warnings("10-20", "10–20")
+    assert quality_warnings("10-20", "10–21")
     assert quality_warnings("attention 12", "注意 12", [("attention", "注意力")])
     assert not quality_warnings("attention 12", "注意力 12", [("attention", "注意力")])
 

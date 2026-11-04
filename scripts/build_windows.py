@@ -19,9 +19,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from package_names import windows_installer_name
+from package_smoke import frozen_selftest
 
 # 让 Windows 控制台也能输出中文（避免 cp936/cp950 报错）
 with contextlib.suppress(Exception):
@@ -78,17 +80,10 @@ def _version() -> str:
     return __version__
 
 
-def build() -> int:
-    """执行 PyInstaller 打包（onedir），返回退出码。"""
+def build_command() -> list[str]:
+    """返回实际使用的 Windows PyInstaller 命令。"""
     dist = ROOT / "dist"
     build_dir = ROOT / "build"
-
-    # 清掉旧的 onefile 产物，避免与 onedir 混淆
-    old_exe = dist / f"{APP_NAME}.exe"
-    if old_exe.exists():
-        old_exe.unlink()
-    if (dist / APP_NAME).exists():
-        shutil.rmtree(dist / APP_NAME, ignore_errors=True)
 
     cmd = [
         sys.executable,
@@ -114,7 +109,13 @@ def build() -> int:
     if DICT_DIR.is_dir():
         cmd.extend(["--add-data", f"{DICT_DIR}{os.pathsep}pdfreader/resources/dict"])
     cmd.append(str(ENTRY))
+    return cmd
 
+
+def build() -> int:
+    """执行 PyInstaller 打包（onedir），返回退出码。"""
+    dist = ROOT / "dist"
+    cmd = build_command()
     print("执行打包命令:\n" + " ".join(cmd) + "\n")
     # 依赖 DLL 按 PATH 解析：把解释器自带的 DLL 目录放最前，免得收进 PATH 上同名的别家版本
     env = dict(os.environ)
@@ -160,7 +161,7 @@ def _verify(dist: Path) -> int:
     print(f"   词典:     {'✓' if dictionary.is_file() else '✗（查词卡将只能用 AI）'}")
     if not onnx_files:
         print("   ⚠️  未检测到 OCR 模型文件，OCR 功能可能不可用。")
-    return 0
+    return 0 if onnx_files and ort_dlls and dictionary.is_file() else 1
 
 
 def _mismatched_dlls(internal: Path) -> list[str]:
@@ -186,20 +187,21 @@ def make_installer() -> int:
     nsi = ROOT / "scripts" / "installer.nsi"
     if not nsi.exists():
         print(f"⚠️  未找到 {nsi}，跳过安装程序生成。")
-        return 0
+        return 1
 
     makensis = _find_makensis()
     if makensis is None:
         print(
             "\nℹ️  未找到 NSIS（makensis.exe）。安装程序未生成。\n"
             "   NSIS 下载：https://nsis.sourceforge.io/  （或安装 electron-builder 会缓存一份）\n"
-            f"   找到后运行：\"<NSIS>\\makensis.exe\" /DVERSION={_version()} {nsi}"
+            f'   找到后运行："<NSIS>\\makensis.exe" /DVERSION={_version()} {nsi}'
         )
-        return 0
+        return 1
 
     version = _version()
     sourcedir = ROOT / "dist" / "PDFReader"
     outfile = ROOT / "dist" / windows_installer_name(version)
+    previous_mtime = outfile.stat().st_mtime_ns if outfile.is_file() else None
     print(f"\n使用 NSIS 编译安装程序: {makensis}")
     # 传绝对路径的 /D 定义（避免 cwd 依赖）；脚本带 UTF-8 BOM，makensis 自动识别编码。
     result = subprocess.run(
@@ -215,12 +217,13 @@ def make_installer() -> int:
         check=False,
     )
     setup = outfile
-    if result.returncode == 0 and setup.exists():
+    generated = setup.is_file() and setup.stat().st_mtime_ns != previous_mtime
+    if result.returncode == 0 and generated:
         size_mb = setup.stat().st_size / (1024 * 1024)
         print(f"\n✅ 安装程序已生成: {setup}  ({size_mb:.1f} MB)")
     else:
         print(f"\n❌ 安装程序编译失败，退出码 {result.returncode}")
-    return result.returncode
+    return result.returncode or (0 if generated else 1)
 
 
 def _find_makensis() -> Path | None:
@@ -248,6 +251,12 @@ def main() -> int:
     if code != 0:
         return code
     if "--installer" in sys.argv:
+        with tempfile.TemporaryDirectory(prefix="lumen-win-test-") as directory:
+            frozen_selftest(
+                ROOT / "dist" / APP_NAME / f"{APP_NAME}.exe",
+                Path(directory) / "profile",
+                _version(),
+            )
         return make_installer()
     print("\n提示：加 --installer 参数可同时生成 Windows 安装程序。")
     return 0

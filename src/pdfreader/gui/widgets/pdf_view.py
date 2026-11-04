@@ -925,9 +925,7 @@ class PdfView(QGraphicsView):
     @staticmethod
     def _remove_overlay(items: list[QGraphicsItem]) -> None:
         for item in items:
-            scene = item.scene()
-            if scene is not None:
-                scene.removeItem(item)
+            _remove_item(item)
         items.clear()
 
     # ------------------------------------------------------------------
@@ -1327,6 +1325,7 @@ class PdfView(QGraphicsView):
         把当前页清成 None，下一次「删除 / 旋转」就会落到第 1 页上。
         """
         self._scene.clear()
+        self._capture_item = None
         self._page_items.clear()
         self._rendered_cache.clear()
         # 场景已 clear，旧叠加项全部失效，直接重置状态
@@ -1890,6 +1889,7 @@ class PdfView(QGraphicsView):
     def clear(self) -> None:
         """清空视图。"""
         self._scene.clear()
+        self._capture_item = None
         self._page_items.clear()
         self._rendered_cache.clear()
         self._sel_items.clear()

@@ -278,6 +278,7 @@ class MainWindow(QMainWindow):
         self._materials = MaterialStore()
         self._snapshot_dir = Path(tempfile.gettempdir()) / f"pdfreader_snapshots_{os.getpid()}"
         self._snapshot_paths: list[Path] = []
+        self._worker_snapshots: dict[SearchWorker | OcrWorker, Path] = {}
         self._temp_files: list[Path] = []  # 其他本进程生成的临时文件（如手绘签名）
         self._last_open_failure: str = ""
         # 恢复上次会话期间不把逐个打开的标签反写进设置（避免中途崩溃丢掉其余文件）
@@ -511,6 +512,7 @@ class MainWindow(QMainWindow):
         if tab is old:
             return
         if old is not None:
+            self.status_bar.cancel_pending_zoom()
             self._leave_tab(old)
         if tab not in self._tabs:
             at = self._tabs.index(old) + 1 if old in self._tabs else len(self._tabs)
@@ -529,6 +531,7 @@ class MainWindow(QMainWindow):
     def _leave_tab(self, old: DocumentTab) -> None:
         """离开旧标签：取消搜索、收起只对它有意义的浮层与工具，释放它的渲染位图。"""
         self._snapshot_on_leave(old)
+        old.translator.retire_ocr()
         if self._search_worker is not None:
             self._retire_search_worker(self._search_worker)
             self._search_worker = None
@@ -720,6 +723,8 @@ class MainWindow(QMainWindow):
         self._ai_dock.removeWidget(tab.panel)
         tab.panel.hide()
         self._parked_tabs.append(tab)
+        for worker in (*tab.ai.workers(), *tab.translator.ocr_workers()):
+            worker.finished.connect(self._release_parked_tabs)
         self._release_parked_tabs()
 
     def _release_parked_tabs(self) -> None:
@@ -1781,6 +1786,8 @@ class MainWindow(QMainWindow):
         worker.searchFailed.connect(self._on_search_failed)
         worker.finished.connect(self._on_search_worker_finished)
         worker.setup(source, query, password=self._controller.password)
+        if source in self._snapshot_paths:
+            self._worker_snapshots[worker] = source
         self._active_query = query
         self._search_worker = worker
         worker.start()
@@ -1821,8 +1828,8 @@ class MainWindow(QMainWindow):
         if worker.isRunning():
             # 还没停：交给 finished 收尾（保持 Python 引用，避免 QThread 运行中被回收）
             self._retired_search_workers.append(worker)
-            worker.finished.connect(self._on_search_worker_finished)
         else:
+            self._release_worker_snapshot(worker)
             worker.deleteLater()
 
     def _on_search_worker_finished(self) -> None:
@@ -1831,6 +1838,7 @@ class MainWindow(QMainWindow):
         if worker is self._search_worker:
             self._search_worker = None
         if isinstance(worker, SearchWorker):
+            self._release_worker_snapshot(worker)
             with contextlib.suppress(ValueError):
                 self._retired_search_workers.remove(worker)
             worker.deleteLater()
@@ -1869,7 +1877,6 @@ class MainWindow(QMainWindow):
             )
             return None
         self._snapshot_paths.append(tmp)
-        self._discard_stale_snapshots(keep=tmp)
         return tmp
 
     def _new_snapshot_path(self) -> Path:
@@ -1881,12 +1888,16 @@ class MainWindow(QMainWindow):
             if not candidate.exists():
                 return candidate
 
-    def _discard_stale_snapshots(self, *, keep: Path) -> None:
-        """清理不再使用的旧快照（仍被后台线程打开时删除失败，忽略即可）。"""
-        for old in [p for p in self._snapshot_paths if p != keep]:
-            with contextlib.suppress(OSError):
-                old.unlink()
-                self._snapshot_paths.remove(old)
+    def _release_worker_snapshot(self, worker: SearchWorker | OcrWorker) -> None:
+        source = self._worker_snapshots.pop(worker, None)
+        if source is not None:
+            self._release_snapshot(source)
+
+    def _release_snapshot(self, source: Path) -> None:
+        if source in self._snapshot_paths:
+            with contextlib.suppress(OSError):  # 退出时还会尝试清理
+                source.unlink(missing_ok=True)
+                self._snapshot_paths.remove(source)
 
     def _cleanup_snapshots(self) -> None:
         """删除本进程创建的快照文件；目录空了才删目录。
@@ -1987,14 +1998,24 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return False
+        target = Path(path)
+        existing = self._find_tab(target)
+        if existing is not None and existing is not self._tab:
+            QMessageBox.warning(self, "保存失败", "目标 PDF 已在另一个标签页打开。")
+            return False
         old_marks = self._settings.bookmarks_for(doc.path) if doc is not None else []
-        if self._controller.save_as(Path(path)):
+        if self._controller.save_as(target):
             self._after_saved()
+            if self._notebook_tab is self._tab and self._notebook is not None:
+                self._notebook.source_saved_as(target)
+                if self._notebook_dock is not None:
+                    self._notebook_dock.setWindowTitle("阅读笔记 · " + self._tab.label())
             if old_path is not None:
                 self._forget_recovery(old_path)
             if old_marks:  # 书签跟着新文件走（原文件的保留）
                 self._settings.set_bookmarks(Path(path), old_marks)
             self._settings.add_recent_file(Path(path), max_count=MAX_LIBRARY_FILES)
+            self._remember_reading_position()
             self._save_session()
             return True
         QMessageBox.warning(self, "保存失败", self._controller.last_error or "保存失败")
@@ -2594,11 +2615,12 @@ class MainWindow(QMainWindow):
         if directory is None:
             return
 
-        def open_pdf(path: Path, reference: Reference) -> None:
+        def open_pdf(path: Path, reference: Reference) -> bool:
             self.open_path(path)
             if not self._tab.is_file(path):
-                return
+                return False
             self._apply_reference(reference)
+            return True
 
         dialog = ZoteroLibraryDialog(directory, open_pdf, self)
         dialog.exec()
@@ -2639,10 +2661,12 @@ class MainWindow(QMainWindow):
     def _on_research_search(self) -> None:
         from pdfreader.gui.dialogs.research_search_dialog import ResearchSearchDialog
 
-        def open_result(path: str, page: int) -> None:
+        def open_result(path: str, page: int) -> bool:
             self.open_path(Path(path))
             if self._tab.is_file(Path(path)):
                 self._navigate_to(page, None)
+                return True
+            return False
 
         dialog = ResearchSearchDialog(self._controller, self._navigate_to, open_result, self)
         dialog.exec()
@@ -3242,6 +3266,8 @@ class MainWindow(QMainWindow):
         worker.ocrFailed.connect(self._on_ocr_failed)
         worker.finished.connect(self._on_ocr_worker_finished)
         worker.setup(source, page_nums=page_nums, password=self._controller.password)
+        if source in self._snapshot_paths:
+            self._worker_snapshots[worker] = source
         self._ocr_worker = worker
         self._ocr_progress.canceled.connect(worker.shutdown)
         worker.start()
@@ -3385,6 +3411,7 @@ class MainWindow(QMainWindow):
             self._ocr_retry = None
             QTimer.singleShot(0, self, retry)
         if isinstance(worker, OcrWorker):
+            self._release_worker_snapshot(worker)
             with contextlib.suppress(ValueError):
                 self._retired_ocr_workers.remove(worker)
             worker.deleteLater()
@@ -3406,8 +3433,8 @@ class MainWindow(QMainWindow):
             worker.wait(500)
         if worker.isRunning():
             self._retired_ocr_workers.append(worker)
-            worker.finished.connect(self._on_ocr_worker_finished)
         else:
+            self._release_worker_snapshot(worker)
             worker.deleteLater()
 
     def _wait_for_background_workers(self) -> None:
@@ -3446,13 +3473,16 @@ class MainWindow(QMainWindow):
             return
         from pdfreader.gui.dialogs import ExportDialog
 
-        ExportDialog(
-            source,
-            self,
-            display_path=doc.path,
-            page_count=self._controller.page_count,
-            password=self._controller.password,
-        ).exec()
+        try:
+            ExportDialog(
+                source,
+                self,
+                display_path=doc.path,
+                page_count=self._controller.page_count,
+                password=self._controller.password,
+            ).exec()
+        finally:
+            self._release_snapshot(source)
 
     def _on_about(self) -> None:
         from pdfreader.gui.dialogs import AboutDialog
@@ -4139,7 +4169,7 @@ class MainWindow(QMainWindow):
                 doc.path,
                 page_count=controller.page_count,
                 title=controller.title or doc.path.name,
-                encrypted=bool(controller.password),
+                encrypted=controller.is_encrypted,
                 writer=write,
             )
         except (OSError, RecoveryError) as exc:

@@ -177,10 +177,13 @@ def test_worker_source_uses_unique_snapshot_paths(qtbot) -> None:  # type: ignor
     assert second is not None
     assert second != first
     assert second.exists()
+    assert first.exists()
     check = engine.open(second)
     assert len(engine.list_annotations(check, 0)) == 2  # 新快照含最新改动
     check.close()
     holder.close()
+    window._release_snapshot(first)
+    assert not first.exists() and second.exists()
     window._controller.close_document()
 
 

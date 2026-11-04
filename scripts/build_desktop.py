@@ -4,33 +4,71 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+from pathlib import Path
 
 from package_names import desktop_archive_name
+from package_smoke import check_gui_startup, frozen_selftest
 
 ROOT = Path(__file__).resolve().parent.parent
-COLLECT_ALL = ("rapidocr_onnxruntime", "onnxruntime", "pdf2docx", "pdfplumber", "openpyxl",
-               "shapely", "keyring", "certifi", "bibtexparser", "regex", "docx")
+COLLECT_ALL = (
+    "rapidocr_onnxruntime",
+    "onnxruntime",
+    "pdf2docx",
+    "pdfplumber",
+    "openpyxl",
+    "shapely",
+    "keyring",
+    "certifi",
+    "bibtexparser",
+    "regex",
+    "docx",
+)
 
 
 def build_command(target: str) -> list[str]:
+    if target == "Windows":
+        from build_windows import build_command as windows_command
+
+        return windows_command()
     if target == "Darwin":
-        return [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-                f"--distpath={ROOT / 'dist' / 'native'}",
-                f"--workpath={ROOT / 'build' / 'native'}", str(ROOT / "scripts/lumen_macos.spec")]
-    command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
-               "--name=PDFReader", f"--paths={ROOT / 'src'}",
-               f"--distpath={ROOT / 'dist' / 'native'}",
-               f"--workpath={ROOT / 'build' / 'native'}", f"--specpath={ROOT / 'build' / 'native'}"]
-    if target in ("Windows", "Darwin"):
-        command.append("--windowed")
+        return [
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--noconfirm",
+            "--clean",
+            f"--distpath={ROOT / 'dist' / 'native'}",
+            f"--workpath={ROOT / 'build' / 'native'}",
+            str(ROOT / "scripts/lumen_macos.spec"),
+        ]
+    command = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--onedir",
+        "--name=PDFReader",
+        f"--paths={ROOT / 'src'}",
+        f"--distpath={ROOT / 'dist' / 'native'}",
+        f"--workpath={ROOT / 'build' / 'native'}",
+        f"--specpath={ROOT / 'build' / 'native'}",
+    ]
     for package in COLLECT_ALL:
         command.extend(["--collect-all", package])
-    command.extend(["--hidden-import=PySide6.QtPrintSupport", "--hidden-import=PySide6.QtTextToSpeech"])
+    command.extend(
+        ["--hidden-import=PySide6.QtPrintSupport", "--hidden-import=PySide6.QtTextToSpeech"]
+    )
+    if target == "Linux":
+        command.extend(
+            ["--hidden-import=keyring.backends.SecretService", "--hidden-import=PySide6.QtDBus"]
+        )
     dictionary = ROOT / "src" / "pdfreader" / "resources" / "dict"
     if dictionary.is_dir():
         command.extend(["--add-data", f"{dictionary}{os.pathsep}pdfreader/resources/dict"])
@@ -41,7 +79,9 @@ def build_command(target: str) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--target", choices=("Windows", "Linux", "Darwin"), default=platform.system())
+    parser.add_argument(
+        "--target", choices=("Windows", "Linux", "Darwin"), default=platform.system()
+    )
     arguments = parser.parse_args()
     command = build_command(arguments.target)
     if arguments.dry_run:
@@ -62,17 +102,52 @@ def main() -> int:
     if arguments.target == "Darwin":
         executable = native / "PDFReader.app" / "Contents" / "MacOS" / "PDFReader"
     else:
-        executable = native / "PDFReader" / ("PDFReader.exe" if arguments.target == "Windows" else "PDFReader")
-    if subprocess.run([str(executable), "--selftest"], check=False).returncode:
-        return 1
+        executable = (
+            native
+            / "PDFReader"
+            / ("PDFReader.exe" if arguments.target == "Windows" else "PDFReader")
+        )
     sys.path.insert(0, str(ROOT / "src"))
     from pdfreader import __version__
-    archive = ROOT / "dist" / desktop_archive_name(__version__, arguments.target, platform.machine())
+
+    with tempfile.TemporaryDirectory(prefix="lumen-build-test-") as directory:
+        frozen_selftest(executable, Path(directory) / "profile", __version__)
+    archive = (
+        ROOT / "dist" / desktop_archive_name(__version__, arguments.target, platform.machine())
+    )
     source = "PDFReader.app" if arguments.target == "Darwin" else "PDFReader"
     if arguments.target == "Darwin":
         # .app 内的框架依赖符号链接和可执行权限；普通 shutil ZIP 会损坏分发语义。
-        subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
-                        str(native / source), str(archive)], check=True)
+        subprocess.run(
+            [
+                "ditto",
+                "-c",
+                "-k",
+                "--sequesterRsrc",
+                "--keepParent",
+                str(native / source),
+                str(archive),
+            ],
+            check=True,
+        )
+    elif arguments.target == "Linux":
+        with tempfile.TemporaryDirectory(
+            prefix="lumen-linux-test-", dir=archive.parent
+        ) as directory:
+            workspace = Path(directory)
+            candidate = workspace / archive.name
+            with tarfile.open(candidate, "w:gz") as bundle:
+                bundle.add(native / source, arcname=source)
+            extracted = workspace / "unpacked"
+            with tarfile.open(candidate) as bundle:
+                bundle.extractall(extracted, filter="data")
+            program = extracted / source / "PDFReader"
+            if not os.access(program, os.X_OK):
+                raise RuntimeError("Linux 归档未保留执行权限")
+            profile = extracted / "profile"
+            frozen_selftest(program, profile, __version__)
+            check_gui_startup(program, extracted, extracted / "gui-profile")
+            candidate.replace(archive)
     else:
         shutil.make_archive(str(archive.with_suffix("")), "zip", root_dir=native, base_dir=source)
     print(archive)

@@ -45,7 +45,7 @@ class ZoteroLibraryDialog(QDialog):
     def __init__(
         self,
         directory: Path,
-        open_pdf: Callable[[Path, Reference], None],
+        open_pdf: Callable[[Path, Reference], bool | None],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -142,7 +142,8 @@ class ZoteroLibraryDialog(QDialog):
         if pdf is None or pdf.path is None:
             self.status.setText("PDF 附件不存在，请先在 Zotero 下载或修复链接。")
             return
-        self._open_pdf(pdf.path, item_reference(item))
+        if self._open_pdf(pdf.path, item_reference(item)) is not False:
+            self.accept()
 
     def select_in_zotero(self) -> None:
         item = self._selected()

@@ -21,6 +21,8 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal, Slot
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
+from pdfreader.utils.profile import profile_override
+
 __all__ = ["SingleInstance", "default_server_name"]
 
 _logger = logging.getLogger("pdfreader")
@@ -37,7 +39,9 @@ def default_server_name() -> str:
     except Exception:  # 极少数环境拿不到用户名，退回固定值
         _logger.debug("读取用户名失败，使用默认单实例名", exc_info=True)
         user = "default"
-    digest = hashlib.sha256(user.encode("utf-8", "replace")).hexdigest()[:12]
+    profile = profile_override()
+    identity = user if profile is None else f"{user}\0{profile}"
+    digest = hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()[:12]
     return f"Lumen-PDF-Reader-{digest}"
 
 

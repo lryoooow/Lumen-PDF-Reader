@@ -62,6 +62,21 @@ def test_journal_citation_templates_and_page() -> None:
     assert "@article" in format_citation(ref, "BibTeX")
 
 
+def test_crossref_null_fields_are_empty() -> None:
+    message = {
+        "title": ["Title"],
+        "author": None,
+        "published": {"date-parts": [[None]]},
+        "volume": None,
+        "issue": None,
+        "page": None,
+    }
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"message": message}))
+    result = CrossrefClient(transport=transport).lookup("10.1000/test")
+    assert not result.authors
+    assert (result.year, result.volume, result.issue, result.pages) == ("", "", "", "")
+
+
 def test_crossref_only_sends_doi_and_handles_failures() -> None:
     requests: list[httpx.Request] = []
 

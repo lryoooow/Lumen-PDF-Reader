@@ -23,6 +23,7 @@ class TextSearch:
     def __init__(self, query: str, options: SearchOptions) -> None:
         if not query or len(query) > 1000:
             raise ValueError("查询应为 1–1000 个字符")
+        self._regex = options.regular_expression
         expression = query if options.regular_expression else regex.escape(query)
         if options.whole_word:
             expression = rf"(?<!\w)(?:{expression})(?!\w)"
@@ -41,7 +42,7 @@ class TextSearch:
             if previous is not None:
                 text += (
                     "\n"
-                    if (word.block, word.line) != (previous.block, previous.line)
+                    if word.block != previous.block or (self._regex and word.line != previous.line)
                     else join_words(text, word.text)
                 )
             start = len(text)

@@ -17,11 +17,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.target == 'macos' && '["macos-15", "macos-15-intel"]' || '["windows-latest", "ubuntu-latest", "macos-15", "macos-15-intel"]') }}
+        os: ${{ fromJSON(inputs.target == 'macos' && '["macos-15", "macos-15-intel"]' || '["windows-latest", "ubuntu-24.04", "macos-15", "macos-15-intel"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 50
     env:
-      QT_QPA_PLATFORM: offscreen
       MACOSX_DEPLOYMENT_TARGET: '15.0'
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +30,7 @@ jobs:
           enable-cache: true
       - name: Linux GUI and credential libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 gnome-keyring dbus-x11
+        run: sudo apt-get update && sudo apt-get install -y binutils libegl1 libopengl0 libxcb-cursor0 libxcb-shape0 libxkbcommon-x11-0 libpulse0 gnome-keyring dbus-x11 xvfb
       - name: Install dependencies
         if: runner.os != 'macOS'
         run: uv sync --frozen
@@ -40,25 +39,30 @@ jobs:
         run: |
           uv sync --frozen --no-binary-package pymupdf --no-build-package cryptography
           uv run --frozen python -c "from pymupdf import _build; print('SWIG:', _build.swig_version); assert _build.swig_version_tuple >= (4, 4)"
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run mypy
-      - name: Core and engine regression
-        run: uv run pytest tests/unit/core tests/unit/engines tests/unit/services tests/unit/test_layering.py --no-cov
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen mypy
+      - name: Full desktop regression
+        if: runner.os != 'Linux'
+        run: uv run --frozen pytest --no-cov
+      - name: Full Linux desktop regression
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' uv run --frozen pytest --no-xvfb --no-cov
       - name: Build native package and frozen selftest
         if: runner.os != 'Linux'
-        run: uv run python scripts/build_desktop.py
+        run: uv run --frozen python scripts/build_desktop.py
       - name: Verify extracted macOS bundle
         if: runner.os == 'macOS'
-        run: uv run python scripts/verify_macos_package.py
+        run: uv run --no-project --python 3.13 python scripts/verify_macos_package.py
       - name: Linux native build with system credential service
         if: runner.os == 'Linux'
-        run: dbus-run-session -- sh scripts/ci_native_build_linux.sh
+        run: QT_QPA_PLATFORM=xcb xvfb-run -a dbus-run-session -- sh scripts/ci_native_build_linux.sh
       - uses: actions/upload-artifact@v4
         with:
           name: Lumen-${{ runner.os }}-${{ runner.arch }}
           path: |
             dist/Lumen-*.zip
+            dist/Lumen-*.tar.gz
             dist/macos-verification-*.json
           if-no-files-found: error
 
@@ -82,13 +86,12 @@ jobs:
         with:
           python-version: '3.13'
           enable-cache: true
-      - run: uv sync --frozen
       - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist
       - name: Verify macOS 15-built package on newer macOS
-        run: uv run python scripts/verify_macos_package.py
+        run: uv run --no-project --python 3.13 python scripts/verify_macos_package.py
       - uses: actions/upload-artifact@v4
         with:
           name: Lumen-compatibility-${{ matrix.os }}

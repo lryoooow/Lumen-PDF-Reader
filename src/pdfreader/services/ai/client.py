@@ -334,7 +334,13 @@ class ChatClient:
 
     # ------------------------------------------------------------------ 内部
     def _url(self, path: str) -> str:
-        return f"{self._base}{path}"
+        try:
+            url = httpx.URL(f"{self._base}{path}")
+        except httpx.InvalidURL as exc:
+            raise self._transport_error(exc) from exc
+        if url.scheme not in {"http", "https"} or not url.host:
+            raise self._transport_error(httpx.InvalidURL("Missing scheme or host"))
+        return str(url)
 
     def _parse_sse(self, response: httpx.Response) -> Iterator[StreamEvent]:
         splitter = ThinkSplitter()
@@ -396,16 +402,18 @@ class ChatClient:
         for kind, text in splitter.flush():
             yield StreamEvent(kind, text)  # type: ignore[arg-type]
 
-    def _transport_error(self, exc: httpx.HTTPError, *, streaming: bool = False) -> AiError:
-        host = httpx.URL(self._base).host if self._base.startswith("http") else self._base
+    def _transport_error(
+        self, exc: httpx.HTTPError | httpx.InvalidURL, *, streaming: bool = False
+    ) -> AiError:
+        if isinstance(exc, (httpx.UnsupportedProtocol, httpx.InvalidURL)):
+            return AiError("Base URL 格式不正确（应以 http:// 或 https:// 开头）")
+        host = httpx.URL(self._base).host
         if isinstance(exc, httpx.ConnectTimeout):
             return AiError(f"连接 {host} 超时：请检查网络、代理设置或 Base URL")
         if isinstance(exc, httpx.TimeoutException):
             return AiError("等待模型响应超时，请稍后重试或换用更快的模型")
         if isinstance(exc, httpx.ProxyError):
             return AiError("代理连接失败：请检查系统代理设置")
-        if isinstance(exc, (httpx.UnsupportedProtocol, httpx.InvalidURL)):
-            return AiError("Base URL 格式不正确（应以 http:// 或 https:// 开头）")
         if isinstance(exc, httpx.ConnectError):
             text = str(exc).lower()
             if "certificate" in text or "ssl" in text:

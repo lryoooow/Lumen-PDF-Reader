@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import faulthandler
 import logging
-from pathlib import Path
 from typing import IO
+
+from pdfreader.utils.profile import profile_directory
 
 __all__ = ["CRASH_LOG_FILE", "LOG_FILE", "enable_faulthandler", "setup_logging"]
 
-LOG_FILE = Path.home() / ".pdfreader" / "pdfreader.log"
-CRASH_LOG_FILE = Path.home() / ".pdfreader" / "crash.log"
+LOG_FILE = profile_directory() / "pdfreader.log"
+CRASH_LOG_FILE = profile_directory() / "crash.log"
 
 _crash_handle: IO[bytes] | None = None
 
@@ -66,8 +67,10 @@ def enable_faulthandler() -> None:
         CRASH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         if CRASH_LOG_FILE.exists() and CRASH_LOG_FILE.stat().st_size > 1_000_000:
             backup = CRASH_LOG_FILE.with_suffix(".log.1")
-            backup.unlink(missing_ok=True)
-            CRASH_LOG_FILE.replace(backup)
+            try:
+                CRASH_LOG_FILE.replace(backup)
+            except OSError:
+                logging.getLogger("pdfreader").debug("崩溃日志暂时无法轮转", exc_info=True)
         handle = CRASH_LOG_FILE.open("ab", buffering=0)
         faulthandler.enable(file=handle, all_threads=True)
         _crash_handle = handle

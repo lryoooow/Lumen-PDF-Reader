@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from pdfreader.config.settings import default_settings_path
 from pdfreader.controllers import DocumentController
+from pdfreader.engines.exceptions import PdfEngineError
 from pdfreader.engines.types import SearchHit
 from pdfreader.services.research_library import LibraryHit, ResearchLibrary
 from pdfreader.services.text_search import SearchOptions, TextSearch
@@ -39,7 +40,7 @@ class ResearchSearchDialog(QDialog):
         self,
         controller: DocumentController,
         navigate: Callable[[int, float | None], None],
-        open_result: Callable[[str, int], None],
+        open_result: Callable[[str, int], bool | None],
         parent: QWidget | None = None,
         *,
         database: Path | None = None,
@@ -138,7 +139,7 @@ class ResearchSearchDialog(QDialog):
     def _refresh_scope_summary(self) -> None:
         local = self.scope.currentIndex() == 0
         for widget in (self.first_page, self.last_page, self.case, self.whole, self.regex):
-            widget.setEnabled(local)
+            widget.setEnabled(local and not self._indexing and self._worker is None)
         if not local:
             self.scope_summary.setText(
                 "范围：文献库全文 · 本机索引快照 · 短语匹配；不使用当前文档页范围或高级选项。"
@@ -196,6 +197,9 @@ class ResearchSearchDialog(QDialog):
         busy = self._worker is not None or self._indexing
         self.index_btn.setEnabled(not busy)
         self.search_btn.setEnabled(not busy)
+        self.query.setEnabled(not busy)
+        self.scope.setEnabled(not busy)
+        self._refresh_scope_summary()
 
     def search(self) -> None:
         self.stop()
@@ -245,8 +249,9 @@ class ResearchSearchDialog(QDialog):
             return
         if self._indexing:
             try:
-                self._text_pages.append(self._controller.page_text(page))
-            except (RuntimeError, IndexError):
+                self._text_pages.append(self._controller.page_text(page, strict=True))
+            except (PdfEngineError, RuntimeError, IndexError):
+                _logger.warning("文献库索引取词失败", exc_info=True)
                 self.stop()
                 self.status.setText("提取文字失败，未更新索引。")
                 return
@@ -362,7 +367,8 @@ class ResearchSearchDialog(QDialog):
         row = self.results.currentRow()
         if self.scope.currentIndex() == 1 and 0 <= row < len(self._library_hits):
             hit = self._library_hits[row]
-            self._open_result(hit.path, hit.page)
+            if self._open_result(hit.path, hit.page) is not False:
+                self.accept()
         elif 0 <= row < len(self._hits):
             current = self._hits[row]
             self._navigate(current.page_num, current.rect.y0)

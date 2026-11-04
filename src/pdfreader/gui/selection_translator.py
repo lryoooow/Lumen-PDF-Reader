@@ -30,7 +30,7 @@ from pdfreader.services.dictionary import Dictionary, WordEntry, default_diction
 from pdfreader.services.materials import MaterialError, MaterialStore
 from pdfreader.services.ocr import OCR_AVAILABLE
 from pdfreader.utils.text import clean_copied_text, join_words, looks_garbled
-from pdfreader.workers.ocr_worker import ImageOcrWorker
+from pdfreader.workers.ocr_worker import CaptureOcrWorker
 
 if TYPE_CHECKING:
     from pdfreader.gui.ai_assistant import AiAssistant
@@ -87,8 +87,10 @@ class SelectionTranslator(QObject):
         self._page: int | None = None
         self._rect: Rect | None = None
         self._worker: AiWorker | None = None
-        self._ocr: ImageOcrWorker | None = None
-        self._ocr_threads: list[ImageOcrWorker] = []  # 含已作废但还没跑完的
+        self._ocr: CaptureOcrWorker | None = None
+        self._ocr_threads: list[CaptureOcrWorker] = []
+        self._ocr_serial = 0
+        self._ocr_request: int | None = None
         self._auto = QTimer(self)
         self._auto.setSingleShot(True)
         self._auto.setInterval(_AUTO_DELAY_MS)
@@ -282,13 +284,16 @@ class SelectionTranslator(QObject):
             return
         self.popup.begin("（正在识别框选区域的文字…）")
         self.popup.place_near(None)
-        ocr = ImageOcrWorker(png, self)
-        ocr.recognized.connect(self._on_ocr_text)
-        ocr.failed.connect(self._on_ocr_failed)
-        ocr.finished.connect(self._on_ocr_thread_finished)
-        self._ocr = ocr
-        self._ocr_threads.append(ocr)
-        ocr.start()
+        if self._ocr is None:
+            ocr = CaptureOcrWorker(self)
+            ocr.completed.connect(self._on_ocr_completed)
+            ocr.finished.connect(self._on_ocr_thread_finished)
+            self._ocr = ocr
+            self._ocr_threads.append(ocr)
+            ocr.start()
+        self._ocr_serial += 1
+        self._ocr_request = self._ocr_serial
+        self._ocr.submit(self._ocr_request, png)
 
     # ------------------------------------------------------------------ 连翻
     def source_text(self) -> str:
@@ -346,10 +351,13 @@ class SelectionTranslator(QObject):
             self._worker = None
             self.popup.fail(message)
 
-    def _on_ocr_text(self, text: str) -> None:
-        if self.sender() is not self._ocr:
+    def _on_ocr_completed(self, request: int, text: str, ok: bool) -> None:
+        if self.sender() is not self._ocr or request != self._ocr_request:
             return
-        self._ocr = None
+        self._ocr_request = None
+        if not ok:
+            self.popup.fail(text)
+            return
         text = clean_copied_text(text)
         if not text:
             self.popup.show_message("框选区域里没有识别出文字。")
@@ -357,24 +365,29 @@ class SelectionTranslator(QObject):
         self._segments = [text]
         self._translate_text(text)
 
-    def _on_ocr_failed(self, message: str) -> None:
-        if self.sender() is self._ocr:
-            self._ocr = None
-            self.popup.fail(message)
-
     def _on_ocr_thread_finished(self) -> None:
         thread = self.sender()
-        if isinstance(thread, ImageOcrWorker) and thread in self._ocr_threads:
+        if isinstance(thread, CaptureOcrWorker) and thread in self._ocr_threads:
             self._ocr_threads.remove(thread)
+            if thread is self._ocr:
+                self._ocr = None
+                self._ocr_request = None
             thread.deleteLater()
 
     def _stop_requests(self) -> None:
         self._worker = None
         self._ai.stop_quick()
+        self._ocr_request = None
         if self._ocr is not None:
-            # OCR 无法中途打断：断开结果即可，线程跑完自行释放
-            self._ocr.recognized.disconnect(self._on_ocr_text)
-            self._ocr.failed.disconnect(self._on_ocr_failed)
+            self._ocr.cancel_pending()
+
+    def retire_ocr(self) -> None:
+        """离开文档时释放模型，并让正在进行的识别安全收尾。"""
+        if self._ocr_request is not None:
+            self.popup.dismiss()
+        self._ocr_request = None
+        if self._ocr is not None:
+            self._ocr.shutdown()
             self._ocr = None
 
     # ------------------------------------------------------------------ 浮窗按钮
@@ -398,20 +411,28 @@ class SelectionTranslator(QObject):
         """换文档 / 关标签：收起并停止请求。"""
         self._auto.stop()
         self._stop_requests()
+        self.retire_ocr()
         self._segments = []
         self.pill.hide()
         self.popup.dismiss()
 
     def busy(self) -> bool:
         """还有截图 OCR 线程在跑（标签关闭后要等它结束再回收）。"""
-        return any(t.isRunning() for t in self._ocr_threads)
+        return self._ocr_request is not None or any(
+            t.isRunning() for t in self._ocr_threads if t is not self._ocr
+        )
+
+    def ocr_workers(self) -> tuple[CaptureOcrWorker, ...]:
+        """返回仍待回收的截图 OCR 线程。"""
+        return tuple(self._ocr_threads)
 
     def shutdown(self) -> None:
         """退出前：作废结果并等 OCR 线程结束（运行中销毁 QThread 会让进程崩溃）。"""
         self._auto.stop()
         self._stop_requests()
+        self.retire_ocr()
         for thread in self._ocr_threads:
-            thread.wait(10000)
+            thread.wait()
 
     # ------------------------------------------------------------------ 收起时机
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:

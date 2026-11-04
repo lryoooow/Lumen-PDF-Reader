@@ -26,6 +26,12 @@ def test_redact_text_hides_home_and_tokens() -> None:
     assert "Bearer abcdefghijkl" not in result
 
 
+def test_redact_json_escaped_windows_home() -> None:
+    home = Path(r"C:\Users\审查样本")
+    text = json.dumps({"path": str(home / "pdfreader.log")})
+    assert json.loads(redact_text(text, home))["path"] == "~" + str(Path("/") / "pdfreader.log")
+
+
 def test_sanitize_settings_drops_path_fields() -> None:
     data = {
         "theme": "dark",

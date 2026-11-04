@@ -168,6 +168,7 @@ class NotebookPanel(QWidget):
         self._document_key = hashlib.sha256(
             os.path.normcase(str(document.path.resolve()) if document else "").encode()
         ).hexdigest()
+        self._source_keys = {self._document_key}
         self._navigate = navigate
         self._path: Path | None = None
         self._annotations: list[Annotation] = []
@@ -511,6 +512,29 @@ class NotebookPanel(QWidget):
             self.editor.insertPlainText("\n" + dialog.citation() + "\n")
         dialog.deleteLater()
 
+    def source_saved_as(self, path: Path) -> None:
+        """新摘录使用副本路径，当前笔记中已插入的来源仍可定位。"""
+        try:
+            normalized = os.path.normcase(str(path.resolve()))
+        except (OSError, ValueError):
+            _logger.warning("无法更新笔记来源路径", exc_info=True)
+            self.status.setText("PDF 已保存，更新笔记来源路径失败。")
+            return
+        self._source_title = path.name
+        self._document_key = hashlib.sha256(normalized.encode()).hexdigest()
+        self._source_keys.add(self._document_key)
+        self.refresh_sources()
+
+    def _resolve_anchors(self, anchors: Sequence[SourceAnchor]) -> dict[str, Annotation | None]:
+        resolved: dict[str, Annotation | None] = {}
+        for anchor in anchors:
+            resolved[anchor.fingerprint] = None
+        for key in self._source_keys:
+            matching = [anchor for anchor in anchors if anchor.document_key == key]
+            if matching:
+                resolved.update(resolve_sources(matching, self._annotations, key))
+        return resolved
+
     def refresh_sources(self) -> None:
         self._timer.stop()
         self._page = 0
@@ -563,7 +587,7 @@ class NotebookPanel(QWidget):
         text = self._body()
         self.preview.setMarkdown(preview_markdown(text))
         anchors = source_anchors(self._markdown())
-        resolved = resolve_sources(anchors, self._annotations, self._document_key)
+        resolved = self._resolve_anchors(anchors)
         missing = sum(value is None for value in resolved.values())
         if self._timer.isActive():
             self.status.setText(f"正在核对来源：第 {self._page} 页…")
@@ -597,9 +621,7 @@ class NotebookPanel(QWidget):
             if not self._source_alive():
                 self.status.setText("该来源文档已关闭，定位已失效；摘录和草稿仍保留。")
                 return
-            sources = resolve_sources(
-                source_anchors(self._markdown()), self._annotations, self._document_key
-            )
+            sources = self._resolve_anchors(source_anchors(self._markdown()))
             annotation = sources.get(url.path())
             if annotation is None:
                 self.status.setText("该来源已失效或有多个候选，摘录仍保留。")
@@ -653,9 +675,11 @@ class NotebookPanel(QWidget):
                 self.status.setText("打开笔记失败，请检查文件和权限。")
 
     def load_path(self, path: Path) -> None:
+        text = path.read_text("utf-8")
         if not self._may_discard():
             return
-        text = path.read_text("utf-8")
+        if path == self._path:
+            text = path.read_text("utf-8")
         self._path = path
         self._anchors = {anchor.fingerprint: anchor for anchor in source_anchors(text)}
         self._invalid_metadata = ""
@@ -666,12 +690,12 @@ class NotebookPanel(QWidget):
         self.editor.document().setModified(False)
 
     def _destination(self, label: str, extension: str) -> Path | None:
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            label,
-            str(self._path or "阅读笔记") if extension == "md" else "阅读笔记." + extension,
-            f"{extension.upper()} (*.{extension})",
-        )
+        if extension == "md" and self._path is not None:
+            filename = str(self._path)
+        else:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, label, "阅读笔记." + extension, f"{extension.upper()} (*.{extension})"
+            )
         if not filename:
             return None
         if (
@@ -737,6 +761,11 @@ class NotebookPanel(QWidget):
             _logger.exception("笔记 PDF 导出失败")
             self.status.setText("PDF 导出失败，编辑内容仍保留。")
             return
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                _logger.warning("无法清理笔记 PDF 临时文件", exc_info=True)
         self.status.setText("PDF 已导出。")
 
     def prepare_close(self) -> bool:

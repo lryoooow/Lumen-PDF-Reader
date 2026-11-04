@@ -22,6 +22,8 @@ def _make_ribbon(qtbot) -> tuple[Ribbon, list[QAction]]:  # type: ignore[no-unty
     ribbon.resize(1024, 138)
     ribbon.show()
     QApplication.processEvents()
+    ribbon.activateWindow()
+    QApplication.processEvents()
     return ribbon, actions
 
 

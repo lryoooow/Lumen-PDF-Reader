@@ -127,7 +127,7 @@ def clean_copied_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(_SOFT_HYPHEN + r"[ \t]*\n", "", normalized)  # 软连字符断行：直接接上
     normalized = normalize_pdf_text(normalized)
-    normalized = re.sub(r"\n[ \t]*\n+", _PARAGRAPH, normalized)
+    normalized = re.sub(r"[ \t]*\n(?:[ \t]*\n)+[ \t]*", _PARAGRAPH, normalized)
     normalized = _HYPHEN_BREAK.sub(r"\1\2", normalized)
 
     parts = normalized.split("\n")

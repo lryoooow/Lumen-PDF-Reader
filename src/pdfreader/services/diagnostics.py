@@ -44,7 +44,13 @@ _SECRET_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password)")
 def redact_text(text: str, home: Path | None = None) -> str:
     """去掉用户主目录前缀与疑似密钥。"""
     if home is not None:
-        text = re.sub(re.escape(str(home)), "~", text, flags=re.IGNORECASE)
+        prefix = str(home)
+        for escaped in (
+            json.dumps(prefix)[1:-1],
+            json.dumps(prefix, ensure_ascii=False)[1:-1],
+            prefix,
+        ):
+            text = re.sub(re.escape(escaped), "~", text, flags=re.IGNORECASE)
     return _SECRET_RE.sub("***", text)
 
 
@@ -134,14 +140,16 @@ def collect_diagnostics(
     from pdfreader.config.settings import default_settings_path
     from pdfreader.services.ai.provider import default_ai_settings_path
     from pdfreader.utils.logger import CRASH_LOG_FILE, LOG_FILE
+    from pdfreader.utils.profile import profile_override
 
     home = home or Path.home()
     settings_path = settings_path or default_settings_path()
     ai_settings_path = ai_settings_path or default_ai_settings_path()
     log_file = log_file or LOG_FILE
     crash_log = crash_log or CRASH_LOG_FILE
-    recovery_dir = recovery_dir or home / ".pdfreader" / "recovery"
-    selftest_path = selftest_path or home / ".pdfreader" / "selftest.json"
+    profile = profile_override() or home / ".pdfreader"
+    recovery_dir = recovery_dir or profile / "recovery"
+    selftest_path = selftest_path or profile / "selftest.json"
 
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)

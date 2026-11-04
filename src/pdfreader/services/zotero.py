@@ -365,15 +365,24 @@ class ZoteroLibrary:
         return out
 
     def _attachment_for(self, db: sqlite3.Connection, pdf_path: Path) -> int | None:
-        target = _norm(pdf_path)
+        try:
+            target = _norm(pdf_path)
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning("无法解析待查询的 PDF 路径", exc_info=True)
+            raise ZoteroError("无法访问待查询的 PDF 路径") from exc
+        deleted = _ids(db, "SELECT itemID FROM deletedItems")
         rows = db.execute(
             "SELECT a.itemID, i.key, a.linkMode, a.path FROM itemAttachments a"
             " JOIN items i ON a.itemID = i.itemID WHERE a.path IS NOT NULL"
         ).fetchall()
         for att_id, key, link_mode, raw in rows:
-            path = self._resolve(str(key), int(link_mode or 0), str(raw))
-            if path is not None and _norm(path) == target:
-                return int(att_id)
+            if int(att_id) not in deleted:
+                try:
+                    path = self._resolve(str(key), int(link_mode or 0), str(raw))
+                    if path is not None and _norm(path) == target:
+                        return int(att_id)
+                except (OSError, ValueError):
+                    logging.getLogger(__name__).warning("跳过无法解析的 Zotero 附件", exc_info=True)
         return None
 
 
