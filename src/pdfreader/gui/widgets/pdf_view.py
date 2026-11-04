@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QMenu,
 )
+from shiboken6 import isValid
 
 from pdfreader.core.layout import layout_pages, page_rows
 from pdfreader.engines.types import InkStroke, LinkInfo, PixmapData, Point, Rect, WordBox
@@ -1529,7 +1530,7 @@ class PdfView(QGraphicsView):
         def state_changed(
             state: QAbstractAnimation.State, _previous: QAbstractAnimation.State
         ) -> None:
-            if state == QAbstractAnimation.State.Stopped:
+            if state == QAbstractAnimation.State.Stopped and isValid(self):
                 # 离开 Qt 的动画回调栈后再改动场景和释放动画对象。
                 QTimer.singleShot(0, self, release)
 
