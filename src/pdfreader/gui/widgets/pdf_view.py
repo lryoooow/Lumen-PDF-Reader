@@ -1494,14 +1494,21 @@ class PdfView(QGraphicsView):
             self._no_fade.discard(page_num)
         elif motion.enabled():
             new_item.setOpacity(0.0)
-            self._run_effect(
-                0.0, 1.0, TOKENS.anim_drop, lambda v, it=new_item: it.setOpacity(float(v))
-            )
+            self._run_effect(0.0, 1.0, TOKENS.anim_drop, new_item.setOpacity)
 
     # ------------------------------------------------------------------
     # 动效：脉冲 / 闪动 / 平滑滚动
     # ------------------------------------------------------------------
-    def _run_effect(self, start: float, end: float, duration: int, step, loops: int = 1) -> None:  # type: ignore[no-untyped-def]
+    def _run_effect(
+        self,
+        start: float,
+        end: float,
+        duration: int,
+        step: Callable[[float], None],
+        *,
+        loops: int = 1,
+        cleanup: Callable[[], None] | None = None,
+    ) -> None:
         anim = QVariantAnimation(self)
         anim.setStartValue(start)
         anim.setEndValue(end)
@@ -1509,7 +1516,7 @@ class PdfView(QGraphicsView):
         anim.setLoopCount(loops)
         anim.setEasingCurve(motion.EASE if loops == 1 else anim.easingCurve())
 
-        def safe_step(value: object) -> None:
+        def safe_step(value: float) -> None:
             # 动画期间场景项可能已被移除（缩放 / 换文档 / 重绘），此时直接结束动画
             try:
                 step(value)
@@ -1519,11 +1526,17 @@ class PdfView(QGraphicsView):
         anim.valueChanged.connect(safe_step)
         self._effects.append(anim)
 
-        def done() -> None:
-            if anim in self._effects:
-                self._effects.remove(anim)
+        def state_changed(
+            state: QAbstractAnimation.State, _previous: QAbstractAnimation.State
+        ) -> None:
+            if state != QAbstractAnimation.State.Stopped:
+                return
+            self._effects.remove(anim)
+            if cleanup is not None:
+                cleanup()
 
-        anim.finished.connect(done)
+        # 动画自然结束或因场景项失效而停止，都在同一个回调释放图层和引用。
+        anim.stateChanged.connect(state_changed)
         anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def pulse_page(self, page_num: int) -> None:
@@ -1536,16 +1549,16 @@ class PdfView(QGraphicsView):
         ring.setZValue(9)
         base = QColor(self._palette.accent)
 
-        def step(v: object, item: QGraphicsRectItem = ring) -> None:
-            t = float(v)  # type: ignore[arg-type]
+        def step(t: float, item: QGraphicsRectItem = ring) -> None:
             spread = 14 * t
             color = QColor(base)
             color.setAlphaF(0.55 * (1 - t))
             pen = QPen(color, spread * 2)
             item.setPen(pen)
 
-        self._run_effect(0.0, 1.0, TOKENS.anim_pulse, step, loops=2)
-        QTimer.singleShot(TOKENS.anim_pulse * 2 + 50, lambda it=ring: _remove_item(it))
+        self._run_effect(
+            0.0, 1.0, TOKENS.anim_pulse, step, loops=2, cleanup=lambda: _remove_item(ring)
+        )
 
     def flash_rects(
         self, page_num: int, rects: Sequence[Rect], color: QColor, *, pulse: bool = False
@@ -1557,8 +1570,7 @@ class PdfView(QGraphicsView):
         for item in items:
             item.setZValue(12)
 
-        def step(v: object) -> None:
-            t = float(v)  # type: ignore[arg-type]
+        def step(t: float) -> None:
             for item in items:
                 if isinstance(item, QGraphicsRectItem):
                     if pulse:
@@ -1570,9 +1582,13 @@ class PdfView(QGraphicsView):
                         item.setOpacity(1 - t)
 
         duration = TOKENS.anim_pulse if pulse else 450
-        self._run_effect(0.0, 1.0, duration, step, loops=2 if pulse else 1)
-        QTimer.singleShot(
-            duration * (2 if pulse else 1) + 50, lambda its=items: self._remove_overlay(its)
+        self._run_effect(
+            0.0,
+            1.0,
+            duration,
+            step,
+            loops=2 if pulse else 1,
+            cleanup=lambda: self._remove_overlay(items),
         )
 
     # ------------------------------------------------------------------
