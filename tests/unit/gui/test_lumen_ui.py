@@ -333,6 +333,19 @@ class TestReadingAreaVisuals:
         qtbot.waitUntil(lambda: len(view.scene().items()) == before, timeout=4000)
         assert view._effects == []
 
+    def test_stopping_effect_removes_overlay_and_animation(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        motion.set_enabled(True)
+        view = PdfView()
+        qtbot.addWidget(view)
+        view.setup_document(1, [(595, 842)])
+        before = len(view.scene().items())
+        view.pulse_page(0)
+        assert len(view.scene().items()) == before + 1
+        (animation,) = view._effects
+        animation.stop()
+        assert view._effects == []
+        assert len(view.scene().items()) == before
+
     def test_sepia_matches_design_filter(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         from pdfreader.engines.types import PixmapData
 
