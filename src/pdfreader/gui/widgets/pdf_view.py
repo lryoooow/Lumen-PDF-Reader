@@ -1529,15 +1529,19 @@ class PdfView(QGraphicsView):
         def state_changed(
             state: QAbstractAnimation.State, _previous: QAbstractAnimation.State
         ) -> None:
-            if state != QAbstractAnimation.State.Stopped:
-                return
+            if state == QAbstractAnimation.State.Stopped:
+                # 离开 Qt 的动画回调栈后再改动场景和释放动画对象。
+                QTimer.singleShot(0, self, release)
+
+        def release() -> None:
             self._effects.remove(anim)
             if cleanup is not None:
                 cleanup()
+            anim.deleteLater()
 
         # 动画自然结束或因场景项失效而停止，都在同一个回调释放图层和引用。
         anim.stateChanged.connect(state_changed)
-        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        anim.start()
 
     def pulse_page(self, page_num: int) -> None:
         """目标页外圈向外扩散的强调色光环（设计稿跳转后的 anim-pulse，0.9s × 2）。"""
