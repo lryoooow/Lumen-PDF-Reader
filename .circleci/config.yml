@@ -84,7 +84,7 @@ jobs:
           name: 应用、界面与原生依赖回归
           no_output_timeout: 10m
           command: |
-            uv run --frozen pytest -x -o faulthandler_timeout=90 --no-cov --junitxml=dist/test-results/desktop.xml
+            uv run --frozen pytest -x -v -o faulthandler_timeout=90 --no-cov --junitxml=dist/test-results/desktop.xml
       - store_test_results:
           path: dist/test-results
       - run:

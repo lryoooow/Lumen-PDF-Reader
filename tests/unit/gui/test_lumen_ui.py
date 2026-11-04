@@ -343,6 +343,7 @@ class TestReadingAreaVisuals:
         assert len(view.scene().items()) == before + 1
         (animation,) = view._effects
         animation.stop()
+        qtbot.waitUntil(lambda: not view._effects)
         assert view._effects == []
         assert len(view.scene().items()) == before
 
