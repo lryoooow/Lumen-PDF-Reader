@@ -1993,7 +1993,9 @@ def _apply_color_matrix(
     rgb = pixels[..., :3].astype(np.float32) / 255.0
     m = np.asarray(matrix, dtype=np.float32)
     out = np.clip(rgb @ m.T + np.asarray(offset, dtype=np.float32), 0.0, 1.0) * brightness
-    out = np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    # 8 位像素的半整数取较低值（夜间模式白纸 25.5 → 25）。
+    # 极小偏移抵消 float32 矩阵乘法在不同架构上的末位误差。
+    out = np.clip(out * 255.0 + 0.5 - 0.0001, 0, 255).astype(np.uint8)
     out = np.ascontiguousarray(out)
     image = QImage(out.data, data.width, data.height, data.width * 3, QImage.Format.Format_RGB888)
     detached: QImage = image.copy()  # 脱离 numpy 缓冲区
