@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import IO
 from uuid import uuid4
 
+from pdfreader.utils.profile import profile_directory
+
 _logger = logging.getLogger(__name__)
 
 MANIFEST_VERSION = 1
@@ -43,7 +45,7 @@ class RecoveryError(RuntimeError):
 
 def default_recovery_dir() -> Path:
     """默认的恢复快照目录（用户目录，不是临时目录）。"""
-    return Path.home() / ".pdfreader" / "recovery"
+    return profile_directory() / "recovery"
 
 
 def _key_for(path: Path) -> str:
@@ -251,7 +253,12 @@ class RecoveryStore:
         original = Path(original_raw)
         if not original.is_absolute() or original.suffix.lower() != ".pdf":
             return None
-        if _key_for(original) != key:
+        try:
+            original_key = _key_for(original)
+        except (OSError, ValueError):
+            _logger.warning("无法解析恢复清单中的原文件路径：%s", manifest, exc_info=True)
+            return None
+        if original_key != key:
             _logger.warning("恢复清单与原文件路径不匹配：%s", manifest)
             return None
         snapshot = self._directory / f"{key}.pdf"
@@ -330,12 +337,15 @@ class RecoveryStore:
         folder = self._directory / "backups"
         if not folder.is_dir():
             return
-        files = sorted(
-            (path for path in folder.iterdir() if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        for old in files[MAX_BACKUPS:]:
+        files: list[tuple[float, Path]] = []
+        for path in folder.iterdir():
+            try:
+                if path.is_file():
+                    files.append((path.stat().st_mtime, path))
+            except OSError:
+                _logger.debug("备份扫描期间无法访问文件", exc_info=True)
+        files.sort(key=lambda item: item[0], reverse=True)
+        for _, old in files[MAX_BACKUPS:]:
             with contextlib.suppress(OSError):
                 old.unlink()
 

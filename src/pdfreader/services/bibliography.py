@@ -295,18 +295,25 @@ class CrossrefClient:
         normalized = extract_doi(doi)
         if not normalized:
             raise ValueError("DOI 无效")
-        with httpx.Client(
-            transport=self._transport,
-            timeout=10,
-            follow_redirects=False,
-            headers={"User-Agent": "Lumen-PDF-Reader (metadata lookup)"},
-        ) as client:
-            response = client.get("https://api.crossref.org/works/" + quote(normalized, safe=""))
+        with (
+            httpx.Client(
+                transport=self._transport,
+                timeout=10,
+                follow_redirects=False,
+                headers={"User-Agent": "Lumen-PDF-Reader (metadata lookup)"},
+            ) as client,
+            client.stream(
+                "GET", "https://api.crossref.org/works/" + quote(normalized, safe="")
+            ) as response,
+        ):
             if response.status_code != 200:
                 raise ValueError(f"Crossref 查询失败（HTTP {response.status_code}）")
-            if len(response.content) > 2_000_000:
-                raise ValueError("元数据响应过大")
-            payload: Any = response.json()
+            content = bytearray()
+            for part in response.iter_bytes(chunk_size=64 * 1024):
+                if len(content) + len(part) > 2_000_000:
+                    raise ValueError("元数据响应过大")
+                content.extend(part)
+            payload: Any = json.loads(content)
             data: Any = payload.get("message") if isinstance(payload, dict) else None
         if (
             not isinstance(data, dict)
@@ -316,12 +323,12 @@ class CrossrefClient:
             raise ValueError("Crossref 返回的元数据不完整")
         authors = tuple(
             f"{a.get('family', '')}, {a.get('given', '')}".strip(", ")
-            for a in data.get("author", [])
+            for a in (data.get("author") or [])
             if isinstance(a, dict)
         )
         date = data.get("published", data.get("issued", {}))
         dates = date.get("date-parts", [[]]) if isinstance(date, dict) else [[]]
-        year = str(dates[0][0]) if dates and dates[0] else ""
+        year = str(dates[0][0]) if dates and dates[0] and dates[0][0] is not None else ""
         return Reference(
             normalized,
             str(data["title"][0]),
@@ -329,7 +336,7 @@ class CrossrefClient:
             year,
             normalized,
             str((data.get("container-title") or [""])[0]),
-            str(data.get("volume", "")),
-            str(data.get("issue", "")),
-            str(data.get("page", "")),
+            str(data.get("volume") or ""),
+            str(data.get("issue") or ""),
+            str(data.get("page") or ""),
         )

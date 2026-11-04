@@ -357,3 +357,44 @@ class TestImageOcrWorker:
         w.failed.connect(failed.append)
         w.run()
         assert failed and "不可用" in failed[0]
+
+    def test_capture_worker_reuses_model_and_replaces_pending_requests(self, qtbot, monkeypatch):  # type: ignore[no-untyped-def]
+        from threading import Event, get_ident
+        from types import SimpleNamespace
+
+        from pdfreader.workers import ocr_worker as mod
+
+        entered, release = Event(), Event()
+        calls: list[tuple[bytes, int]] = []
+        created: list[int] = []
+
+        class FakeOcr:
+            def __init__(self) -> None:
+                created.append(get_ident())
+
+            def ocr_image(self, png: bytes) -> object:
+                calls.append((png, get_ident()))
+                if png == b"first":
+                    entered.set()
+                    release.wait(5)
+                return SimpleNamespace(text=png.decode())
+
+        monkeypatch.setattr(mod, "OcrService", FakeOcr)
+        worker = mod.CaptureOcrWorker()
+        got: list[tuple[int, str, bool]] = []
+        worker.completed.connect(lambda *args: got.append(args))
+        worker.start()
+        try:
+            worker.submit(1, b"first")
+            assert entered.wait(3)
+            worker.submit(2, b"superseded")
+            worker.submit(3, b"latest")
+            release.set()
+            qtbot.waitUntil(lambda: len(got) == 2)
+            assert got == [(1, "first", True), (3, "latest", True)]
+            assert len(created) == 1 and created[0] != get_ident()
+            assert calls == [(b"first", created[0]), (b"latest", created[0])]
+        finally:
+            release.set()
+            worker.shutdown()
+            assert worker.wait(6000)

@@ -256,7 +256,33 @@ class TestMergeFailure:
         added = engine.merge(doc, _make_pdf(tmp_path / "other.pdf", 3))
         assert added == 3
         assert engine.page_count(doc) == 5
+        assert not engine.can_undo(doc)
+        engine.rotate_page(doc, 0, 90)
+        assert engine.can_undo(doc)
+        engine.undo(doc)
+        assert engine.page_count(doc) == 5
         doc.close()
+
+    def test_insert_failure_preserves_native_document(
+        self, engine: PyMuPdfEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        doc = engine.open(_make_pdf(tmp_path / "base.pdf", 2))
+        other = _make_pdf(tmp_path / "other.pdf", 3)
+        engine.rotate_page(doc, 0, 90)
+        original = doc.native
+
+        def fail(*_args: object) -> None:
+            raise RuntimeError("模拟追加失败")
+
+        monkeypatch.setattr(pymupdf.Document, "insert_pdf", fail)
+        try:
+            with pytest.raises(PdfEngineError):
+                engine.merge(doc, other)
+            assert doc.native is original
+            assert engine.can_undo(doc)
+            assert engine.page_count(doc) == 2
+        finally:
+            doc.close()
 
 
 # ---------------------------------------------------------------- 目录与链接

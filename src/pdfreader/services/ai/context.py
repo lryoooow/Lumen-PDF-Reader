@@ -175,8 +175,11 @@ def overview_context(pages: Sequence[str], budget: int = DEFAULT_BUDGET) -> tupl
         used += len(piece) + 8
     tail: list[Chunk] = []
     used = 0
-    first_unused = head[-1].page + 1 if head else 0
-    for chunk in reversed(whole[first_unused:]):
+    remaining = whole[len(head) :]
+    if head and len(head[-1].text) < len(whole[len(head) - 1].text):
+        last = whole[len(head) - 1]
+        remaining.insert(0, Chunk(last.page, last.text[len(head[-1].text) :]))
+    for chunk in reversed(remaining):
         if used >= tail_budget:
             break
         piece = chunk.text[-(tail_budget - used) :]

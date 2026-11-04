@@ -91,6 +91,9 @@ def _group(s: str, i: int) -> tuple[str, int]:
     if s[i] == "{":
         depth, j = 0, i
         while j < len(s):
+            if s[j] == "\\" and j + 1 < len(s) and s[j + 1] in "{}\\":
+                j += 2
+                continue
             if s[j] == "{":
                 depth += 1
             elif s[j] == "}":

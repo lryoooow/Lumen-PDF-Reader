@@ -160,7 +160,7 @@ class TestEncryptedSave:
     def test_merge_keeps_encryption_and_permissions(
         self, engine: PyMuPdfEngine, encrypted_pdf: Path, tmp_path: Path
     ) -> None:
-        """合并会把文档从内存重开（丢 journal 与 /Encrypt），保存时必须重新加密且不放权。"""
+        """合并后用户密码和所有者密码仍保持各自权限。"""
         import pymupdf
 
         other = tmp_path / "other.pdf"
@@ -178,11 +178,37 @@ class TestEncryptedSave:
         assert _raw_p(out) == PRINT_ONLY_P
         reopened = pymupdf.open(out)
         assert reopened.needs_pass, "合并后的整份保存把加密文档写成了明文"
-        assert reopened.authenticate(USER_PW)
+        assert reopened.authenticate(USER_PW) == 2
+        assert reopened.authenticate(OWNER_PW) == 4
         text = "".join(reopened[i].get_text() for i in range(reopened.page_count))
         reopened.close()
         assert "hello" in text
         assert "other" in text
+
+    def test_merge_keeps_owner_only_password(self, engine: PyMuPdfEngine, tmp_path: Path) -> None:
+        import pymupdf
+
+        source, other, output = (tmp_path / f"{name}.pdf" for name in ("source", "other", "out"))
+        with pymupdf.open() as pdf:
+            pdf.new_page()
+            pdf.save(other)
+            pdf.save(
+                source,
+                encryption=pymupdf.PDF_ENCRYPT_AES_256,
+                owner_pw=OWNER_PW,
+                user_pw="",
+                permissions=pymupdf.PDF_PERM_PRINT,
+            )
+        handle = engine.open(source)
+        try:
+            engine.merge(handle, other)
+            engine.save(handle, output)
+        finally:
+            engine.close(handle)
+        assert _raw_p(output) == PRINT_ONLY_P
+        with pymupdf.open(output) as pdf:
+            assert pdf.authenticate("") == 2
+            assert pdf.authenticate(OWNER_PW) == 4
 
     def test_metadata_reports_encrypted(self, engine: PyMuPdfEngine, encrypted_pdf: Path) -> None:
         """已认证的加密文档也要报 is_encrypted=True（PyMuPDF 原生属性此时是 False）。"""

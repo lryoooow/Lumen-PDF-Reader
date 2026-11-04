@@ -25,4 +25,6 @@ def desktop_archive_name(version: str, target: str, architecture: str) -> str:
     if target == "Windows":
         architecture = {"AMD64": "x64", "x86_64": "x64"}.get(architecture, architecture)
         return f"Lumen-{version}-Windows-{architecture}-Portable.zip"
+    if target == "Linux":
+        return f"Lumen-{version}-Linux-{architecture}.tar.gz"
     return f"Lumen-{version}-{target}-{architecture}.zip"

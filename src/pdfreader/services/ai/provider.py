@@ -148,8 +148,15 @@ def normalize_base_url(url: str) -> str:
 
 def is_local_host(base_url: str) -> bool:
     """地址是否指向本机（本机模型数据不出电脑，界面上显示「本机」）。"""
-    host = (urlparse(base_url).hostname or "").lower()
+    host = _url_host(base_url) or ""
     return host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".localhost")
+
+
+def _url_host(base_url: str) -> str | None:
+    try:
+        return urlparse(base_url).hostname or ""
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -167,7 +174,8 @@ class ProviderConfig:
 
     @property
     def host(self) -> str:
-        return urlparse(self.base_url).hostname or self.base_url
+        host = _url_host(self.base_url)
+        return (host or self.base_url) if host is not None else "无效地址"
 
     @property
     def is_local(self) -> bool:

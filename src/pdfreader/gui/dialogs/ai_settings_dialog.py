@@ -8,7 +8,6 @@ API Key 只在点「确定」后写入系统凭据管理器，``ai.json`` 里没
 
 from __future__ import annotations
 
-import contextlib
 import copy
 from collections.abc import Callable
 
@@ -71,6 +70,8 @@ class AiSettingsDialog(QDialog):
         self._current: ProviderConfig | None = None
         self._loading = False
         self._worker: AiWorker | None = None
+        self._accept_after_worker: bool | None = None
+        self._discard_worker_result = False
         self._probe_got_reply = False
 
         root = QVBoxLayout(self)
@@ -256,7 +257,9 @@ class AiSettingsDialog(QDialog):
         self.remove_btn.setEnabled(has)
 
     def _on_row_changed(self, row: int) -> None:
-        self._stop_worker()
+        if self._worker is not None:
+            self._discard_worker_result = True
+            self._worker.shutdown()
         provider = (
             self._settings.providers[row] if 0 <= row < len(self._settings.providers) else None
         )
@@ -327,6 +330,8 @@ class AiSettingsDialog(QDialog):
 
     # ------------------------------------------------------------------ 网络：获取模型 / 测试
     def _client(self) -> ChatClient | None:
+        if self._worker is not None:
+            return None
         provider = self._current
         if provider is None:
             return None
@@ -337,7 +342,7 @@ class AiSettingsDialog(QDialog):
         return self._client_factory(provider.base_url, self._keys.get(provider.id, ""))
 
     def _start(self, worker: AiWorker, busy_text: str) -> None:
-        self._stop_worker()
+        self._discard_worker_result = False
         self._worker = worker
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._on_worker_done)
@@ -379,16 +384,25 @@ class AiSettingsDialog(QDialog):
 
     def _on_probe_delta(self, _text: str) -> None:
         # 收到首个增量即可判定连通，不必等完整回答
-        if not self._probe_got_reply and self._worker is not None:
+        if (
+            self._accept_after_worker is None
+            and not self._discard_worker_result
+            and not self._probe_got_reply
+            and self._worker is not None
+        ):
             self._probe_got_reply = True
             self._worker.shutdown()
 
     def _on_probe_done(self, *_args: object) -> None:
+        if self._accept_after_worker is not None or self._discard_worker_result:
+            return
         provider = self._current
         name = provider.model if provider else ""
         self.status_label.setText(f"✓ 连接成功：模型 {name} 可用")
 
     def _on_models(self, models: list[str]) -> None:
+        if self._accept_after_worker is not None or self._discard_worker_result:
+            return
         provider = self._current
         if provider is None:
             return
@@ -408,7 +422,8 @@ class AiSettingsDialog(QDialog):
         self.status_label.setText(f"✓ 获取到 {len(models)} 个模型")
 
     def _on_failed(self, message: str) -> None:
-        self.status_label.setText(f"✗ {message}")
+        if self._accept_after_worker is None and not self._discard_worker_result:
+            self.status_label.setText(f"✗ {message}")
 
     def _on_worker_done(self) -> None:
         self.fetch_btn.setEnabled(True)
@@ -418,27 +433,33 @@ class AiSettingsDialog(QDialog):
             self._worker = None
         if isinstance(worker, AiWorker):
             worker.deleteLater()
+        pending = self._accept_after_worker
+        if pending is not None:
+            self._accept_after_worker = None
+            self.setEnabled(True)
+            if pending:
+                self.accept()
+            else:
+                self.reject()
 
-    def _stop_worker(self) -> None:
-        worker = self._worker
-        if worker is None:
-            return
-        for signal in (worker.failed, worker.modelsListed, worker.finished_text, worker.cancelled):
-            with contextlib.suppress(RuntimeError, TypeError):  # 没有连接时 PySide6 会抛错
-                signal.disconnect()
-        worker.shutdown()
-        worker.wait(3000)
-        self._worker = None
-        self.fetch_btn.setEnabled(True)
-        self.test_btn.setEnabled(True)
+    def _defer_close(self, *, accept: bool) -> bool:
+        if self._worker is None:
+            return False
+        if self._accept_after_worker is None:
+            self._accept_after_worker = accept
+            self._worker.shutdown()
+            self.status_label.setText("正在等待 AI 请求结束后关闭…")
+            self.setEnabled(False)
+        return True
 
     # ------------------------------------------------------------------ 结果
     def result_settings(self) -> AiSettings:
         return self._settings
 
     def accept(self) -> None:
+        if self._defer_close(accept=True):
+            return
         self._store_form()
-        self._stop_worker()
         self._settings.enabled = self.enabled_check.isChecked()
         self._settings.target_language = self.language_combo.currentText().strip() or "简体中文"
         if self._settings.active() is not None and not self._settings.active_id:
@@ -457,5 +478,5 @@ class AiSettingsDialog(QDialog):
         super().accept()
 
     def reject(self) -> None:
-        self._stop_worker()
-        super().reject()
+        if not self._defer_close(accept=False):
+            super().reject()

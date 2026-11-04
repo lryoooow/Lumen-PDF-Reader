@@ -141,15 +141,18 @@ class Backlinks:
 
 
 def find_backlinks(directory: Path, title: str) -> Backlinks:
-    paths = sorted(
-        path for path in directory.iterdir() if path.suffix.lower() == ".md" and path.is_file()
-    )
+    paths = sorted(path for path in directory.iterdir() if path.suffix.lower() == ".md")
+    root = directory.resolve()
     found: list[Path] = []
     failed: list[Path] = []
     for path in paths[:1000]:
-        if path.stem.casefold() == title.casefold() or path.resolve().parent != directory.resolve():
-            continue
         try:
+            if (
+                path.stem.casefold() == title.casefold()
+                or path.resolve().parent != root
+                or not path.is_file()
+            ):
+                continue
             if path.stat().st_size > 2_000_000:
                 raise ValueError("笔记超过反向链接扫描上限")
             targets = [match[1].casefold() for match in _WIKILINK.finditer(path.read_text("utf-8"))]
@@ -166,8 +169,18 @@ def save_markdown(path: Path, markdown: str) -> None:
     from uuid import uuid4
 
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    temporary.write_text(markdown, encoding="utf-8")
-    temporary.replace(path)
+    try:
+        temporary.write_text(markdown, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        _cleanup_temporary(temporary)
+
+
+def _cleanup_temporary(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logging.getLogger(__name__).warning("无法清理笔记临时文件", exc_info=True)
 
 
 def export_docx(path: Path, markdown: str) -> None:
@@ -184,12 +197,16 @@ def export_docx(path: Path, markdown: str) -> None:
     fonts = OxmlElement("w:rFonts")
     fonts.set(qn("w:eastAsia"), "Microsoft YaHei")
     normal.element.get_or_add_rPr().append(fonts)
-    for line in _SOURCE.sub("", markdown).splitlines():
+    clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]", "", markdown)
+    for line in _SOURCE.sub("", clean).splitlines():
         heading = re.match(r"^(#{1,6})\s+(.*)", line)
         if heading:
             document.add_heading(heading[2], level=len(heading[1]))
         else:
             document.add_paragraph(line)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    document.save(str(temporary))
-    temporary.replace(path)
+    try:
+        document.save(str(temporary))
+        temporary.replace(path)
+    finally:
+        _cleanup_temporary(temporary)

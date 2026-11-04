@@ -20,7 +20,7 @@ class LibraryIndexWorker(QThread):
         self._database = database
         self._source = source
         self._title = title
-        self._pages = pages
+        self._pages = pages.copy()
 
     def run(self) -> None:
         library: ResearchLibrary | None = None

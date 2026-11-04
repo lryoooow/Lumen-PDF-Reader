@@ -18,7 +18,7 @@ import logging
 import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pymupdf
 
@@ -292,8 +292,11 @@ def _import_one(page: pymupdf.Page, item: PdfSpaceAnnotation) -> bool:
         lines = [
             [pymupdf.Point(path[i], path[i + 1]) * to_page for i in range(0, len(path) - 1, 2)]
             for path in item.paths
+            if len(path) >= 4
         ]
-        annot = page.add_ink_annot([[(p.x, p.y) for p in line] for line in lines if line])
+        if not lines:
+            return False
+        annot = page.add_ink_annot([[(p.x, p.y) for p in line] for line in lines])
         annot.set_colors(stroke=item.color)
     if annot is None:
         return False
@@ -521,13 +524,8 @@ class PyMuPdfDocument:
         return self._encrypted
 
     def replace_native(self, doc: pymupdf.Document) -> None:
-        """替换底层文档（合并时必须丢弃 journal 重开，见 :meth:`PyMuPdfEngine.merge`）。
-
-        加密快照（password / permissions）刻意保留：合并后的内存文档已不带 /Encrypt，
-        保存时要靠这些信息按原密码与权限重新加密，否则会写成明文或放开权限。
-        """
+        """安装已经验证加密状态与认证级别的合并结果。"""
         self._doc = doc
-        self._auth_level = 0  # 重开后的文档不再处于「已认证」状态
 
     @property
     def page_count(self) -> int:
@@ -744,7 +742,11 @@ class PyMuPdfEngine:
         )
 
     def pixmap_to_png(self, data: PixmapData) -> bytes:
-        """把 PixmapData 重新编码为 PNG。
+        """把像素数据编码为 PNG。"""
+        return self.pixmap_to_image(data, "png")
+
+    def pixmap_to_image(self, data: PixmapData, output: Literal["png", "jpeg"]) -> bytes:
+        """把 PixmapData 重新编码为图像。
 
         PyMuPDF 只接受 ``Pixmap(colorspace, width, height, samples, alpha)`` 形式，
         且第 5 个位置参数是 alpha 而不是 stride：把 stride 传进去会抛
@@ -763,11 +765,11 @@ class PyMuPdfEngine:
             )
         try:
             pix = pymupdf.Pixmap(colorspace, data.width, data.height, samples, False)
-            png: bytes = pix.tobytes("png")
-            return png
+            encoded: bytes = pix.tobytes(output)
+            return encoded
         except Exception as exc:
             # PyMuPDF 的报错会把整幅像素样本拼进消息（可达数 MB），这里截断
-            raise RenderError(f"编码 PNG 失败：{str(exc)[:200]}") from exc
+            raise RenderError(f"编码 {output.upper()} 失败：{str(exc)[:200]}") from exc
 
     def images_to_pdf(self, image_paths: Sequence[Path], output_path: Path) -> int:
         """把若干图片合成一个 PDF（每张图一页）。"""
@@ -976,10 +978,8 @@ class PyMuPdfEngine:
     def merge(self, doc: EngineDocument, other_path: Path) -> int:
         """把另一个 PDF 追加到末尾，返回追加页数。
 
-        ``insert_pdf`` 与撤销日志不兼容，必须把本文档从内存重开（丢弃日志，合并后不可撤销）。
-        因此**先**完整校验对方文件（能打开 / 未加密 / 非空），通过后才动本文档：
-        旧实现先重开再打开对方，对方是加密或损坏文件时合并失败，撤销历史却已白白丢掉。
-        重开时先建好新文档再关旧的，任何一步失败都不会留下已关闭的句柄。
+        在副本上追加，成功后才替换底层文档。合并本身会重置历史，
+        新文档重新启用日志，之后的编辑仍可撤销。
         """
         handle = self._require(doc)
         if not other_path.exists():
@@ -992,24 +992,37 @@ class PyMuPdfEngine:
                 f"无法打开要合并的文件 {other_path.name}（文件损坏或不是 PDF）"
             ) from exc
         try:
-            if other.needs_pass:
+            if other.needs_pass or _is_encrypted_file(other):
                 raise PasswordRequiredError(f"要合并的文件已加密，暂不支持：{other_path.name}")
             added = int(other.page_count)
             if added == 0 or not other.is_pdf:
                 raise PdfEngineError(f"要合并的文件没有可用页面：{other_path.name}")
             native = handle.native
-            journaled = False
-            with contextlib.suppress(Exception):
-                journaled = bool(native.journal_is_enabled())
+            reopened: pymupdf.Document | None = None
             try:
-                if journaled:
-                    reopened = pymupdf.open(stream=native.tobytes(), filetype="pdf")
-                    handle.replace_native(reopened)
-                    native.close()
-                    native = reopened
-                native.insert_pdf(other)
+                data = native.tobytes(**self._encrypt_kwargs(handle))
+                reopened = pymupdf.open(stream=data, filetype="pdf")
+                if (
+                    reopened.needs_pass
+                    and reopened.authenticate(handle.password or "") != handle.auth_level
+                ):
+                    raise PdfEngineError("无法保留原 PDF 的密码权限")
+                if (
+                    _is_encrypted_file(reopened) != handle.is_encrypted
+                    or _raw_permissions(reopened) != handle.permissions
+                ):
+                    raise PdfEngineError("无法保留原 PDF 的加密设置")
+                reopened.insert_pdf(other)
+                reopened.journal_enable()
             except Exception as exc:
-                raise PdfEngineError(f"合并 {other_path.name} 失败：{exc}") from exc
+                if reopened is not None:
+                    reopened.close()
+                if isinstance(exc, PdfEngineError):
+                    raise
+                _logger.warning("合并 PDF 失败", exc_info=True)
+                raise PdfEngineError(f"合并 {other_path.name} 失败") from exc
+            handle.replace_native(reopened)
+            native.close()
             return added
         finally:
             other.close()
@@ -1062,11 +1075,7 @@ class PyMuPdfEngine:
     def save(self, doc: EngineDocument, path: Path, *, incremental: bool = False) -> None:
         """保存文档。
 
-        加密文档的加密必须显式保留：增量保存用 ``PDF_ENCRYPT_KEEP`` 即可，
-        但**整份保存**（另存为、合并后的内存文档、后台线程用的快照）如果不带
-        ``encryption``，PyMuPDF 会写出**明文**，用户会以为文件仍受密码保护。
-        因此只要打开时用到了密码，整份保存就用同一密码按 AES-256 重新加密，
-        并原样带回原始 ``/P`` 权限位（实测幂等；省略该参数会把受限文档存成完全放开）。
+        增量和整份保存都保留原有加密设置及权限。
         """
         handle = self._require(doc)
         target = Path(path)
@@ -1103,32 +1112,12 @@ class PyMuPdfEngine:
 
     @staticmethod
     def _encrypt_kwargs(handle: PyMuPdfDocument) -> dict[str, object]:
-        """整份保存时的加密参数（明文文档返回空字典，行为与以前一致）。
-
-        分两种情况：
-
-        * 底层文档**仍带 /Encrypt**（正常打开的加密文件，含只设所有者密码的那种）：
-          用 ``PDF_ENCRYPT_KEEP`` 原样保留，实测用户密码、所有者密码、``/P``
-          全部与源文件一致（重新加密做不到这一点：拿不到原始的所有者密码，
-          只能让用户输入的密码兼任所有者密码，等于给用户密码提权）。
-        * 加密已经丢失（合并时 ``tobytes()`` 重开，实测输出不再加密）：
-          只能用打开时记录的密码重新加密，并按记录的 ``/P`` 回填权限位——
-          少了 ``permissions`` 参数 MuPDF 会写成 ``-4``（完全放开）。
-        """
+        """整份保存时原样保留原密码和权限，无法保留时停止写入。"""
         if not handle.is_encrypted:
             return {}
         if _is_encrypted_file(handle.native):
             return {"encryption": pymupdf.PDF_ENCRYPT_KEEP}
-        # 只设所有者密码的文件其用户密码为空，这里回填空串才是忠实的
-        password = handle.password or ""
-        kwargs: dict[str, object] = {
-            "encryption": pymupdf.PDF_ENCRYPT_AES_256,
-            "user_pw": password,
-            "owner_pw": password,
-        }
-        if handle.permissions is not None:
-            kwargs["permissions"] = handle.permissions
-        return kwargs
+        raise PdfEngineError("无法保留原 PDF 的加密设置")
 
     @staticmethod
     def _is_original_file(handle: PyMuPdfDocument, path: Path) -> bool:
@@ -1199,11 +1188,20 @@ class PyMuPdfEngine:
             with self._op(handle, "annot_content"):
                 annot = annots[index]
                 if annot.type and int(annot.type[0]) == AnnotationType.FREE_TEXT:
-                    # 文本框的外观由富文本生成，改 /Contents 不会重绘：原位置、原底色重建
+                    # 用临时富文本批注重绘，将外观写回原批注以保留标识和页内位置。
                     rect = _visible_rect(page, annot.rect)
                     fill = (annot.colors or {}).get("fill") or None
-                    page.delete_annot(annot)
-                    _add_free_text(page, rect, text, fill=tuple(fill) if fill else None)
+                    preview = _add_free_text(page, rect, text, fill=tuple(fill) if fill else None)
+                    native = handle.native
+                    for key in ("AP", "RC", "DS"):
+                        kind, value = native.xref_get_key(preview.xref, key)
+                        native.xref_set_key(
+                            annot.xref,
+                            key,
+                            pymupdf.get_pdf_str(value) if kind == "string" else value,
+                        )
+                    annot.set_info(content=text)
+                    page.delete_annot(preview)
                 else:
                     annot.set_info(content=text)
                     annot.update()
@@ -1283,6 +1281,15 @@ class PyMuPdfEngine:
                 info = annot.info or {}
                 a_type = int(annot.type[0]) if annot.type else 0
                 marked = ""
+                strokes: tuple[InkStroke, ...] = ()
+                if a_type == AnnotationType.INK:
+                    rotation = page.rotation_matrix
+                    paths: list[InkStroke] = []
+                    for line in annot.vertices or ():
+                        points = [pymupdf.Point(xy) * rotation for xy in line]
+                        if points:
+                            paths.append(InkStroke(tuple(Point(p.x, p.y) for p in points)))
+                    strokes = tuple(paths)
                 if a_type in MARKUP_TYPES:
                     if words is None:
                         # 与取词同一套（中文已拆到单字）：整行中文若是一个「词」，
@@ -1311,6 +1318,7 @@ class PyMuPdfEngine:
                         stable_id=str(info.get("id", "")),
                         index=i,
                         color=_annot_color(annot),
+                        strokes=strokes,
                         marked_text=marked,
                     )
                 )

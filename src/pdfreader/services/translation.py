@@ -85,7 +85,7 @@ def paragraphs_from_words(page: int, words: Sequence[WordBox], bounds: Rect) -> 
     for divider in [*spanning, None]:
         band = [p for p in pending if divider is None or p.rect.y0 < divider.rect.y0]
         left = [p for p in band if p.rect.x1 <= middle + bounds.width * 0.04]
-        right = [p for p in band if p.rect.x0 >= middle - bounds.width * 0.04]
+        right = [p for p in band if p.rect.x0 >= middle - bounds.width * 0.04 and p not in left]
         if left and right and len(left) + len(right) == len(band):
             ordered_result.extend(sorted(left, key=lambda p: p.rect.y0))
             ordered_result.extend(sorted(right, key=lambda p: p.rect.y0))
@@ -103,6 +103,7 @@ def quality_warnings(
     """检查数字的出现次数和术语译名；提示不代表语义核验。"""
 
     def numbers(text: str) -> Counter[str]:
+        text = re.sub(r"(?<=\d)\s*[-–—]\s*(?=\d)", " ", text)
         return Counter(m.replace("−", "-").replace(",", "") for m in _NUMBERS.findall(text))
 
     warnings: list[str] = []

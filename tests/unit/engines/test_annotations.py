@@ -133,10 +133,14 @@ class TestAddFreeText:
         doc = engine.open(work_pdf)
         box = Rect(100, 300, 300, 340)
         engine.add_free_text(doc, 0, box, "旧文字")
+        original = engine.list_annotations(doc, 0)[0]
+        before = engine.render_page(doc, 0, 1.0)
         engine.set_annotation_content(doc, 0, 0, "新文字")
         (annot,) = engine.list_annotations(doc, 0)
         assert annot.annot_type == AnnotationType.FREE_TEXT
         assert annot.content == "新文字"
+        assert annot.stable_id == original.stable_id
+        assert engine.render_page(doc, 0, 1.0).samples != before.samples
         assert abs(annot.rect.x0 - box.x0) < 2 and abs(annot.rect.y0 - box.y0) < 2
         assert engine.undo(doc) is True  # 一次撤销回到旧文字（删+建在同一个操作里）
         assert engine.list_annotations(doc, 0)[0].content == "旧文字"

@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QTextBrowser,
@@ -337,21 +336,12 @@ class ResearchDialog(QDialog):
             return
         size = sum(len(batch) for batch in self._batches)
         generation = self._generation
-        provider = self._assistant.authorize_request(size)
+        encrypted = any(self._sources[chunk.document - 1][1].is_encrypted for chunk in self._chunks)
+        provider = self._assistant.authorize_request(size, encrypted_sources=encrypted)
         if generation != self._generation:
             self.status.setText("来源或条件已变化，未发送，请重新提取。")
             return
         if provider is None:
-            return
-        encrypted = any(controller.is_encrypted for _title, controller in self._sources)
-        if (
-            encrypted
-            and not provider.is_local
-            and QMessageBox.question(
-                self, "研究任务包含加密文档", "选定内容可能来自加密文档。仍要发送到当前 AI 服务吗？"
-            )
-            != QMessageBox.StandardButton.Yes
-        ):
             return
         task = (
             _TASKS[self.task.currentIndex()]

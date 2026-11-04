@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 import traceback
 from pathlib import Path
@@ -21,6 +22,7 @@ from pdfreader import __version__
 from pdfreader.gui.main_window import MainWindow
 from pdfreader.gui.single_instance import SingleInstance
 from pdfreader.utils.logger import enable_faulthandler, setup_logging
+from pdfreader.utils.profile import profile_directory
 
 __all__ = [
     "create_application",
@@ -29,7 +31,7 @@ __all__ = [
     "main",
 ]
 
-_logger = setup_logging()
+_logger = logging.getLogger("pdfreader")
 
 
 def _set_windows_app_id() -> None:
@@ -171,7 +173,7 @@ def run_selftest() -> int:
 
     text = json.dumps(result, ensure_ascii=False, indent=2)
     with contextlib.suppress(Exception):
-        out = Path.home() / ".pdfreader" / "selftest.json"
+        out = profile_directory() / "selftest.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text, encoding="utf-8")
     with contextlib.suppress(Exception):
@@ -192,6 +194,7 @@ def file_from_argv(argv: list[str]) -> Path | None:
 
 def main() -> int:
     """启动 PDF Reader 应用，返回退出码。"""
+    setup_logging()
     if "--selftest" in sys.argv:
         return run_selftest()
 

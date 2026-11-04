@@ -30,12 +30,17 @@ class DuplicateScan:
 def duplicate_files(paths: Sequence[Path], cancelled: Callable[[], bool]) -> DuplicateScan:
     sized: dict[int, list[Path]] = {}
     failed: list[Path] = []
-    for path in dict.fromkeys(path.resolve() for path in paths):
+    seen: set[Path] = set()
+    for original in paths:
         try:
+            path = original.resolve()
+            if path in seen:
+                continue
+            seen.add(path)
             sized.setdefault(path.stat().st_size, []).append(path)
-        except OSError:
-            logging.getLogger("pdfreader").warning("去重检查无法访问：%s", path, exc_info=True)
-            failed.append(path)
+        except (OSError, ValueError):
+            logging.getLogger("pdfreader").warning("去重检查无法访问：%s", original, exc_info=True)
+            failed.append(original)
     groups: list[tuple[Path, ...]] = []
     for candidates in sized.values():
         if len(candidates) < 2:

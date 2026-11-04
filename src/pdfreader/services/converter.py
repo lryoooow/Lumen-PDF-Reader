@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from pdfreader.engines import PyMuPdfEngine
 from pdfreader.engines.exceptions import PdfEngineError
@@ -142,8 +143,14 @@ class ConvertService:
 
     def image_to_pdf(self, image_paths: list[Path], output_path: Path) -> ConvertResult:
         """图片 → PDF。"""
-        count = PyMuPdfEngine().images_to_pdf(image_paths, output_path)
-        return ConvertResult(output_path, "PDF", count)
+        output = (
+            output_path if output_path.suffix.lower() == ".pdf" else output_path.with_suffix(".pdf")
+        )
+        try:
+            count = PyMuPdfEngine().images_to_pdf(image_paths, output)
+        except (PdfEngineError, OSError) as exc:
+            raise ConvertError("无法将图片转换为 PDF") from exc
+        return ConvertResult(output, "PDF", count, (output,))
 
     # ------------------------------------------------------------------
     # 各格式实现
@@ -157,8 +164,11 @@ class ConvertService:
             count = engine.page_count(doc)
             zoom = dpi / 72.0
             targets = image_targets(output, count)
+            encoding: Literal["jpeg", "png"] = "jpeg" if fmt == "jpeg" else "png"
             for i, target in enumerate(targets):
-                target.write_bytes(engine.pixmap_to_png(engine.render_page(doc, i, zoom)))
+                target.write_bytes(
+                    engine.pixmap_to_image(engine.render_page(doc, i, zoom), encoding)
+                )
         finally:
             engine.close(doc)
         return ConvertResult(output, FORMATS[fmt].name, count, tuple(targets))

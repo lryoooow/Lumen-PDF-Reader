@@ -191,6 +191,7 @@ class TestRotatedPageWrites:
 
         before = engine.render_page(handle, 0, 1.0)
         engine.add_ink(handle, 0, (stroke,))
+        assert engine.list_annotations(handle, 0)[-1].strokes == (stroke,)
         after = engine.render_page(handle, 0, 1.0)
 
         box = _diff_bbox(before, after)

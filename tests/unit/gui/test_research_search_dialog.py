@@ -47,7 +47,7 @@ def test_incremental_search_index_and_library_navigation(
     assert dialog.results.count() == 4
     dialog.results.setCurrentRow(2)
     dialog.locate()
-    assert opened == [(str(path.resolve()), 2)]
+    assert [(Path(result_path), page) for result_path, page in opened] == [(path.resolve(), 2)]
     dialog.close()
     controller.close_document()
 

@@ -257,13 +257,20 @@ class DocumentController(QObject):
         doc = self._document
         return doc is not None and not doc.is_closed and doc.meta.is_encrypted
 
-    def page_text(self, page_num: int) -> str:
+    def page_text(self, page_num: int, *, strict: bool = False) -> str:
         """整页文字（按引擎的阅读顺序：同一行拼接，行间换行，块间空行）。"""
         lines: list[str] = []
         current: tuple[int, int] | None = None
         block: int | None = None
         pieces: list[str] = []
-        for w in self.get_words(page_num):
+        if strict:
+            document = self._document
+            if document is None or document.is_closed:
+                raise RuntimeError("文档已关闭")
+            words = document.get_words(page_num)
+        else:
+            words = self.get_words(page_num)
+        for w in words:
             key = (w.block, w.line)
             if key != current:
                 if pieces:

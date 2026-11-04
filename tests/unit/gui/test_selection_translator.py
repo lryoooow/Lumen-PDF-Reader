@@ -11,7 +11,7 @@ from threading import Event
 
 import httpx
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt, QThread, Signal
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QWidget
 
 from pdfreader.controllers import DocumentController
@@ -282,18 +282,16 @@ class TestGarbled:
     def test_area_without_vision_uses_local_ocr(  # type: ignore[no-untyped-def]
         self, qtbot, rig, monkeypatch
     ) -> None:
-        class FakeOcr(QThread):
-            recognized = Signal(str)
-            failed = Signal(str)
+        from types import SimpleNamespace
 
-            def __init__(self, png: bytes, parent=None) -> None:  # type: ignore[no-untyped-def]
-                super().__init__(parent)
+        from pdfreader.workers import ocr_worker
+
+        class FakeOcr:
+            def ocr_image(self, png: bytes) -> object:
                 assert png.startswith(b"\x89PNG")
+                return SimpleNamespace(text="Recognized\nline")
 
-            def run(self) -> None:
-                self.recognized.emit("Recognized\nline")
-
-        monkeypatch.setattr(st_module, "ImageOcrWorker", FakeOcr)
+        monkeypatch.setattr(ocr_worker, "OcrService", FakeOcr)
         monkeypatch.setattr(st_module, "OCR_AVAILABLE", True)
         r = rig()
         r.tr.translate_area(0, Rect(60, 60, 400, 140))

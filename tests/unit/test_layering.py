@@ -15,15 +15,17 @@
 from __future__ import annotations
 
 import ast
+from importlib.util import resolve_name
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "pdfreader"
 
 # 层目录 → 该层禁止导入的第三方顶层包
 FORBIDDEN: dict[str, tuple[str, ...]] = {
-    "core": ("PySide6", "pymupdf"),
-    "services": ("PySide6", "pymupdf"),
-    "engines": ("PySide6",),
+    "core": ("PySide6", "shiboken6"),
+    "services": ("PySide6", "shiboken6"),
+    "engines": ("PySide6", "shiboken6"),
+    "config": ("PySide6", "shiboken6"),
 }
 
 # 例外：文件相对 SRC 的路径 → 允许的额外包
@@ -62,8 +64,8 @@ def test_layer_import_boundaries() -> None:
         rel = path.relative_to(SRC).as_posix()
         layer = rel.split("/")[0] if "/" in rel else ""
         banned = set(FORBIDDEN.get(layer, ())) - set(EXEMPT.get(rel, ()))
-        if not banned:
-            continue
+        if layer != "services" and rel != "main.py":
+            banned.update({"pdf2docx", "pdfplumber", "rapidocr_onnxruntime", "httpx", "keyring"})
         hit = _imported_modules(path) & banned
         if hit:
             violations.append(f"{rel} 违规导入了 {sorted(hit)}")
@@ -76,7 +78,8 @@ def test_only_engine_imports_pymupdf() -> None:
     offenders = [
         path.relative_to(SRC).as_posix()
         for path in _python_files()
-        if path.relative_to(SRC).as_posix() not in allowed and "pymupdf" in _imported_modules(path)
+        if path.relative_to(SRC).as_posix() not in allowed
+        and {"pymupdf", "fitz"} & _imported_modules(path)
     ]
     assert not offenders, f"只有 {sorted(allowed)} 可以 import pymupdf，违规：{offenders}"
 
@@ -85,3 +88,34 @@ def test_exempt_files_still_exist() -> None:
     """例外清单不残留失效路径。"""
     for rel in EXEMPT:
         assert (SRC / rel).exists(), f"例外清单中的 {rel} 已不存在，请更新测试"
+
+
+def test_internal_layers_do_not_import_upward() -> None:
+    layers = ("engines", "core", "controllers", "gui")
+    violations: list[str] = []
+    for path in _python_files():
+        relative = path.relative_to(SRC)
+        layer = relative.parts[0]
+        if layer not in layers:
+            continue
+        package = ".".join(("pdfreader", *relative.parts[:-1]))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = "." * node.level + (node.module or "")
+                module = resolve_name(base, package) if node.level else base
+                modules = [f"{module}.{alias.name}" for alias in node.names]
+            else:
+                continue
+            for module in modules:
+                parts = module.split(".")
+                if (
+                    parts[0] == "pdfreader"
+                    and len(parts) > 1
+                    and parts[1] in layers
+                    and layers.index(parts[1]) > layers.index(layer)
+                ):
+                    violations.append(f"{relative}:{node.lineno} -> {module}")
+    assert not violations, "检测到反向依赖：\n" + "\n".join(violations)

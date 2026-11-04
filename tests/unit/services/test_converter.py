@@ -32,6 +32,10 @@ class TestFormats:
 
 
 class TestConvertImage:
+    def test_to_jpeg_has_jpeg_signature(self, service: ConvertService, tmp_path: Path) -> None:
+        result = service.convert(SIMPLE, tmp_path / "page.jpg", "jpeg", dpi=72)
+        assert all(path.read_bytes().startswith(b"\xff\xd8\xff") for path in result.files)
+
     def test_to_png(self, service: ConvertService, tmp_path: Path) -> None:
         # simple_text 有 3 页,多页时生成 page_1.png 等
         out = tmp_path / "page"

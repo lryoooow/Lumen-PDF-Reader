@@ -50,7 +50,7 @@ def test_templates_links_and_atomic_save(tmp_path: Path) -> None:
 
 def test_word_export_preserves_chinese(tmp_path: Path) -> None:
     target = tmp_path / "note.docx"
-    export_docx(target, "# 中文论文\n\n证据与结论")
+    export_docx(target, "# 中文论文\n\n证据\x00与\x0b结论")
     with ZipFile(target) as archive:
         xml = archive.read("word/document.xml").decode()
         styles = archive.read("word/styles.xml").decode()

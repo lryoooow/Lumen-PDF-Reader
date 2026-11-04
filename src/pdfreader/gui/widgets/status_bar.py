@@ -230,6 +230,10 @@ class StatusBar(QWidget):
         self._zoom_slider.setValue(min(max(percent, SLIDER_MIN), SLIDER_MAX))
         self._zoom_slider.blockSignals(False)
 
+    def cancel_pending_zoom(self) -> None:
+        """切换文档时作废前一标签的缩放请求。"""
+        self._slider_timer.stop()
+
     def set_reading_mode(self, label: str) -> None:
         """阅读模式标签：传 "夜间" / "护眼"；正常模式传空串隐藏。"""
         self._mode_chip.setText(label)
@@ -245,6 +249,8 @@ class StatusBar(QWidget):
         for w in (self._nav, self._zoom_box):
             w.setEnabled(active)
         if not active:
+            self._slider_timer.stop()
+            motion.stop_widget_animation(self._progress)
             self._page_edit.clear()
             self._total_lbl.setText("/ 0")
             self._zoom_lbl.setText("100%")

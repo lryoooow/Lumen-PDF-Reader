@@ -9,8 +9,9 @@ from __future__ import annotations
 import contextlib
 import logging
 from pathlib import Path
+from threading import Condition
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from pdfreader.engines import PyMuPdfEngine
 from pdfreader.engines.exceptions import PdfEngineError, RenderError
@@ -100,10 +101,10 @@ class OcrWorker(QThread):
             self.ocrFailed.emit(f"打开文档失败:{exc}")
             return
 
+        processed = 0
         try:
             total = self._engine.page_count(doc)
             page_nums = self._page_nums if self._page_nums is not None else list(range(total))
-            processed = 0
             for page_num in page_nums:
                 if not self._running:
                     break
@@ -111,16 +112,23 @@ class OcrWorker(QThread):
                 if result is not None:
                     self.pageOcrCompleted.emit(result)
                 processed += 1
-                self.progress.emit(processed, len(page_nums))
+                if self._running:
+                    self.progress.emit(processed, len(page_nums))
             if self._running:
                 self.ocrCompleted.emit(processed)
             else:
                 # 用户取消：必须与"完成"区分开，否则界面会弹"OCR 完成"
                 self.ocrCancelled.emit(processed)
         except OcrError as exc:
-            self.ocrFailed.emit(str(exc))
+            if self._running:
+                self.ocrFailed.emit(str(exc))
+            else:
+                self.ocrCancelled.emit(processed)
         except Exception as exc:
-            self.ocrFailed.emit(f"OCR 失败:{exc}")
+            if self._running:
+                self.ocrFailed.emit(f"OCR 失败:{exc}")
+            else:
+                self.ocrCancelled.emit(processed)
         finally:
             with contextlib.suppress(Exception):
                 self._engine.close(doc)
@@ -189,3 +197,50 @@ class ImageOcrWorker(QThread):
             self.failed.emit(f"识别失败：{type(exc).__name__}")
             return
         self.recognized.emit(result.text)
+
+
+class CaptureOcrWorker(QThread):
+    """单个后台线程串行处理截图，只保留最新的待处理请求。"""
+
+    completed = Signal(int, str, bool)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._ready = Condition()
+        self._pending: tuple[int, bytes] | None = None
+        self._closed = False
+
+    def submit(self, request: int, png: bytes) -> None:
+        with self._ready:
+            self._pending = (request, png)
+            self._ready.notify()
+
+    def cancel_pending(self) -> None:
+        with self._ready:
+            self._pending = None
+
+    def shutdown(self) -> None:
+        with self._ready:
+            self._closed = True
+            self._pending = None
+            self._ready.notify()
+
+    def run(self) -> None:
+        service = OcrService()
+        while True:
+            with self._ready:
+                self._ready.wait_for(lambda: self._closed or self._pending is not None)
+                if self._closed:
+                    return
+                assert self._pending is not None
+                request, png = self._pending
+                self._pending = None
+            try:
+                text = service.ocr_image(png).text
+            except OcrError as exc:
+                self.completed.emit(request, str(exc), False)
+            except Exception:
+                _logger.exception("截图 OCR 失败")
+                self.completed.emit(request, "截图识别失败，请查看诊断信息。", False)
+            else:
+                self.completed.emit(request, text, True)

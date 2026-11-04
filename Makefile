@@ -41,7 +41,7 @@ icon: ## 由内置 logo 重新生成 app.ico
 build: ## PyInstaller 打包程序目录 dist/PDFReader/
 	uv run python scripts/build_windows.py
 
-installer: ## 打包并生成安装程序 dist/PDFReader-Setup-<版本>.exe（需要 NSIS）
+installer: ## 打包并生成安装程序 dist/Lumen-<版本>-Windows-x64-Setup.exe（需要 NSIS）
 	uv run python scripts/build_windows.py --installer
 
 clean: ## 清理缓存与打包中间产物（保留 dist/）

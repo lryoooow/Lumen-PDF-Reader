@@ -74,8 +74,9 @@ def test_nonmodal_readable_source_and_saved_roundtrip(
     assert "原文评论" in panel.editor.toPlainText()
     # 回源没有重建或覆盖笔记文档。
     assert before > 0
+    w.activateWindow()
     panel.editor.setFocus()
-    assert panel.editor.hasFocus()
+    qtbot.waitUntil(panel.editor.hasFocus)
 
 
 def test_source_from_background_activates_original_tab(workspace) -> None:  # type: ignore[no-untyped-def]

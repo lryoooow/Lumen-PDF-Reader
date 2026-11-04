@@ -20,6 +20,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect, QTime
 from PySide6.QtWidgets import QCheckBox, QDialog, QMessageBox, QWidget
 
 from pdfreader.controllers import DocumentController
+from pdfreader.engines.exceptions import RenderError
 from pdfreader.engines.types import Point, Rect
 from pdfreader.gui.dialogs.ai_settings_dialog import AiSettingsDialog, ClientFactory
 from pdfreader.gui.panels.ai_panel import AiPanel
@@ -302,7 +303,7 @@ class AiAssistant(QObject):
         started = time.perf_counter()
         try:
             while self._index_page < page_count:
-                self._index_pages.append(controller.page_text(self._index_page))
+                self._index_pages.append(controller.page_text(self._index_page, strict=True))
                 self._index_page += 1
                 if time.perf_counter() - started >= _INDEX_SLICE_SECONDS:
                     break
@@ -786,7 +787,9 @@ class AiAssistant(QObject):
                 return None
         return self._settings.active()
 
-    def _allowed(self, provider: ProviderConfig, size: int) -> bool:
+    def _allowed(
+        self, provider: ProviderConfig, size: int, *, encrypted_sources: bool | None = None
+    ) -> bool:
         if not provider.is_local and provider.id not in self._settings.consented:
             ok, remember = self.confirm(
                 "发送到 AI 服务",
@@ -799,13 +802,19 @@ class AiAssistant(QObject):
             if remember:
                 self._settings.consented.append(provider.id)
                 self.apply_settings(self._settings)
-        if self._controller.is_encrypted and not self._encrypted_ok and not provider.is_local:
+        encrypted = (
+            self._controller.is_encrypted and not self._encrypted_ok
+            if encrypted_sources is None
+            else encrypted_sources
+        )
+        if encrypted and not provider.is_local:
             ok, _ = self.confirm(
                 "加密文档", "这是一份加密（受密码保护）的 PDF。仍要把其中的内容发送给 AI 服务吗？"
             )
             if not ok:
                 return False
-            self._encrypted_ok = True
+            if encrypted_sources is None:
+                self._encrypted_ok = True
         if size > LARGE_SEND_CHARS:
             ok, _ = self.confirm(
                 "内容较多",
@@ -815,10 +824,16 @@ class AiAssistant(QObject):
                 return False
         return True
 
-    def authorize_request(self, size: int) -> ProviderConfig | None:
+    def authorize_request(
+        self, size: int, *, encrypted_sources: bool | None = None
+    ) -> ProviderConfig | None:
         """其他用户发起的 AI 工具复用配置、外发和加密文档确认。"""
         provider = self._ensure_ready()
-        return provider if provider is not None and self._allowed(provider, size) else None
+        if provider is not None and self._allowed(
+            provider, size, encrypted_sources=encrypted_sources
+        ):
+            return provider
+        return None
 
     def glossary_for(self, text: str) -> list[tuple[str, str]]:
         """按当前术语设置取出本段命中的术语。"""
@@ -959,7 +974,8 @@ class AiAssistant(QObject):
         zoom = min(_CAPTURE_MAX_ZOOM, max(1.0, _CAPTURE_MAX_SIDE / side))
         try:
             data = self._controller.render_page(page, zoom)
-        except (RuntimeError, IndexError):
+        except (RenderError, RuntimeError, IndexError):
+            _logger.warning("生成 AI 区域附图失败", exc_info=True)
             return b""
         pixmap = pixmap_to_qpixmap(data)
         bounds = self._controller.get_page_bounds()

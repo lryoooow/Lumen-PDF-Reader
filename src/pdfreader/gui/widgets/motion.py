@@ -62,11 +62,17 @@ def enabled() -> bool:
 
 def _keep(widget: QWidget, anim: QAbstractAnimation) -> None:
     """把动画挂在控件上，避免被垃圾回收；同一控件的上一段同类动画先停掉。"""
+    stop_widget_animation(widget)
+    widget._motion_anim = anim
+
+
+def stop_widget_animation(widget: QWidget) -> None:
+    """停止由动效模块持有的控件动画。"""
     previous = getattr(widget, "_motion_anim", None)
     if isinstance(previous, QAbstractAnimation):
         with contextlib.suppress(RuntimeError):  # 已随 DeleteWhenStopped 释放
             previous.stop()
-    widget._motion_anim = anim
+    widget._motion_anim = None
 
 
 def _appear(widget: QWidget, dy: int, duration: int, delay: int, dx: int = 0) -> None:

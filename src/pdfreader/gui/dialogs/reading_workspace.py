@@ -99,14 +99,17 @@ class ReadingPane(QWidget):
             self._closed()
             return
         page = min(self.page.value() - 1, controller.page_count - 1)
-        self.page.setMaximum(controller.page_count)
         bounds = controller.get_page_bounds()
         self.view.setup_document(
             controller.page_count,
             [(round(b.width), round(b.height)) for b in bounds],
             keep_page=max(0, page),
         )
-        self.view.fit_to_width()
+        self.page.setMaximum(controller.page_count)
+        if self.isVisible():
+            self.view.fit_to_width()
+        else:
+            QTimer.singleShot(0, self.view, self.view.fit_to_width)
         if self._rotation:
             self._rotated_page()
 
