@@ -30,6 +30,11 @@ class DocumentTabBar(QTabBar):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._icon = QIcon()
+        # macOS 的 Qt 样式可在 setDocumentMode 中同步查询 tabSizeHint。
+        # 样式表里的字号不参与尺寸计算，因此按相同的 12px 量宽度。
+        self._tab_font = QFont(QApplication.font())
+        self._tab_font.setPixelSize(12)
         self.setObjectName("DocTabs")
         self.setTabsClosable(True)
         self.setMovable(True)
@@ -39,10 +44,6 @@ class DocumentTabBar(QTabBar):
         self.setElideMode(Qt.TextElideMode.ElideMiddle)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setIconSize(QSize(13, 13))
-        self._icon = QIcon()
-        # 样式表里的字号不参与 tabSizeHint 的计算：按同样的 12px 自己量宽度，免得过早省略
-        self._tab_font = QFont(QApplication.font())
-        self._tab_font.setPixelSize(12)
 
     def set_tab_icon(self, icon: QIcon) -> None:
         """所有标签左侧的文件图标（主题切换时重设）。"""
