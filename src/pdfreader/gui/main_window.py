@@ -24,7 +24,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -34,6 +34,7 @@ from PySide6.QtGui import (
     QIcon,
     QKeySequence,
     QPainter,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -80,7 +81,13 @@ from pdfreader.engines.types import (
 from pdfreader.gui.ai_assistant import AiAssistant
 from pdfreader.gui.dialogs.notebook_dialog import NotebookPanel
 from pdfreader.gui.document_tab import DocumentTab
-from pdfreader.gui.panels import AiPanel, SearchPanel, SidePanel
+from pdfreader.gui.panels import (
+    AiPanel,
+    RightStudioDock,
+    SearchPanel,
+    SidePanel,
+    StudioSegmentedHeader,
+)
 from pdfreader.gui.panels.ai_panel import AI_PANEL_MAX_WIDTH, AI_PANEL_MIN_WIDTH, AI_PANEL_WIDTH
 from pdfreader.gui.panels.sidebar import SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH
 from pdfreader.gui.selection_translator import SelectionTranslator
@@ -262,8 +269,10 @@ class MainWindow(QMainWindow):
         self._shutting_down = False
         self._notebook: NotebookPanel | None = None
         self._notebook_dock: QDockWidget | None = None
+        self._notebook_header: StudioSegmentedHeader | None = None
         self._notebook_tab: DocumentTab | None = None
         self._notebook_app_close = False
+        self._focus_saved_panels: tuple[bool, bool, bool] = (False, False, False)
         self._search_worker: SearchWorker | None = None
         self._retired_search_workers: list[SearchWorker] = []
         self._active_query: str = ""
@@ -296,6 +305,7 @@ class MainWindow(QMainWindow):
         self._last_autosave: dict[str, float] = {}
         # 只清理本进程写出的快照：上一次崩溃留下的快照必须由用户显式恢复或丢弃。
         self._owned_recovery: set[str] = set()
+        self._pending_ipc_opens: list[tuple[list[str], str]] = []
 
         # 依据设置应用主题（在建 UI 之前，避免闪烁）
         self._theme.set_theme(self._settings.theme)
@@ -450,6 +460,17 @@ class MainWindow(QMainWindow):
         tab.translator.continuousChanged.connect(self._set_translate_continuous)
         tab.translator.materialsChanged.connect(self._refresh_materials)
         tab.translator.captureRequested.connect(self._for_tab(tab, self._start_translate_capture))
+        fbar = tab.translator.enable_floating_bar(
+            pdf_editable=lambda: bool(
+                tab.controller.document is not None and tab.controller.document.meta.is_pdf
+            )
+        )
+        on = self._for_tab
+        fbar.highlightRequested.connect(on(tab, self._quick_highlight_selection))
+        fbar.underlineRequested.connect(on(tab, self._quick_underline_selection))
+        fbar.copyMergedRequested.connect(on(tab, self._copy_merged))
+        fbar.clipRequested.connect(on(tab, lambda: self._clip_quote_text()))
+        fbar.explainRequested.connect(on(tab, self._on_ai_explain))
         self._wire_tab(tab)
         return tab
 
@@ -523,6 +544,7 @@ class MainWindow(QMainWindow):
         if self._ai_dock.indexOf(tab.panel) < 0:
             self._ai_dock.addWidget(tab.panel)
         self._ai_dock.setCurrentWidget(tab.panel)
+        self._ai_dock.translate_pane.bind_translator(tab.translator, self._glossary_for)
         if refresh and tab.has_document:
             self._show_tab(tab)
         self._sync_tab_bar()
@@ -682,7 +704,7 @@ class MainWindow(QMainWindow):
         path = tab.path
         if tab.controller.is_modified:
             self._activate(tab)
-            if not self._maybe_save():
+            if not self._maybe_save(tab):
                 return False
         self._remember_reading_position(tab)
         tab.controller.close_document()  # → documentClosed → _on_tab_closed
@@ -734,6 +756,7 @@ class MainWindow(QMainWindow):
             self._parked_tabs.remove(tab)
             tab.ai.deleteLater()
             tab.panel.deleteLater()
+            tab.controller.deleteLater()
 
     def _on_tab_undo_state(self, tab: DocumentTab) -> None:
         self._refresh_tab_labels()
@@ -1172,6 +1195,21 @@ class MainWindow(QMainWindow):
             lambda: self._ai.open_settings(),
             tooltip="配置 OpenAI 兼容的模型服务（DeepSeek / 通义 / Kimi / Ollama …）",
         )
+        self.studio_action = self._act(
+            "ai",
+            "工作台",
+            self._toggle_studio_dock,
+            checkable=True,
+            tooltip="展开 / 收起右侧学术工作台（翻译 · AI 导读 · 伴随笔记）",
+        )
+        self.focus_mode_action = self._act(
+            "eye",
+            "沉浸阅读模式",
+            lambda: self.ribbon.set_focus_mode(not self.ribbon.focus_mode),
+            shortcut="Alt+Z",
+            checkable=True,
+            tooltip="收起工具栏与两侧面板，专注阅读正文",
+        )
 
         # 标签切换（不上功能区，只用快捷键）
         self.next_tab_action = self._act(
@@ -1338,6 +1376,7 @@ class MainWindow(QMainWindow):
                 ("模型", [self.ai_settings_action]),
             ],
         )
+        self.ribbon.add_trailing_action(self.studio_action)
         self.ribbon.finish()
         layout.addWidget(self.ribbon)
 
@@ -1407,9 +1446,8 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self._stack, stretch=1)
-        # AI 面板区：每个标签自己的 AI 面板（对话互不相干），整体做宽度动画
-        self._ai_dock = QStackedWidget()
-        self._ai_dock.setObjectName("AiDock")
+        # 右侧多合一学术助读工作台（翻译 · AI 导读 · 伴随笔记），整体做宽度动画
+        self._ai_dock = RightStudioDock()
         self._ai_dock.setMaximumWidth(0)
         self._ai_dock.setVisible(False)
         content_layout.addWidget(self._ai_dock)
@@ -1494,6 +1532,11 @@ class MainWindow(QMainWindow):
             btn.setProperty("current", "true" if color.upper() == current else "false")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+        if hasattr(self, "color_action"):
+            self.color_action.setProperty("swatchColor", self._settings.highlight_color)
+            color_btn = self.ribbon.button_for(self.color_action)
+            if color_btn is not None:
+                color_btn.update()
 
     # ------------------------------------------------------------------ 信号
     def _connect_signals(self) -> None:
@@ -1525,6 +1568,17 @@ class MainWindow(QMainWindow):
         self.status_bar.fitRequested.connect(self._fit_width)
         self.status_bar.zoomPercentRequested.connect(self._on_zoom_percent)
         self.ribbon.themeToggleRequested.connect(self._toggle_theme)
+        self.ribbon.commandPaletteRequested.connect(self._on_command_palette)
+        self.ribbon.focusModeToggled.connect(self._set_focus_mode)
+
+        self._ai_dock.closeRequested.connect(lambda: self._set_ai_panel_visible(False))
+        self._ai_dock.notebookRequested.connect(self._on_notebook)
+        tp = self._ai_dock.translate_pane
+        tp.translateSelectionRequested.connect(self._on_studio_translate_selection)
+        tp.parallelRequested.connect(self._on_parallel_translation)
+        tp.continuousToggled.connect(self._set_translate_continuous)
+        tp.clipQuoteRequested.connect(self._clip_quote_text)
+        tp.continueInAiRequested.connect(self._continue_translate_in_ai)
 
         self._annotation_controller.modeChanged.connect(self._on_annot_mode_changed)
 
@@ -1921,16 +1975,20 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, f"{what}失败", reason)
 
     def _on_delete_page(self) -> None:
+        tab = self._tab
+        doc = tab.controller.document
         page = self._current_page()
-        if self._controller.page_count <= 1:
+        if tab.controller.page_count <= 1:
             QMessageBox.information(self, "删除页", "不能删除文档中唯一的一页。")
             return
         reply = QMessageBox.question(self, "删除页", f"确定删除第 {page + 1} 页吗？")
         if reply != QMessageBox.StandardButton.Yes:
             return
+        if self._tab is not tab or tab.controller.document is not doc:
+            return
         position = self.pdf_view.reading_position()
-        if self._controller.delete_page(page):
-            new_page = min(page, self._controller.page_count - 1)
+        if tab.controller.delete_page(page):
+            new_page = min(page, tab.controller.page_count - 1)
             self._refresh_after_edit(keep=(new_page, 0.0 if new_page != page else position[1]))
             self.status_bar.show_message(f"已删除第 {page + 1} 页")
         else:
@@ -1959,6 +2017,9 @@ class MainWindow(QMainWindow):
             self._report_failure("合并")
 
     def _on_watermark(self) -> None:
+        tab = self._tab
+        doc = tab.controller.document
+        page = self._current_page()
         text, ok = QInputDialog.getText(self, "添加水印", "水印文字：")
         if not ok or not text.strip():
             return
@@ -1966,11 +2027,12 @@ class MainWindow(QMainWindow):
         scope, ok = QInputDialog.getItem(self, "添加水印", "应用范围：", scopes, 0, False)
         if not ok:
             return
-        page = self._current_page()
+        if self._tab is not tab or tab.controller.document is not doc:
+            return
         target: int | list[int] = (
-            list(range(self._controller.page_count)) if scope == "全部页" else page
+            list(range(tab.controller.page_count)) if scope == "全部页" else page
         )
-        if self._controller.add_watermark(target, text.strip()):
+        if tab.controller.add_watermark(target, text.strip()):
             self._refresh_after_edit()
         else:
             self._report_failure("添加水印")
@@ -1979,19 +2041,23 @@ class MainWindow(QMainWindow):
     def _on_save(self) -> None:
         self._do_save()
 
-    def _do_save(self) -> bool:
+    def _do_save(self, tab: DocumentTab | None = None) -> bool:
         """保存到当前文件（增量）；失败时先说明原因，再转为另存为。返回是否保存成功。"""
-        if self._controller.document is None:
+        target_tab = tab or self._tab
+        controller = target_tab.controller
+        if controller.document is None:
             return False
-        if self._controller.save_in_place():
-            self._after_saved()
+        if controller.save_in_place():
+            self._after_saved(target_tab)
             return True
-        reason = self._controller.last_error or "未知原因"
+        reason = controller.last_error or "未知原因"
         QMessageBox.warning(self, "无法保存到原文件", f"{reason}\n\n接下来请选择另存位置。")
-        return self._on_save_as()
+        return self._on_save_as(target_tab)
 
-    def _on_save_as(self) -> bool:
-        doc = self._controller.document
+    def _on_save_as(self, tab: DocumentTab | None = None) -> bool:
+        target_tab = tab or self._tab
+        controller = target_tab.controller
+        doc = controller.document
         old_path = doc.path if doc is not None else None
         path, _ = QFileDialog.getSaveFileName(
             self, "另存为", str(doc.path) if doc is not None else "", _PDF_FILTER
@@ -2000,41 +2066,43 @@ class MainWindow(QMainWindow):
             return False
         target = Path(path)
         existing = self._find_tab(target)
-        if existing is not None and existing is not self._tab:
+        if existing is not None and existing is not target_tab:
             QMessageBox.warning(self, "保存失败", "目标 PDF 已在另一个标签页打开。")
             return False
         old_marks = self._settings.bookmarks_for(doc.path) if doc is not None else []
-        if self._controller.save_as(target):
-            self._after_saved()
-            if self._notebook_tab is self._tab and self._notebook is not None:
+        if controller.save_as(target):
+            self._after_saved(target_tab)
+            if self._notebook_tab is target_tab and self._notebook is not None:
                 self._notebook.source_saved_as(target)
                 if self._notebook_dock is not None:
-                    self._notebook_dock.setWindowTitle("阅读笔记 · " + self._tab.label())
+                    self._notebook_dock.setWindowTitle("阅读笔记 · " + target_tab.label())
             if old_path is not None:
                 self._forget_recovery(old_path)
             if old_marks:  # 书签跟着新文件走（原文件的保留）
                 self._settings.set_bookmarks(Path(path), old_marks)
             self._settings.add_recent_file(Path(path), max_count=MAX_LIBRARY_FILES)
-            self._remember_reading_position()
+            self._remember_reading_position(target_tab)
             self._save_session()
             return True
-        QMessageBox.warning(self, "保存失败", self._controller.last_error or "保存失败")
+        QMessageBox.warning(self, "保存失败", controller.last_error or "保存失败")
         return False
 
-    def _after_saved(self) -> None:
-        doc = self._controller.document
+    def _after_saved(self, tab: DocumentTab | None = None) -> None:
+        target_tab = tab or self._tab
+        doc = target_tab.controller.document
         if doc is not None:
             self.status_bar.show_message(f"已保存到 {doc.path}")
             self._forget_recovery(doc.path)
-            self._record_meta(self._tab, opened=False)
+            self._record_meta(target_tab, opened=False)
             self._save_settings()
         self._update_title()
 
-    def _maybe_save(self) -> bool:
+    def _maybe_save(self, tab: DocumentTab | None = None) -> bool:
         """有未保存改动时弹窗询问。返回 True=可继续（已保存或放弃），False=取消。"""
-        if not self._controller.is_modified:
+        target_tab = tab or self._tab
+        if not target_tab.controller.is_modified:
             return True
-        doc = self._controller.document
+        doc = target_tab.controller.document
         name = doc.path.name if doc is not None else ""
         reply = QMessageBox.question(
             self,
@@ -2046,7 +2114,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Save,
         )
         if reply == QMessageBox.StandardButton.Save:
-            return self._do_save()
+            return self._do_save(target_tab)
         # Discard=放弃改动可继续；Cancel=取消不继续
         return bool(reply == QMessageBox.StandardButton.Discard)
 
@@ -2089,7 +2157,7 @@ class MainWindow(QMainWindow):
         self._forward_stack.clear()
         self._update_history_actions()
         self._ai.clear_marks()  # 重排已清掉页面上的速读标记，页码也可能变了
-        self._ai.invalidate_text()
+        self._ai.invalidate_text(clear_anchor=True)
         if self._controller.is_modified:
             self.status_bar.show_message(f"共 {count} 页 · 未保存")
 
@@ -2199,6 +2267,68 @@ class MainWindow(QMainWindow):
         else:
             self._report_failure("添加标记")
 
+    def _quick_highlight_selection(self, color_hex: str) -> None:
+        """选区快捷悬浮条：无需切换批注工具，直接为当前选区添加指定颜色高亮。"""
+        picked = self.pdf_view.selection_rects()
+        if picked is None or not picked[1]:
+            return
+        page_num, rects = picked
+        rgb = _hex_to_rgb(color_hex)
+        if self._controller.add_highlight(page_num, tuple(rects), color=rgb):
+            self._after_annotation_change(page_num)
+            self.pdf_view.flash_rects(page_num, rects, QColor(color_hex))
+            self.pdf_view.clear_selection()
+            self._tab.translator.hide_floating()
+            self.status_bar.show_message("已添加高亮 · Ctrl+Z 撤销")
+        else:
+            self._report_failure("添加高亮")
+
+    def _quick_underline_selection(self) -> None:
+        """选区快捷悬浮条：直接为当前选区添加下划线。"""
+        picked = self.pdf_view.selection_rects()
+        if picked is None or not picked[1]:
+            return
+        page_num, rects = picked
+        if self._controller.add_markup(page_num, tuple(rects), kind="underline", color=None):
+            self._after_annotation_change(page_num)
+            self.pdf_view.flash_rects(page_num, rects, QColor("#60A5FA"))
+            self.pdf_view.clear_selection()
+            self._tab.translator.hide_floating()
+            self.status_bar.show_message("已添加下划线 · Ctrl+Z 撤销")
+        else:
+            self._report_failure("添加下划线")
+
+    def _clip_quote_text(self, raw_text: str = "") -> None:
+        """选区悬浮条 / 翻译工作台：把当前选区或译前原文一键存入引文库。"""
+        if self.pdf_view.selected_text.strip():
+            self._on_material_requested("quote")
+            return
+        text = clean_copied_text(raw_text)
+        if not text:
+            self.status_bar.show_message("请先用「选择」工具选中文字")
+            return
+        path, title = self._doc_info(self._tab)
+        page = self._current_page() if self._controller.has_document else None
+        try:
+            self._materials.add(
+                "quote", text, quote_template(text), doc_path=path, doc_title=title, page=page
+            )
+        except MaterialError as exc:
+            QMessageBox.warning(self, "加入失败", str(exc))
+            return
+        self._refresh_materials()
+        self.status_bar.show_message("已加入引文库（附了一句转述，可在侧栏「素材」里编辑）")
+
+    def _on_studio_translate_selection(self) -> None:
+        if not self.pdf_view.selected_text.strip():
+            self.status_bar.show_message("请先在页面中选中需要翻译的文字")
+            return
+        self._tab.translator.translate_selection()
+
+    def _continue_translate_in_ai(self) -> None:
+        self._tab.translator._continue_in_panel()
+        self._set_ai_panel_visible(True, studio_tab=RightStudioDock.TAB_AI)
+
     def _on_annot_ink(self, page_num: int, stroke) -> None:  # type: ignore[no-untyped-def]
         if self._controller.add_ink(page_num, (stroke,)):
             self._after_annotation_change(page_num)
@@ -2206,28 +2336,36 @@ class MainWindow(QMainWindow):
             self._report_failure("添加手写")
 
     def _on_annot_text(self, page_num: int, point) -> None:  # type: ignore[no-untyped-def]
-        if self._controller.document is None:
+        tab = self._tab
+        doc = tab.controller.document
+        if doc is None:
             return
         if self._annotation_controller.mode == AnnotationMode.FREETEXT:
             self._place_free_text(page_num, point)
             return
         text, ok = QInputDialog.getMultiLineText(self, "便签", "输入便签内容：")
+        if self._tab is not tab or tab.controller.document is not doc:
+            return
         if ok and text.strip():
-            if self._controller.add_text_annot(page_num, point, text.strip()):
+            if tab.controller.add_text_annot(page_num, point, text.strip()):
                 self._after_annotation_change(page_num)
             else:
                 self._report_failure("添加便签")
 
     def _place_free_text(self, page_num: int, point: Point) -> None:
+        tab = self._tab
+        doc = tab.controller.document
         text, ok = QInputDialog.getMultiLineText(self, "文本框", "输入要显示在页面上的文字：")
         text = text.strip()
         if not ok or not text:
             return
-        bounds = self._controller.get_page_bounds()
+        if self._tab is not tab or tab.controller.document is not doc:
+            return
+        bounds = tab.controller.get_page_bounds()
         if not 0 <= page_num < len(bounds):
             return
         rect = free_text_rect(point, text, bounds[page_num])
-        if self._controller.add_free_text(page_num, rect, text):
+        if tab.controller.add_free_text(page_num, rect, text):
             self._after_annotation_change(page_num)
             self.status_bar.show_message("已添加文本框 · 双击侧栏卡片可修改文字 · Ctrl+Z 撤销")
         else:
@@ -2271,12 +2409,14 @@ class MainWindow(QMainWindow):
         self._navigate_to(annot.page_num, annot.rect.y0)
 
     def _on_annotation_edit(self, annot: Annotation) -> None:
+        tab = self._tab
+        doc = tab.controller.document
         text, ok = QInputDialog.getMultiLineText(
             self, "编辑笔记", f"第 {annot.page_num + 1} 页 · {annot.type_name}", annot.content
         )
-        if not ok:
+        if not ok or self._tab is not tab or tab.controller.document is not doc:
             return
-        if self._controller.set_annotation_content(annot.page_num, annot.index, text.strip()):
+        if tab.controller.set_annotation_content(annot.page_num, annot.index, text.strip()):
             self._after_annotation_change(annot.page_num)
         else:
             self._report_failure("修改笔记")
@@ -2516,9 +2656,14 @@ class MainWindow(QMainWindow):
             dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
             dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
             dock.setMinimumWidth(320)
+            nb_header = StudioSegmentedHeader(initial=RightStudioDock.TAB_NOTEBOOK, parent=dock)
+            nb_header.tabSelected.connect(self._on_notebook_studio_tab)
+            nb_header.closeRequested.connect(self._hide_notebook_dock)
+            dock.setTitleBarWidget(nb_header)
             dock.setWidget(panel)
             self._workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
             self._notebook, self._notebook_dock, self._notebook_tab = panel, dock, tab
+            self._notebook_header = nb_header
             panel.readingRequested.connect(lambda: self.pdf_view.setFocus())
             panel.closed.connect(self._release_notebook)
             panel.closeReady.connect(self._notebook_close_ready)
@@ -2526,22 +2671,39 @@ class MainWindow(QMainWindow):
         self._show_reader()
         self._set_ai_panel_visible(False)
         assert self._notebook_dock is not None
+        if self._notebook_header is not None:
+            self._notebook_header.set_active(RightStudioDock.TAB_NOTEBOOK, animate=False)
         self._notebook_dock.show()
+        self._sync_studio_action()
         self._workspace.resizeDocks([self._notebook_dock], [360], Qt.Orientation.Horizontal)
         self._notebook.editor.setFocus()
         self._set_document_state(self._controller.has_document)
         self._refresh_library()
 
+    def _hide_notebook_dock(self) -> None:
+        if self._notebook_dock is not None:
+            self._notebook_dock.hide()
+        self._sync_studio_action()
+
+    def _on_notebook_studio_tab(self, index: int) -> None:
+        if index == RightStudioDock.TAB_NOTEBOOK:
+            return
+        if self._notebook_header is not None:
+            self._notebook_header.set_active(RightStudioDock.TAB_NOTEBOOK, animate=False)
+        self._set_ai_panel_visible(True, studio_tab=index)
+
     def _release_notebook(self) -> None:
         panel, dock = self._notebook, self._notebook_dock
         self._notebook = None
         self._notebook_dock = None
+        self._notebook_header = None
         self._notebook_tab = None
         if dock is not None:
             self._workspace.removeDockWidget(dock)
             dock.deleteLater()
         elif panel is not None:
             panel.deleteLater()
+        self._sync_studio_action()
         self._set_document_state(self._controller.has_document)
         self._refresh_library()
         if not self._controller.has_document:
@@ -2644,11 +2806,9 @@ class MainWindow(QMainWindow):
                 self, "导出批注", "请选择当前未打开的新文件，避免覆盖阅读中的文档。"
             )
             return
-        try:
-            document.save_copy(target)
-        except Exception:
-            _logger.exception("导出带批注 PDF 失败")
-            QMessageBox.warning(self, "导出批注", "导出失败，请检查目标路径和文档权限。")
+        if not self._controller.save_copy(target):
+            reason = self._controller.last_error or "导出失败，请检查目标路径和文档权限。"
+            QMessageBox.warning(self, "导出批注", reason)
             return
         QMessageBox.information(
             self,
@@ -2949,15 +3109,17 @@ class MainWindow(QMainWindow):
         """为侧边栏可见缩略图渲染小图（主线程渲染受控文档，与正文一致）。"""
         from pdfreader.utils.qt_bridge import pixmap_to_qpixmap
 
+        sizes = self._controller.get_page_bounds()
+        dpr = max(1.0, float(self.devicePixelRatioF()))
         for page in pages:
             if not 0 <= page < self._controller.page_count:
                 continue
-            sizes = self._controller.get_page_bounds()
             width = sizes[page].width if page < len(sizes) else 595.0
-            scale = 112 / max(1.0, width) * max(1.0, float(self.devicePixelRatioF()))
+            scale = 112 / max(1.0, width) * dpr
             try:
                 data = self._controller.render_page(page, scale)
             except Exception:  # 缩略图失败不打断阅读，正文渲染会单独报错
+                _logger.debug("缩略图渲染失败（第 %d 页）", page + 1, exc_info=True)
                 continue
             self.sidebar.set_thumbnail(page, pixmap_to_qpixmap(data))
 
@@ -3088,14 +3250,66 @@ class MainWindow(QMainWindow):
                 "连翻已开启：接着选的文字会拼在一起翻译" if on else "连翻已关闭"
             )
 
-    def _set_ai_panel_visible(self, visible: bool) -> None:
-        """右侧 AI 面板：与左侧边栏同样的宽度动画。"""
+    def _sync_studio_action(self) -> None:
+        nb_open = self._notebook_dock is not None and not self._notebook_dock.isHidden()
+        active = self.ai_panel_action.isChecked() or nb_open
+        self.studio_action.blockSignals(True)
+        self.studio_action.setChecked(active)
+        self.studio_action.blockSignals(False)
+
+    def _toggle_studio_dock(self) -> None:
+        nb_open = self._notebook_dock is not None and not self._notebook_dock.isHidden()
+        if nb_open:
+            self._hide_notebook_dock()
+            return
+        self._set_ai_panel_visible(not self.ai_panel_action.isChecked(), studio_tab=None)
+
+    def _set_focus_mode(self, enabled: bool) -> None:
+        """沉浸模式（Alt+Z / 顶栏「沉浸」）：一键收起第二排工具条与左右侧栏，退出时原样恢复。"""
+        self.focus_mode_action.blockSignals(True)
+        self.focus_mode_action.setChecked(enabled)
+        self.focus_mode_action.blockSignals(False)
+        self.ribbon.set_toolbar_collapsed(enabled)
+        if enabled:
+            nb_open = self._notebook_dock is not None and not self._notebook_dock.isHidden()
+            self._focus_saved_panels = (
+                self.sidebar_action.isChecked(),
+                self.ai_panel_action.isChecked(),
+                nb_open,
+            )
+            if self.sidebar_action.isChecked():
+                self._set_sidebar_visible(False, persist=False)
+            if self.ai_panel_action.isChecked():
+                self._set_ai_panel_visible(False)
+            if nb_open and self._notebook_dock is not None:
+                self._notebook_dock.hide()
+                self._sync_studio_action()
+            self.status_bar.show_message("已进入沉浸阅读模式 · Alt+Z 恢复界面")
+            return
+        saved_sidebar, saved_ai, saved_nb = self._focus_saved_panels
+        self._focus_saved_panels = (False, False, False)
+        if saved_sidebar and self._controller.has_document:
+            self._set_sidebar_visible(True, persist=False)
+        if saved_nb and self._notebook_dock is not None:
+            self._notebook_dock.show()
+            self._sync_studio_action()
+        elif saved_ai:
+            self._set_ai_panel_visible(True, studio_tab=None)
+
+    def _set_ai_panel_visible(
+        self, visible: bool, *, studio_tab: int | None = RightStudioDock.TAB_AI
+    ) -> None:
+        """右侧多合一助读工作台：与左侧边栏同样的宽度动画。"""
         self.ai_panel_action.setChecked(visible)
         dock = self._ai_dock
         if visible:
             if self._notebook_dock is not None:
                 self._notebook_dock.hide()
+            if studio_tab in (RightStudioDock.TAB_TRANSLATE, RightStudioDock.TAB_AI):
+                dock.set_studio_tab(studio_tab, animate=False)
             self._ai.refresh_panel()
+            dock.translate_pane.refresh()
+        self._sync_studio_action()
         start = dock.width() if dock.isVisible() else 0
         end = self._ai_panel_width() if visible else 0
         if visible:
@@ -3111,7 +3325,7 @@ class MainWindow(QMainWindow):
             )
             if anim is not None:
                 anim.finished.connect(lambda: self._settle_ai_dock(visible))
-        if visible:
+        if visible and dock.studio_tab() == RightStudioDock.TAB_AI:
             self.ai_panel.input.setFocus()
 
     def _settle_ai_dock(self, visible: bool) -> None:
@@ -3397,6 +3611,7 @@ class MainWindow(QMainWindow):
     def _close_ocr_progress(self) -> None:
         if self._ocr_progress is not None:
             self._ocr_progress.close()
+            self._ocr_progress.deleteLater()
             self._ocr_progress = None
         self._ocr_progress_owner = None
 
@@ -3543,15 +3758,19 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 打印
     def _on_print(self) -> None:
-        if self._controller.document is None:
+        tab = self._tab
+        doc = tab.controller.document
+        if doc is None:
             return
         from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setFromTo(1, self._controller.page_count)
+        printer.setFromTo(1, tab.controller.page_count)
         dialog = QPrintDialog(printer, self)
         dialog.setWindowTitle("打印")
         if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+            return
+        if self._tab is not tab or tab.controller.document is not doc:
             return
         try:
             if self._print_document(printer):
@@ -3559,7 +3778,8 @@ class MainWindow(QMainWindow):
             else:
                 self.status_bar.show_message("打印已取消")
         except Exception as exc:
-            QMessageBox.warning(self, "打印失败", str(exc))
+            _logger.warning("打印失败", exc_info=True)
+            QMessageBox.warning(self, "打印失败", str(exc) or "打印失败，请检查打印机状态。")
 
     def _print_document(self, printer) -> bool:  # type: ignore[no-untyped-def]
         """逐页渲染并送入打印机；返回 False 表示用户中途取消。
@@ -3629,6 +3849,7 @@ class MainWindow(QMainWindow):
         try:
             data = self._controller.render_page(page_num, self.pdf_view.render_scale(page_num))
         except Exception as exc:
+            _logger.warning("第 %d 页渲染失败", page_num + 1, exc_info=True)
             self.status_bar.show_message(f"第 {page_num + 1} 页渲染失败：{exc}")
             return
         self.pdf_view.on_page_rendered(page_num, zoom, data)
@@ -3687,6 +3908,7 @@ class MainWindow(QMainWindow):
         tab.view.deleteLater()
         tab.ai.deleteLater()
         tab.panel.deleteLater()
+        tab.controller.deleteLater()
 
     def _open_in(self, tab: DocumentTab, target: Path) -> bool:
         password: str | None = None
@@ -4131,28 +4353,29 @@ class MainWindow(QMainWindow):
         self._write_recovery_snapshot(tab)
 
     def _autosave_tick(self) -> None:
-        """定时检查当前标签：有未保存改动就写恢复快照（同一文档最快 60 秒一次）。"""
+        """定时检查所有标签：有未保存改动就写恢复快照（同一文档最快 60 秒一次）。"""
         if not self._recovery_session or self._shutting_down:
             return
         if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
             return  # 正在拖选 / 拖拽，别在指针底下写大文件
         if QApplication.activeModalWidget() is not None:
             return  # 有模态对话框时不抢事件循环
-        tab = self._tab
-        if not tab.has_document:
-            return
-        doc = tab.controller.document
-        if doc is None or doc.is_closed:
-            return
-        key = self._recovery_key(doc.path)
-        if not doc.is_modified:
-            # 已保存 / 已撤销到干净状态：旧快照失去意义，删掉免得下次误提示
-            self._forget_recovery(doc.path)
-            return
-        if time.monotonic() - self._last_autosave.get(key, 0.0) < _AUTOSAVE_MIN_INTERVAL:
-            return
-        self._last_autosave[key] = time.monotonic()
-        self._write_recovery_snapshot(tab)
+        now = time.monotonic()
+        for tab in list(self._tabs):
+            if not tab.has_document:
+                continue
+            doc = tab.controller.document
+            if doc is None or doc.is_closed:
+                continue
+            key = self._recovery_key(doc.path)
+            if not doc.is_modified:
+                # 已保存 / 已撤销到干净状态：旧快照失去意义，删掉免得下次误提示
+                self._forget_recovery(doc.path)
+                continue
+            if now - self._last_autosave.get(key, 0.0) < _AUTOSAVE_MIN_INTERVAL:
+                continue
+            self._last_autosave[key] = now
+            self._write_recovery_snapshot(tab)
 
     def _write_recovery_snapshot(self, tab: DocumentTab) -> None:
         controller = tab.controller
@@ -4191,8 +4414,10 @@ class MainWindow(QMainWindow):
         if key not in self._owned_recovery:
             return
         self._owned_recovery.discard(key)
-        with contextlib.suppress(OSError):
+        try:
             self._recovery.remove_for(path)
+        except OSError:
+            _logger.warning("清理恢复快照失败：%s", path, exc_info=True)
 
     def _check_recovery(self) -> None:
         """启动时扫描遗留快照并在文献库顶部提示（非模态）。"""
@@ -4370,8 +4595,28 @@ class MainWindow(QMainWindow):
 
     def handle_second_instance(self, paths: list[str], cwd: str) -> None:
         """第二个实例转来的打开请求：激活窗口并打开文件。"""
+        if self._shutting_down:
+            return
         self.raise_()
         self.activateWindow()
+        if QApplication.activeModalWidget() is not None:
+            self._pending_ipc_opens.append((list(paths), cwd))
+            QTimer.singleShot(100, self, self._flush_pending_ipc_opens)
+            return
+        self._open_ipc_paths(paths, cwd)
+
+    def _flush_pending_ipc_opens(self) -> None:
+        if self._shutting_down or not self._pending_ipc_opens:
+            return
+        if QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(100, self, self._flush_pending_ipc_opens)
+            return
+        batch = list(self._pending_ipc_opens)
+        self._pending_ipc_opens.clear()
+        for paths, cwd in batch:
+            self._open_ipc_paths(paths, cwd)
+
+    def _open_ipc_paths(self, paths: list[str], cwd: str) -> None:
         base = Path(cwd) if cwd else Path.cwd()
         for raw in paths:
             path = Path(raw)
@@ -4381,8 +4626,10 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 持久化 / 关闭
     def _save_settings(self) -> None:
-        with contextlib.suppress(OSError):
+        try:
             self._settings_store.save(self._settings)
+        except OSError:
+            _logger.warning("保存设置失败", exc_info=True)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         # 草稿预检必须早于关闭文档/释放恢复锁；只读扫描结束后重入并复核文档。
@@ -4394,16 +4641,21 @@ class MainWindow(QMainWindow):
                     self._notebook.cancel_close()
                 event.ignore()
                 return
+        original_tab = self._tab
         # 未保存改动：逐个标签切过去询问；任一处取消则不关闭
         for tab in list(self._tabs):
             if tab.has_document and tab.controller.is_modified:
                 self._activate(tab)
-                if not self._maybe_save():
+                if not self._maybe_save(tab):
+                    if original_tab in self._tabs and self._tab is not original_tab:
+                        self._activate(original_tab)
                     if self._notebook is not None:
                         self._notebook.cancel_close()
                     self._notebook_app_close = False
                     event.ignore()
                     return
+        if original_tab in self._tabs and self._tab is not original_tab:
+            self._tab = original_tab
         for tab in self._tabs:
             self._remember_reading_position(tab)
         # 下次启动恢复这些标签（没有文档时清空，停在文献库）
@@ -4433,12 +4685,13 @@ class MainWindow(QMainWindow):
 
 def _dot_icon(color: str) -> QIcon:
     """阅读模式菜单里的小色点（设计稿 w-3 h-3 rounded-full border）。"""
-    pixmap = QPixmap(14, 14)
+    pixmap = QPixmap(28, 28)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.setPen(QColor("#A1A1AA"))
+    painter.setPen(QPen(QColor("#A1A1AA"), 2.0))
     painter.setBrush(QColor(color))
-    painter.drawEllipse(1, 1, 12, 12)
+    painter.drawEllipse(QRectF(2.0, 2.0, 24.0, 24.0))
     painter.end()
+    pixmap.setDevicePixelRatio(2.0)
     return QIcon(pixmap)

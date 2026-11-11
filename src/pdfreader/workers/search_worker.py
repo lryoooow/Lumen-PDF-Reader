@@ -10,12 +10,15 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
 from pdfreader.engines import PyMuPdfEngine
 from pdfreader.engines.exceptions import PdfEngineError
+
+_logger = logging.getLogger("pdfreader")
 
 __all__ = ["SearchWorker"]
 
@@ -64,6 +67,7 @@ class SearchWorker(QThread):
             self.searchFailed.emit(str(exc))
             return
         except Exception as exc:
+            _logger.warning("搜索打开文档失败：%s", path, exc_info=True)
             self.searchFailed.emit(f"打开文档失败：{exc}")
             return
 
@@ -75,6 +79,7 @@ class SearchWorker(QThread):
         except PdfEngineError as exc:
             self.searchFailed.emit(str(exc))
         except Exception as exc:
+            _logger.warning("搜索执行失败", exc_info=True)
             self.searchFailed.emit(f"搜索失败：{exc}")
         finally:
             with contextlib.suppress(Exception):

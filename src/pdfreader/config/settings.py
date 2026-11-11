@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
+import os
+import shutil
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from pdfreader.utils.profile import profile_directory
+
+_logger = logging.getLogger("pdfreader")
 
 __all__ = [
     "SELECTION_TRANSLATE_MODES",
@@ -308,8 +314,12 @@ class SettingsStore:
         except FileNotFoundError:
             return defaults
         except (OSError, ValueError):
+            _logger.warning("读取或解析设置文件失败：%s", self._path, exc_info=True)
+            self._backup_corrupt()
             return defaults
         if not isinstance(data, dict):
+            _logger.warning("设置文件顶层不是 JSON 对象：%s", self._path)
+            self._backup_corrupt()
             return defaults
         values = {
             f.name: _coerce(f.name, data[f.name], getattr(defaults, f.name))
@@ -318,14 +328,23 @@ class SettingsStore:
         }
         return Settings(**values)  # type: ignore[arg-type]
 
+    def _backup_corrupt(self) -> None:
+        with contextlib.suppress(OSError):
+            if self._path.is_file() and self._path.stat().st_size > 0:
+                backup = self._path.with_name(f"{self._path.name}.corrupt-{int(time.time())}")
+                shutil.copy2(self._path, backup)
+
     def save(self, settings: Settings) -> None:
-        """保存设置（自动创建目录；先写临时文件再原子替换）。"""
+        """保存设置（自动创建目录；先写临时文件并落盘再原子替换）。"""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".json.tmp")
         try:
-            tmp.write_text(
-                json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            payload = json.dumps(asdict(settings), ensure_ascii=False, indent=2)
+            with tmp.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                with contextlib.suppress(OSError):
+                    os.fsync(handle.fileno())
             tmp.replace(self._path)
         except (OSError, UnicodeError):
             with contextlib.suppress(OSError):

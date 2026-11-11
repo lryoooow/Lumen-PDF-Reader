@@ -81,4 +81,7 @@ class DocumentTabBar(QTabBar):
         menu.addAction("关闭", lambda: self.tabCloseRequested.emit(index))
         others = menu.addAction("关闭其他标签", lambda: self.closeOthersRequested.emit(index))
         others.setEnabled(self.count() > 1)
-        menu.exec(event.globalPos())
+        try:
+            menu.exec(event.globalPos())
+        finally:
+            menu.deleteLater()

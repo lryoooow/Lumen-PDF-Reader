@@ -98,6 +98,7 @@ class RecoveryStore:
     def __init__(self, directory: Path | None = None) -> None:
         self._directory = (directory or default_recovery_dir()).expanduser()
         self._session_file: IO[bytes] | None = None
+        self._session_keys: set[str] = set()
 
     @property
     def directory(self) -> Path:
@@ -162,6 +163,10 @@ class RecoveryStore:
         except OSError as exc:
             raise RecoveryError(f"无法创建恢复目录：{exc}") from exc
 
+        if key not in self._session_keys:
+            self._archive_unclaimed_snapshot(key)
+            self._session_keys.add(key)
+
         tmp = self._directory / f"{key}.pdf.tmp"
         target = self._directory / f"{key}.pdf"
         try:
@@ -198,6 +203,47 @@ class RecoveryStore:
             raise
         self.prune()
         return entry
+
+    def _archive_unclaimed_snapshot(self, key: str) -> None:
+        """若存在上一会话遗留、尚未被用户恢复或丢弃的同 key 快照，先改名保留。"""
+        old_manifest = self._directory / f"{key}.json"
+        old_snapshot = self._directory / f"{key}.pdf"
+        if not (old_manifest.is_file() and old_snapshot.is_file()):
+            return
+        entry = self._load(old_manifest)
+        if entry is None:
+            return
+        stamp = int(entry.created_at) if entry.created_at > 0 else int(time.time())
+        archived_key = f"{key}-prev-{stamp}"
+        counter = 2
+        while (self._directory / f"{archived_key}.json").exists() or (
+            self._directory / f"{archived_key}.pdf"
+        ).exists():
+            archived_key = f"{key}-prev-{stamp}-{counter}"
+            counter += 1
+        archived_pdf = self._directory / f"{archived_key}.pdf"
+        archived_json = self._directory / f"{archived_key}.json"
+        try:
+            shutil.copy2(old_snapshot, archived_pdf)
+            archived_entry = RecoveryEntry(
+                key=archived_key,
+                snapshot=archived_pdf,
+                manifest=archived_json,
+                original=entry.original,
+                title=entry.title,
+                created_at=entry.created_at,
+                page_count=entry.page_count,
+                encrypted=entry.encrypted,
+                original_size=entry.original_size,
+                original_mtime_ns=entry.original_mtime_ns,
+            )
+            self._write_manifest(archived_entry)
+        except OSError:
+            _logger.warning("归档上一次未恢复的快照失败：%s", old_snapshot, exc_info=True)
+            with contextlib.suppress(OSError):
+                archived_pdf.unlink()
+            with contextlib.suppress(OSError):
+                archived_json.unlink()
 
     def _write_manifest(self, entry: RecoveryEntry) -> None:
         payload = {
@@ -251,14 +297,14 @@ class RecoveryStore:
         if not isinstance(original_raw, str):
             return None
         original = Path(original_raw)
-        if not original.is_absolute() or original.suffix.lower() != ".pdf":
+        if not original.is_absolute():
             return None
         try:
             original_key = _key_for(original)
         except (OSError, ValueError):
             _logger.warning("无法解析恢复清单中的原文件路径：%s", manifest, exc_info=True)
             return None
-        if original_key != key:
+        if not (key == original_key or key.startswith(f"{original_key}-prev-")):
             _logger.warning("恢复清单与原文件路径不匹配：%s", manifest)
             return None
         snapshot = self._directory / f"{key}.pdf"
@@ -332,6 +378,10 @@ class RecoveryStore:
             kept.append(entry)
             total += size
         self._prune_backups()
+        if self._directory.is_dir():
+            for stale_tmp in self._directory.glob("*.tmp"):
+                with contextlib.suppress(OSError):
+                    stale_tmp.unlink()
 
     def _prune_backups(self) -> None:
         folder = self._directory / "backups"
@@ -367,6 +417,10 @@ class RecoveryStore:
         except OSError as exc:
             raise RecoveryError(f"备份原文件失败：{exc}") from exc
         self._prune_backups()
+        if self._directory.is_dir():
+            for stale_tmp in self._directory.glob("*.tmp"):
+                with contextlib.suppress(OSError):
+                    stale_tmp.unlink()
         return target
 
     def replace_original(self, entry: RecoveryEntry) -> Path:

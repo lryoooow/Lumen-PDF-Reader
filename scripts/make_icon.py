@@ -25,13 +25,16 @@ from PySide6.QtSvg import QSvgRenderer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from pdfreader.gui.theme.icons import _app_logo_svg  # noqa: E402
+from pdfreader.gui.theme.palette import LIGHT  # noqa: E402
 
-OUT = Path(__file__).resolve().parent.parent / "src" / "pdfreader" / "resources" / "icons" / "app.ico"
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "src" / "pdfreader" / "resources" / "icons" / "app.ico"
+DOC_LOGO = ROOT / "docs" / "images" / "logo.png"
 
 
 def main() -> int:
     QApplication(sys.argv[:1])
-    renderer = QSvgRenderer(QByteArray(_app_logo_svg("#C96A49", "#B75B3C")))
+    renderer = QSvgRenderer(QByteArray(_app_logo_svg(LIGHT.brand_from, LIGHT.brand_to)))
     img = QImage(256, 256, QImage.Format.Format_ARGB32)
     img.fill(0)
     painter = QPainter(img)
@@ -53,6 +56,8 @@ def main() -> int:
         format="ICO",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
+    if DOC_LOGO.parent.exists():
+        pil.save(DOC_LOGO, format="PNG")
     print(f"已生成图标: {OUT} ({OUT.stat().st_size} bytes)")
     return 0
 

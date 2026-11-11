@@ -8,11 +8,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, QRectF, Qt
 from PySide6.QtGui import QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-__all__ = ["ICON_NAMES", "app_icon", "render_icon", "render_pixmap"]
+__all__ = ["ICON_NAMES", "app_icon", "app_logo_pixmap", "render_icon", "render_pixmap"]
 
 # ---------------------------------------------------------------------------
 # 线性图标：name -> 内部 SVG 元素（描边色以 {c} 占位，渲染时替换）
@@ -97,8 +97,11 @@ def _device_pixel_ratio() -> float:
     app = QGuiApplication.instance()
     if app is None:
         return 1.0
+    ratios = [float(screen.devicePixelRatio()) for screen in app.screens() if screen is not None]
+    if ratios:
+        return max(1.0, max(ratios))
     screen = app.primaryScreen()
-    return float(screen.devicePixelRatio()) if screen is not None else 1.0
+    return max(1.0, float(screen.devicePixelRatio())) if screen is not None else 1.0
 
 
 def _svg(name: str, color: str, stroke: float) -> bytes:
@@ -111,23 +114,30 @@ def _svg(name: str, color: str, stroke: float) -> bytes:
     return doc.encode("utf-8")
 
 
-def render_pixmap(name: str, color: str, size: int = 22, *, stroke: float = 1.6) -> QPixmap:
+def render_pixmap(
+    name: str,
+    color: str,
+    size: int = 22,
+    *,
+    stroke: float = 1.6,
+    dpr: float | None = None,
+) -> QPixmap:
     """把某个图标按指定颜色渲染为 :class:`QPixmap`（考虑高 DPI）。"""
-    dpr = _device_pixel_ratio()
-    key = (name, color, size, dpr, stroke)
+    effective_dpr = max(1.0, float(dpr if dpr is not None else _device_pixel_ratio()))
+    key = (name, color, size, effective_dpr, stroke)
     cached = _cache.get(key)
     if cached is not None:
         return cached
 
     renderer = QSvgRenderer(QByteArray(_svg(name, color, stroke)))
-    px = max(1, round(size * dpr))
+    px = max(1, round(size * effective_dpr))
     pixmap = QPixmap(px, px)
-    pixmap.setDevicePixelRatio(dpr)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    renderer.render(painter)
+    renderer.render(painter, QRectF(0, 0, px, px))
     painter.end()
+    pixmap.setDevicePixelRatio(px / max(1, size))
     _cache[key] = pixmap
     return pixmap
 
@@ -146,13 +156,16 @@ def render_icon(
     可勾选按钮被选中时 Qt 会自动切换到 On 态图标。
     """
     icon = QIcon()
-    icon.addPixmap(
-        render_pixmap(name, color, size, stroke=stroke), QIcon.Mode.Normal, QIcon.State.Off
-    )
+    ratios = sorted({1.0, _device_pixel_ratio(), 2.0})
+    for r in ratios:
+        off_pm = render_pixmap(name, color, size, stroke=stroke, dpr=r)
+        icon.addPixmap(off_pm, QIcon.Mode.Normal, QIcon.State.Off)
+        icon.addPixmap(off_pm, QIcon.Mode.Active, QIcon.State.Off)
     if on_color is not None:
-        on_pm = render_pixmap(name, on_color, size, stroke=stroke)
-        icon.addPixmap(on_pm, QIcon.Mode.Normal, QIcon.State.On)
-        icon.addPixmap(on_pm, QIcon.Mode.Active, QIcon.State.On)
+        for r in ratios:
+            on_pm = render_pixmap(name, on_color, size, stroke=stroke, dpr=r)
+            icon.addPixmap(on_pm, QIcon.Mode.Normal, QIcon.State.On)
+            icon.addPixmap(on_pm, QIcon.Mode.Active, QIcon.State.On)
     return icon
 
 
@@ -188,22 +201,24 @@ def app_icon(accent: str = "#C96A49", accent_dark: str = "#B75B3C") -> QIcon:
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        renderer.render(painter)
+        renderer.render(painter, QRectF(0, 0, size, size))
         painter.end()
         icon.addPixmap(pixmap)
     return icon
 
 
-def app_logo_pixmap(size: int, accent: str, accent_dark: str) -> QPixmap:
-    """欢迎页用的大 logo 像素图。"""
-    dpr = _device_pixel_ratio()
+def app_logo_pixmap(
+    size: int, accent: str, accent_dark: str, *, dpr: float | None = None
+) -> QPixmap:
+    """欢迎页与顶栏用的 logo 像素图。"""
+    effective_dpr = max(1.0, float(dpr if dpr is not None else _device_pixel_ratio()))
     renderer = QSvgRenderer(QByteArray(_app_logo_svg(accent, accent_dark)))
-    px = round(size * dpr)
+    px = max(1, round(size * effective_dpr))
     pixmap = QPixmap(px, px)
-    pixmap.setDevicePixelRatio(dpr)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    renderer.render(painter)
+    renderer.render(painter, QRectF(0, 0, px, px))
     painter.end()
+    pixmap.setDevicePixelRatio(px / max(1, size))
     return pixmap

@@ -27,6 +27,7 @@ from pdfreader.utils.profile import profile_directory
 __all__ = [
     "create_application",
     "file_from_argv",
+    "files_from_argv",
     "global_exception_handler",
     "main",
 ]
@@ -181,15 +182,22 @@ def run_selftest() -> int:
     return 0 if result["ok"] else 1
 
 
-def file_from_argv(argv: list[str]) -> Path | None:
-    """命令行里第一个存在的 PDF/EPUB 路径（含拖到 exe 图标上的文件）。"""
+def files_from_argv(argv: list[str]) -> list[Path]:
+    """命令行里全部存在的 PDF/EPUB 路径（含多选拖到 exe 图标上的文件）。"""
+    found: list[Path] = []
     for arg in argv[1:]:
         if arg.startswith("-"):
             continue
         candidate = Path(arg)
         if candidate.suffix.lower() in (".pdf", ".epub") and candidate.is_file():
-            return candidate
-    return None
+            found.append(candidate)
+    return found
+
+
+def file_from_argv(argv: list[str]) -> Path | None:
+    """命令行里第一个存在的 PDF/EPUB 路径（含拖到 exe 图标上的文件）。"""
+    files = files_from_argv(argv)
+    return files[0] if files else None
 
 
 def main() -> int:
@@ -201,25 +209,25 @@ def main() -> int:
     _logger.info("PDF Reader %s 启动", __version__)
     enable_faulthandler()
     sys.excepthook = global_exception_handler
-    initial = file_from_argv(sys.argv)
+    initial_files = files_from_argv(sys.argv)
     app = create_application(sys.argv)
 
     # 单实例：第二次启动只把文件交给已运行的窗口，不再开第二个进程
     instance = SingleInstance()
     if not instance.try_start():
-        sent = instance.send_open([str(initial)] if initial is not None else [], str(Path.cwd()))
+        sent = instance.send_open([str(p) for p in initial_files], str(Path.cwd()))
         if not sent:
             _logger.warning("已有实例在运行，但转交打开请求失败")
         return 0
     app.aboutToQuit.connect(instance.close)
 
-    # 命令行给了文件时只打开它；否则恢复上次退出时的标签
-    window = MainWindow(restore_session=initial is None)
+    # 命令行给了文件时只打开它们；否则恢复上次退出时的标签
+    window = MainWindow(restore_session=not initial_files)
     instance.messageReceived.connect(window.handle_second_instance)
     window.show()
-    if initial is not None:
+    if initial_files:
         # 等事件循环起来、窗口完成布局后再打开（适宽缩放依赖视口尺寸）
-        QTimer.singleShot(0, lambda: window.open_path(initial))
+        QTimer.singleShot(0, lambda: window._open_paths(initial_files))
 
     _logger.info("进入事件循环")
     return app.exec()

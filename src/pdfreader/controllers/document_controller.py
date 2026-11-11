@@ -188,7 +188,7 @@ class DocumentController(QObject):
 
     def get_page_sizes(self) -> list[tuple[int, int]]:
         """获取所有页的原始尺寸 (width, height) @ 72dpi（用于视图布局）。"""
-        return [(int(b.width), int(b.height)) for b in self.get_page_bounds()]
+        return [(round(b.width), round(b.height)) for b in self.get_page_bounds()]
 
     def _query(self, what: str, fn: Callable[[Document], _T], default: _T) -> _T:
         """只读查询：失败时记日志并返回默认值（这些查询失败不应打断阅读）。"""
@@ -398,12 +398,22 @@ class DocumentController(QObject):
         return self._run("修改批注笔记", lambda d: d.set_annotation_content(page_num, index, text))
 
     def delete_annotation(self, page_num: int, index: int) -> bool:
-        deleted: list[bool] = []
-        ok = self._run("删除批注", lambda d: deleted.append(d.delete_annotation(page_num, index)))
-        if ok and deleted and not deleted[0]:
+        if self._document is None or self._document.is_closed:
+            self._last_error = "未打开文档"
+            return False
+        try:
+            ok = self._document.delete_annotation(page_num, index)
+        except Exception as exc:
+            self._last_error = str(exc)
+            _logger.warning("删除批注失败：%s", exc, exc_info=True)
+            return False
+        if not ok:
             self._last_error = "该批注已不存在"
             return False
-        return ok
+        self._last_error = ""
+        self.documentChanged.emit()
+        self.undoStateChanged.emit()
+        return True
 
     def insert_image(self, page_num: int, rect: Rect, image_path: Path) -> bool:
         return self._run("插入图片", lambda d: d.insert_image(page_num, rect, image_path))
@@ -458,8 +468,11 @@ class DocumentController(QObject):
             _logger.warning("%s失败", name, exc_info=True)
             return False
         if ok:
+            self._last_error = ""
             self.documentChanged.emit()
             self.undoStateChanged.emit()
+        else:
+            self._last_error = f"没有可{name}的操作"
         return ok
 
     def can_undo(self) -> bool:

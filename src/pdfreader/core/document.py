@@ -75,11 +75,15 @@ class Document:
             PdfEngineError 及子类：打开失败（见 engines.exceptions）
         """
         handle = engine.open(path, password=password)
-        meta = engine.metadata(handle)
-        doc = cls(path=path, meta=meta, _engine=engine, _handle=handle, _password=password)
-        # 刚打开时磁盘内容 == 当前状态，历史位置即"已保存位置"
-        doc._saved_position = doc._history_position()
-        return doc
+        try:
+            meta = engine.metadata(handle)
+            doc = cls(path=path, meta=meta, _engine=engine, _handle=handle, _password=password)
+            # 刚打开时磁盘内容 == 当前状态，历史位置即"已保存位置"
+            doc._saved_position = doc._history_position()
+            return doc
+        except BaseException:
+            engine.close(handle)
+            raise
 
     # ------------------------------------------------------------------
     # 基本属性
@@ -224,7 +228,19 @@ class Document:
         self._ensure_open()
         assert self._handle is not None
         before = self._history_position()
-        fn(self._handle)
+        try:
+            fn(self._handle)
+        except BaseException:
+            if self._history_position() != before:
+                if 0 <= before < self._saved_position:
+                    self._saved_position = -1
+                self._sync_page_count()
+                if page_num is None:
+                    self.invalidate_page_cache()
+                else:
+                    self.invalidate_page_cache(page_num)
+                self.mark_modified()
+            raise
         if 0 <= before < self._saved_position:
             self._saved_position = -1
         self._sync_page_count()
@@ -338,10 +354,15 @@ class Document:
 
     def delete_annotation(self, page_num: int, index: int) -> bool:
         """删除指定页的第 index 个批注；序号不存在返回 False。"""
-        existing = self.list_annotations(page_num)
-        if not 0 <= index < len(existing):
+        self._ensure_open()
+        assert self._handle is not None
+        before = self._history_position()
+        if not self._engine.delete_annotation(self._handle, page_num, index):
             return False
-        self._edit(lambda h: self._engine.delete_annotation(h, page_num, index), page_num)
+        if 0 <= before < self._saved_position:
+            self._saved_position = -1
+        self.invalidate_page_cache(page_num)
+        self.mark_modified()
         return True
 
     def annotation_index_at(self, page_num: int, point: Point) -> int | None:

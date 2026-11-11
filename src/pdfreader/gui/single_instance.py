@@ -18,7 +18,7 @@ import logging
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from pdfreader.utils.profile import profile_override
@@ -187,7 +187,7 @@ class SingleInstance(QObject):
         paths = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else []
         raw_cwd = data.get("cwd")
         cwd = str(raw_cwd) if isinstance(raw_cwd, str) else str(Path.cwd())
-        self.messageReceived.emit(paths, cwd)
+        QTimer.singleShot(0, self, lambda p=paths, c=cwd: self.messageReceived.emit(p, c))
 
     def _drop_socket(self, socket: QLocalSocket) -> None:
         if self._buffers.pop(socket, None) is None:

@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
+import os
+import shutil
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
 from pdfreader.config import settings as _settings
+
+_logger = logging.getLogger("pdfreader")
 
 __all__ = [
     "PRESETS",
@@ -265,9 +271,15 @@ class AiSettingsStore:
         defaults = AiSettings()
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return defaults
         except (OSError, ValueError):
+            _logger.warning("读取或解析 AI 设置失败：%s", self._path, exc_info=True)
+            self._backup_corrupt()
             return defaults
         if not isinstance(data, dict):
+            _logger.warning("AI 设置文件顶层不是 JSON 对象：%s", self._path)
+            self._backup_corrupt()
             return defaults
         raw_providers = data.get("providers")
         providers = [
@@ -289,11 +301,22 @@ class AiSettingsStore:
             ),
         )
 
+    def _backup_corrupt(self) -> None:
+        with contextlib.suppress(OSError):
+            if self._path.is_file() and self._path.stat().st_size > 0:
+                backup = self._path.with_name(f"{self._path.name}.corrupt-{int(time.time())}")
+                shutil.copy2(self._path, backup)
+
     def save(self, settings: AiSettings) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8")
         try:
+            payload = json.dumps(asdict(settings), ensure_ascii=False, indent=2)
+            with tmp.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                with contextlib.suppress(OSError):
+                    os.fsync(handle.fileno())
             tmp.replace(self._path)
         except OSError:
             with contextlib.suppress(OSError):

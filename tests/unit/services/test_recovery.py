@@ -222,3 +222,26 @@ def test_session_lock_keeps_lock_file_nonempty(tmp_path: Path) -> None:
         assert (store.directory / ".session.lock").stat().st_size >= 1
     finally:
         store.release_session()
+
+
+def test_new_session_write_archives_unclaimed_previous_snapshot(tmp_path: Path) -> None:
+    """H3 回归：新会话写同路径快照时，不得覆盖上次崩溃遗留尚未处理的快照。"""
+    original = tmp_path / "paper.pdf"
+    original.write_bytes(b"original")
+
+    # 会话 1：写入大量未保存改动后崩溃
+    store_session1 = _store(tmp_path)
+    _write(store_session1, original, b"important_crash_edits")
+
+    # 会话 2：重启后用户未点恢复，直接打开同一文件做小改动并触发自动快照，随后保存
+    store_session2 = _store(tmp_path)
+    _write(store_session2, original, b"session2_minor_edit")
+    entries_during = store_session2.entries()
+    payloads = {e.snapshot.read_bytes() for e in entries_during}
+    assert payloads == {b"important_crash_edits", b"session2_minor_edit"}
+
+    # 会话 2 保存文件并清理本会话快照：上次崩溃归档的快照仍保留
+    assert store_session2.remove_for(original) is True
+    remaining = store_session2.entries()
+    assert len(remaining) == 1
+    assert remaining[0].snapshot.read_bytes() == b"important_crash_edits"

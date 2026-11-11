@@ -67,12 +67,17 @@ def _keep(widget: QWidget, anim: QAbstractAnimation) -> None:
 
 
 def stop_widget_animation(widget: QWidget) -> None:
-    """停止由动效模块持有的控件动画。"""
+    """停止由动效模块持有的控件动画，并恢复其原始布局坐标。"""
     previous = getattr(widget, "_motion_anim", None)
     if isinstance(previous, QAbstractAnimation):
         with contextlib.suppress(RuntimeError):  # 已随 DeleteWhenStopped 释放
             previous.stop()
     widget._motion_anim = None
+    rest = getattr(widget, "_motion_rest_pos", None)
+    if isinstance(rest, QPoint):
+        with contextlib.suppress(RuntimeError):
+            widget.move(rest)
+    widget._motion_rest_pos = None
 
 
 def _appear(widget: QWidget, dy: int, duration: int, delay: int, dx: int = 0) -> None:
@@ -81,6 +86,7 @@ def _appear(widget: QWidget, dy: int, duration: int, delay: int, dx: int = 0) ->
     先立即把不透明度设为 0，再在下一轮事件循环（或 ``delay`` 毫秒后）读取控件**此刻**的
     位置作为终点开始动画——控件刚显示时布局可能还没算好，提前取的位置是错的。
     """
+    stop_widget_animation(widget)
     if not _enabled or not widget.isVisible():
         widget.setGraphicsEffect(None)
         return
@@ -102,7 +108,10 @@ def _appear(widget: QWidget, dy: int, duration: int, delay: int, dx: int = 0) ->
         fade.setEasingCurve(EASE)
         group.addAnimation(fade)
         if dy or dx:
-            end = widget.pos()
+            end = getattr(widget, "_motion_rest_pos", None)
+            if not isinstance(end, QPoint):
+                end = widget.pos()
+                widget._motion_rest_pos = end
             slide = QPropertyAnimation(widget, b"pos", group)
             slide.setStartValue(end + QPoint(dx, dy))
             slide.setEndValue(end)
@@ -112,8 +121,18 @@ def _appear(widget: QWidget, dy: int, duration: int, delay: int, dx: int = 0) ->
 
         def finish() -> None:
             with contextlib.suppress(RuntimeError):
+                rest = getattr(widget, "_motion_rest_pos", None)
+                if isinstance(rest, QPoint):
+                    widget.move(rest)
+                widget._motion_rest_pos = None
                 if widget.graphicsEffect() is effect:
                     widget.setGraphicsEffect(None)
+                parent = widget.parentWidget()
+                if parent is not None:
+                    lay = parent.layout()
+                    if lay is not None and lay.indexOf(widget) >= 0:
+                        lay.invalidate()
+                        lay.activate()
 
         # setGraphicsEffect(None) 会立即销毁动画目标；等 finished 的发送栈退出后再清理，
         # 避免 Qt / PySide 在动画析构与目标销毁重入时调用已析构对象的虚函数。

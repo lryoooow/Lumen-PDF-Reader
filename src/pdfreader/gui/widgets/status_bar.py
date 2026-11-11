@@ -98,9 +98,9 @@ class StatusBar(QWidget):
         self._progress.setTextVisible(False)
         self._progress.setFixedWidth(96)
         for w in (self._prev_btn, self._page_edit, self._total_lbl, self._next_btn):
-            nav.addWidget(w)
+            nav.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
         nav.addSpacing(8)
-        nav.addWidget(self._progress)
+        nav.addWidget(self._progress, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(self._nav)
 
         # --- 消息（绿点 + 文字） ---
@@ -114,8 +114,8 @@ class StatusBar(QWidget):
         self._dot.setFixedSize(6, 6)
         self._message = QLabel("")
         self._message.setObjectName("StatusMessage")
-        msg.addWidget(self._dot)
-        msg.addWidget(self._message)
+        msg.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        msg.addWidget(self._message, 0, Qt.AlignmentFlag.AlignVCenter)
         self._message_box.setVisible(False)
         lay.addWidget(self._message_box)
         lay.addStretch(1)

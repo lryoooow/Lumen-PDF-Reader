@@ -17,7 +17,9 @@ GUI 侧统一经 ``workers/convert_worker.py`` 的 ``ConvertWorker`` 调用，�
 
 from __future__ import annotations
 
+import contextlib
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -181,7 +183,14 @@ class ConvertService:
             text = "\n".join(engine.extract_text(doc, i).full_text for i in range(count))
         finally:
             engine.close(doc)
-        output.write_text(text, encoding="utf-8")
+        tmp = output.with_name(f".{output.name}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(output)
+        finally:
+            with contextlib.suppress(OSError):
+                if tmp.exists():
+                    tmp.unlink()
         return ConvertResult(output, "纯文本", count, (output,))
 
     def _to_docx(self, source: Path, output: Path, password: str | None) -> ConvertResult:
@@ -193,12 +202,17 @@ class ConvertService:
             cv = Converter(str(source), password=password)
         except Exception as exc:
             raise ConvertError(f"PDF→Word 失败:{exc}") from exc
+        tmp = output.with_name(f".{output.name}.{uuid.uuid4().hex[:8]}.docx.tmp")
         try:
-            cv.convert(str(output))
+            cv.convert(str(tmp))
+            tmp.replace(output)
         except Exception as exc:
             raise ConvertError(f"PDF→Word 失败:{exc}") from exc
         finally:
             cv.close()  # 异常路径也要关，否则 Windows 上源文件被锁
+            with contextlib.suppress(OSError):
+                if tmp.exists():
+                    tmp.unlink()
         return ConvertResult(output, "Word 文档", 0, (output,))
 
     def _to_xlsx(self, source: Path, output: Path, password: str | None) -> ConvertResult:
@@ -208,6 +222,7 @@ class ConvertService:
             from openpyxl import Workbook
         except ImportError as exc:
             raise ConvertError("PDF→Excel 需要 pdfplumber/openpyxl,未安装") from exc
+        tmp = output.with_name(f".{output.name}.{uuid.uuid4().hex[:8]}.xlsx.tmp")
         try:
             wb = Workbook()
             ws = wb.active
@@ -221,7 +236,12 @@ class ConvertService:
                         for row in table:
                             ws.append([_ILLEGAL_XLSX.sub("", c or "") for c in row])
                             row_count += 1
-            wb.save(str(output))
+            wb.save(str(tmp))
+            tmp.replace(output)
         except Exception as exc:
             raise ConvertError(f"PDF→Excel 失败:{exc}") from exc
+        finally:
+            with contextlib.suppress(OSError):
+                if tmp.exists():
+                    tmp.unlink()
         return ConvertResult(output, "Excel 表格", row_count, (output,))

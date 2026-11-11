@@ -139,6 +139,67 @@ class TestHeaderAndRibbon:
         finally:
             motion.set_enabled(False)
 
+    def test_hidpi_icons_are_unclipped_and_centered(self) -> None:
+        """高分屏（150% / 200% DPI）下 SVG 图标必须完整渲染在目标逻辑尺寸内，右侧与底部不得被裁切。"""
+        from PySide6.QtCore import QSize
+
+        from pdfreader.gui.theme.icons import app_logo_pixmap, render_pixmap
+
+        for dpr in (1.0, 1.5, 2.0):
+            for name in ("open", "save", "print", "search", "close_doc", "select", "hand"):
+                pm = render_pixmap(name, "#3F3F46", size=18, dpr=dpr)
+                assert pm.deviceIndependentSize().toSize() == QSize(18, 18)
+                img = pm.toImage()
+                w, h = img.width(), img.height()
+                xs = [x for y in range(h) for x in range(w) if img.pixelColor(x, y).alpha() > 20]
+                ys = [y for y in range(h) for x in range(w) if img.pixelColor(x, y).alpha() > 20]
+                assert xs and ys
+                # 24×24 视框的图案在右半区与下半区都必须有像素，且视觉中心接近画布中心
+                assert max(xs) >= int(w * 0.70), f"{name} @{dpr}x 右侧被裁切或未充满"
+                assert max(ys) >= int(h * 0.70), f"{name} @{dpr}x 底部被裁切或未充满"
+                center_x = (min(xs) + max(xs)) / 2.0
+                center_y = (min(ys) + max(ys)) / 2.0
+                assert abs(center_x - w / 2.0) <= w * 0.18, f"{name} @{dpr}x 水平偏移过大"
+                assert abs(center_y - h / 2.0) <= h * 0.18, f"{name} @{dpr}x 垂直偏移过大"
+
+            logo = app_logo_pixmap(28, "#C96A49", "#B75B3C", dpr=dpr)
+            assert logo.deviceIndependentSize().toSize() == QSize(28, 28)
+
+    def test_ribbon_buttons_and_overflow_are_aligned_and_uncompressed(
+        self, window: MainWindow, tmp_path: Path
+    ) -> None:
+        """功能区所有可见按钮、组标题及窄窗「更多」按钮垂直对齐且文字不被压缩。"""
+        from PySide6.QtCore import QPoint
+
+        window.open_path(_make_paper(tmp_path / "align.pdf"))
+        QApplication.processEvents()
+        page = window.ribbon._stack.currentWidget()
+        assert page is not None
+        buttons = [
+            btn
+            for group in page._groups  # type: ignore[attr-defined]
+            for btn in group.buttons
+            if btn.isVisibleTo(page)
+        ]
+        assert len(buttons) >= 10
+        top_ys = {btn.mapTo(page, QPoint(0, 0)).y() for btn in buttons}
+        heights = {btn.height() for btn in buttons}
+        assert len(top_ys) == 1, f"功能区按钮顶部未对齐：{top_ys}"
+        assert heights == {30}
+        for btn in buttons:
+            assert btn.width() >= btn.sizeHint().width(), f"按钮 {btn.text()} 宽度被压缩"
+        title_ys = {lbl.mapTo(page, QPoint(0, 0)).y() for lbl in window.ribbon.group_titles(0)}
+        assert len(title_ys) == 1, f"功能区组标题未对齐：{title_ys}"
+
+        # 窄窗口出现「更多」按钮时，与普通工具按钮处在同一水平行
+        window.setMinimumWidth(500)
+        window.resize(560, 820)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        overflow = page.overflow  # type: ignore[attr-defined]
+        assert overflow.isVisibleTo(page)
+        assert overflow.mapTo(page, QPoint(0, 0)).y() in top_ys
+
 
 # ---------------------------------------------------------------- 批注工具 / 提示胶囊 / 颜色
 class TestTools:
@@ -270,7 +331,7 @@ class TestSidebarCiteLibrary:
 
     def test_library_lists_recent_files(self, window: MainWindow, tmp_path: Path) -> None:
         assert window._shell.currentWidget() is window.library
-        assert "都有回响" in window.library._title.text()
+        assert "安静沉淀" in window.library._title.text()
         path = _make_paper(tmp_path / "recent.pdf")
         window._settings.recent_files = [str(path), str(tmp_path / "gone.pdf")]
         window._refresh_library()
@@ -360,9 +421,9 @@ class TestReadingAreaVisuals:
 
 
 def test_palette_matches_design_tokens() -> None:
-    assert LIGHT.window == "#F6F5F1" and DARK.window == "#0F1115"
-    assert LIGHT.accent == DARK.accent == "#C96A49"
-    assert DARK.surface == "#16181D" and DARK.popover == "#1D2027"
+    assert LIGHT.window == "#F6F7F9" and DARK.window == "#111317"
+    assert LIGHT.accent == "#17795E" and DARK.accent == "#2BB68E"
+    assert DARK.surface == "#171A21" and DARK.popover == "#1C2029"
     assert [c for _n, c in _HIGHLIGHT_COLORS] == [
         "#FACC15",
         "#4ADE80",
@@ -370,6 +431,79 @@ def test_palette_matches_design_tokens() -> None:
         "#F472B6",
         "#FB923C",
     ]
+
+
+class TestLumenPureStudioAndFocus:
+    def test_studio_dock_switches_translate_ai_and_notebook(
+        self, window: MainWindow, tmp_path: Path
+    ) -> None:
+        from pdfreader.gui.panels import RightStudioDock
+
+        window.open_path(_make_paper(tmp_path / "studio.pdf"))
+        window._set_ai_panel_visible(True)
+        assert window._ai_dock.isVisible()
+        assert window._ai_dock.studio_tab() == RightStudioDock.TAB_AI
+        assert window.ai_panel.isVisible()
+
+        # 切换到「翻译」工作台
+        window._ai_dock.header.buttons[RightStudioDock.TAB_TRANSLATE].click()
+        assert window._ai_dock.studio_tab() == RightStudioDock.TAB_TRANSLATE
+        assert window._ai_dock.translate_pane.isVisible()
+
+        # 点击「伴随笔记」接力打开右侧笔记停靠栏，再从笔记顶栏切回「翻译」
+        window._ai_dock.header.buttons[RightStudioDock.TAB_NOTEBOOK].click()
+        assert window._notebook_dock is not None and window._notebook_dock.isVisible()
+        assert not window._ai_dock.isVisible()
+        assert window._notebook_header is not None
+        window._notebook_header.buttons[RightStudioDock.TAB_TRANSLATE].click()
+        assert window._ai_dock.isVisible()
+        assert window._ai_dock.studio_tab() == RightStudioDock.TAB_TRANSLATE
+        assert not window._notebook_dock.isVisible()
+        if window._notebook is not None:
+            window._notebook.editor.document().setModified(False)
+
+    def test_selection_floating_bar_quick_highlight_keeps_select_mode(
+        self, window: MainWindow, tmp_path: Path
+    ) -> None:
+        window.open_path(_make_paper(tmp_path / "float.pdf"))
+        view = window.pdf_view
+        words = window._controller.get_words(0)
+        assert len(words) >= 3
+        first, third = words[0].rect, words[2].rect
+        view._select_range(
+            0,
+            QPointF((first.x0 + first.x1) / 2, (first.y0 + first.y1) / 2),
+            QPointF((third.x0 + third.x1) / 2, (third.y0 + third.y1) / 2),
+        )
+        view.selectionFinished.emit()
+        bar = window.current_tab.translator.floating_bar
+        assert bar is not None and bar.isVisible()
+        bar.swatch_buttons[1].click()  # 绿色一键高亮
+        assert window._annotation_controller.mode == AnnotationMode.NONE
+        annots = window._controller.list_annotations(0)
+        assert len(annots) == 1 and annots[0].type_name == "高亮"
+        window._controller.document.mark_saved()  # type: ignore[union-attr]
+
+    def test_focus_mode_collapses_and_restores_chrome(
+        self, window: MainWindow, tmp_path: Path
+    ) -> None:
+        window.open_path(_make_paper(tmp_path / "focus.pdf"))
+        window._set_sidebar_visible(True)
+        window._set_ai_panel_visible(True)
+        assert window.sidebar.isVisible() and window._ai_dock.isVisible()
+        assert window.ribbon._stack.isVisible()
+
+        window.focus_mode_action.trigger()
+        assert window.ribbon.focus_mode
+        assert not window.ribbon._stack.isVisible()
+        assert not window.sidebar.isVisible()
+        assert not window._ai_dock.isVisible()
+
+        window.focus_mode_action.trigger()
+        assert not window.ribbon.focus_mode
+        assert window.ribbon._stack.isVisible()
+        assert window.sidebar.isVisible()
+        assert window._ai_dock.isVisible()
 
 
 # ---------------------------------------------------------------- 视觉验收发现的问题（回归）

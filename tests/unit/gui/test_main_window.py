@@ -394,3 +394,70 @@ def test_cleanup_snapshots_removes_files(qtbot) -> None:  # type: ignore[no-unty
     assert not first.exists()
     assert not window._snapshot_dir.exists()
     window._controller.close_document()
+
+
+def test_second_instance_deferred_while_modal_dialog_active(qtbot, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """模态对话框打开期间收到第二实例请求：先排队，等模态框结束后再打开，避免切换当前标签。"""
+    import shutil
+
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    pdf1 = tmp_path / "one.pdf"
+    pdf2 = tmp_path / "two.pdf"
+    shutil.copyfile(SAMPLES / "simple_text.pdf", pdf1)
+    shutil.copyfile(SAMPLES / "simple_text.pdf", pdf2)
+
+    window = MainWindow(restore_session=False)
+    qtbot.addWidget(window)
+    assert window.open_path(pdf1)
+    first_tab = window.current_tab
+
+    modal = QDialog(window)
+    monkeypatch.setattr(QApplication, "activeModalWidget", staticmethod(lambda: modal))
+    window.handle_second_instance([str(pdf2)], str(tmp_path))
+
+    # 模态框期间未切换当前标签，请求已进入待处理队列
+    assert window.current_tab is first_tab
+    assert len(window.tabs) == 1
+    assert window._pending_ipc_opens == [([str(pdf2)], str(tmp_path))]
+
+    # 模态框关闭后刷新队列，新文件正常打开
+    monkeypatch.setattr(QApplication, "activeModalWidget", staticmethod(lambda: None))
+    window._flush_pending_ipc_opens()
+    assert len(window.tabs) == 2
+    assert window.current_tab.path == pdf2
+    for tab in list(window.tabs):
+        tab.controller.close_document()
+
+
+def test_autosave_tick_snapshots_background_dirty_tabs(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """后台标签存在未保存修改时，定时自动保存同样为其写出恢复快照。"""
+    import shutil
+
+    from pdfreader.services.recovery import RecoveryStore
+
+    pdf1 = tmp_path / "bg.pdf"
+    pdf2 = tmp_path / "fg.pdf"
+    shutil.copyfile(SAMPLES / "simple_text.pdf", pdf1)
+    shutil.copyfile(SAMPLES / "simple_text.pdf", pdf2)
+
+    store = RecoveryStore(tmp_path / "recovery")
+    window = MainWindow(recovery_store=store, restore_session=False)
+    qtbot.addWidget(window)
+    try:
+        assert window.open_path(pdf1)
+        bg_tab = window.current_tab
+        assert window.open_path(pdf2)
+        assert window.current_tab is not bg_tab
+
+        # 模拟后台标签在离开后变脏（例如后台 AI 保存便签或节流窗口内切走）
+        assert bg_tab.controller.add_highlight(0, Rect(40, 40, 200, 60))
+        window._last_autosave.clear()
+        window._autosave_tick()
+
+        entries = store.entries()
+        assert [e.original for e in entries] == [pdf1.resolve()]
+    finally:
+        for tab in list(window.tabs):
+            tab.controller.close_document()
+        store.release_session()

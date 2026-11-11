@@ -23,7 +23,14 @@ import pymupdf
 import pytest
 
 from pdfreader.engines import EngineDocument, PyMuPdfEngine
-from pdfreader.engines.types import InkStroke, PixmapData, Point, Rect, WordBox
+from pdfreader.engines.types import (
+    InkStroke,
+    PdfSpaceAnnotation,
+    PixmapData,
+    Point,
+    Rect,
+    WordBox,
+)
 
 SAMPLES = Path(__file__).resolve().parents[2] / "fixtures" / "samples"
 ROTATED = SAMPLES / "rotated.pdf"
@@ -273,3 +280,36 @@ def test_free_text_draws_inside_visible_rect(engine: PyMuPdfEngine, handle: Engi
     assert _overlap_ratio(changed, box) > 0.9
     listed = engine.list_annotations(handle, 0)[0]
     assert abs(listed.rect.x0 - box.x0) < 2 and abs(listed.rect.y0 - box.y0) < 2
+
+
+def test_import_pdf_space_annotations_with_offset_mediabox_on_rotated_page(
+    engine: PyMuPdfEngine, tmp_path: Path
+) -> None:
+    """旋转页且 MediaBox 原点非 (0,0) 时，导入外部 PDF 空间批注不得忽略原点偏移。"""
+    pdf_path = tmp_path / "offset_rot.pdf"
+    raw = pymupdf.open()
+    p = raw.new_page(width=200, height=300)
+    raw.xref_set_key(p.xref, "MediaBox", "[10 20 210 320]")
+    raw[0].set_rotation(90)
+    raw.save(str(pdf_path))
+    raw.close()
+
+    doc = engine.open(pdf_path)
+    try:
+        item = PdfSpaceAnnotation(
+            page_num=0,
+            kind="image",
+            rects=((60.0, 240.0, 110.0, 260.0),),
+            color=(1.0, 0.0, 0.0),
+        )
+        assert engine.import_pdf_space_annotations(doc, (item,)) == 1
+        annot = engine.list_annotations(doc, 0)[0]
+        # 未旋转帧中 x: (60-10)..(110-10)=50..100, y: (320-260)..(320-240)=60..80
+        # 顺时针旋转 90° 后（原宽 200，原高 300 → 可见帧 300x200）：
+        # x_vis = 300 - y_unrot = 220..240, y_vis = x_unrot = 50..100
+        assert annot.rect.x0 == pytest.approx(220.0, abs=2.0)
+        assert annot.rect.y0 == pytest.approx(50.0, abs=2.0)
+        assert annot.rect.x1 == pytest.approx(240.0, abs=2.0)
+        assert annot.rect.y1 == pytest.approx(100.0, abs=2.0)
+    finally:
+        engine.close(doc)

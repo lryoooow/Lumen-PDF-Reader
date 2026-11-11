@@ -91,6 +91,7 @@ def test_settings_load_tolerates_bad_data(tmp_path: Path) -> None:
     assert store.load() == AiSettings()  # 文件不存在
     path.write_text("{bad", encoding="utf-8")
     assert store.load() == AiSettings()
+    assert list(tmp_path.glob("ai.json.corrupt-*"))
     path.write_text("[]", encoding="utf-8")
     assert store.load() == AiSettings()
     path.write_text(

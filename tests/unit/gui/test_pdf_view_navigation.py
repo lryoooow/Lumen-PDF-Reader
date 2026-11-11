@@ -81,6 +81,28 @@ class TestCurrentPageAndJumps:
         assert page2 == page == 4
         assert abs(offset2 - offset) < 0.05
 
+    def test_settle_scroll_does_not_snap_back_after_animation_finished(
+        self, view: PdfView, qtbot
+    ) -> None:  # type: ignore[no-untyped-def]
+        """H5 回归：平滑滚动结束后用户手动滚到别处，切换标签调用 settle_scroll 不得拉回旧目标。"""
+        from pdfreader.gui.widgets import motion
+
+        motion.set_enabled(True)
+        try:
+            view.setup_document(10, [A4] * 10)
+            view.set_zoom(1.0)
+            view.jump_to_page(2, animate=True)
+            qtbot.waitUntil(lambda: view._scroll_anim is None, timeout=2000)
+            # 手动滚到第 7 页
+            bar = view.verticalScrollBar()
+            manual_y = int(view._page_y_positions[7])
+            bar.setValue(manual_y)
+            expected = bar.value()
+            view.settle_scroll()
+            assert bar.value() == expected
+        finally:
+            motion.set_enabled(False)
+
 
 class TestZoomLimits:
     def test_zoom_clamped(self, view: PdfView) -> None:

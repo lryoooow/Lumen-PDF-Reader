@@ -75,3 +75,18 @@ def test_close_releases_forwarded_connections(qtbot) -> None:  # type: ignore[no
     assert all(spy.count() == 1 for spy in spies)
     assert primary._buffers == {}
     primary.close()  # 关闭可重复调用
+
+
+def test_files_from_argv_collects_multiple_documents(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from pdfreader.main import file_from_argv, files_from_argv
+
+    first = tmp_path / "a.pdf"
+    second = tmp_path / "b.epub"
+    ignored = tmp_path / "c.txt"
+    first.write_bytes(b"%PDF-1.4")
+    second.write_bytes(b"PK")
+    ignored.write_text("hi", encoding="utf-8")
+
+    argv = ["PDFReader.exe", "--flag", str(first), str(ignored), str(second)]
+    assert files_from_argv(argv) == [first, second]
+    assert file_from_argv(argv) == first

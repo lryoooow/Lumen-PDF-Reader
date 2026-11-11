@@ -6,8 +6,10 @@ Key 从不写入 ``ai.json``、不进日志。条目为 ``(SERVICE, provider.id)
 
 from __future__ import annotations
 
-import contextlib
+import logging
 from typing import Any, Protocol
+
+_logger = logging.getLogger("pdfreader")
 
 __all__ = ["SERVICE", "KeyStore", "KeyStoreError", "default_keystore", "set_default_backend"]
 
@@ -75,9 +77,11 @@ class KeyStore:
             raise KeyStoreError(f"保存 API Key 失败：{type(exc).__name__}") from exc
 
     def delete(self, provider_id: str) -> None:
-        """删除 Key（不存在时忽略）。"""
-        with contextlib.suppress(Exception):
+        """删除 Key（不存在时忽略，异常记日志）。"""
+        try:
             self._backend.delete_password(SERVICE, provider_id)
+        except Exception:
+            _logger.debug("删除凭据 %s 未成功或已不存在", provider_id, exc_info=True)
 
 
 _default: KeyStore | None = None

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -238,10 +239,12 @@ class AiAssistant(QObject):
         self._panel.set_page_count(self._controller.page_count)
         self._schedule_index()
 
-    def invalidate_text(self) -> None:
+    def invalidate_text(self, *, clear_anchor: bool = False) -> None:
         """文档内容变了（删页 / 合并 / OCR 等）：下次重新取文字。"""
         self.stop_index()
         self._texts = None
+        if clear_anchor or self._controller.page_count != self._ocr_page_count:
+            self._note_anchor = None
         if self._controller.page_count != self._ocr_page_count:
             self._ocr.clear()  # 页数变了，页码已对不上 OCR 结果
         self._panel.set_page_count(self._controller.page_count)
@@ -726,10 +729,16 @@ class AiAssistant(QObject):
     def shutdown(self) -> None:
         """退出前：取消并等待所有请求线程。"""
         self.stop_index()
-        for worker in self.workers():
+        workers = self.workers()
+        for worker in workers:
             worker.shutdown()
-        for worker in self.workers():
-            worker.wait(5000)
+        for worker in workers:
+            if not worker.wait(5000) and worker.isRunning():
+                with contextlib.suppress(Exception):
+                    worker.finished.disconnect(self._on_thread_finished)
+                worker.setParent(None)
+                _ORPHAN_AI_WORKERS.append(worker)
+                worker.finished.connect(lambda w=worker: _cleanup_orphan_worker(w))
 
     # ------------------------------------------------------------------ 内部：发送前检查
     def _doc_pages(self) -> list[str] | None:
@@ -997,6 +1006,15 @@ class AiAssistant(QObject):
 
 def _page_label(page: int | None) -> str:
     return f"第 {page + 1} 页" if page is not None else ""
+
+
+_ORPHAN_AI_WORKERS: list[AiWorker] = []
+
+
+def _cleanup_orphan_worker(worker: AiWorker) -> None:
+    if worker in _ORPHAN_AI_WORKERS:
+        _ORPHAN_AI_WORKERS.remove(worker)
+    worker.deleteLater()
 
 
 def _clip(text: str, limit: int = _HISTORY_QUOTE_CHARS) -> str:

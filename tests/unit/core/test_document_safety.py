@@ -104,8 +104,11 @@ class TestControllerQueries:
         assert ctrl.set_annotation_content(0, 0, "想法")
         assert ctrl.list_annotations(0)[0].content == "想法"
         assert ctrl.delete_annotation(2, 0) is True
+        changed_signals: list[int] = []
+        ctrl.documentChanged.connect(lambda: changed_signals.append(1))
         assert ctrl.delete_annotation(2, 0) is False
         assert ctrl.last_error == "该批注已不存在"
+        assert changed_signals == []
         ctrl.close_document()
 
     def test_save_as_to_original_path(self, tmp_path: Path, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -131,3 +134,82 @@ class TestControllerQueries:
         assert ctrl.get_links(0) == ()
         assert ctrl.list_all_annotations() == []
         assert ctrl.password is None
+
+
+class TestSaveCopyPreservesIncrementalSaveAndJournal:
+    def test_incremental_save_after_save_copy_persists_edits(self, tmp_path: Path) -> None:
+        """H1 回归：先 save_copy（快照/导出）再增量保存，改动必须真正写入原文件。"""
+        path = _make_pdf(tmp_path / "src.pdf", 3)
+        snapshot = tmp_path / "snapshot.pdf"
+        doc = Document.open(PyMuPdfEngine(), path)
+        doc.add_highlight(0, Rect(72, 60, 200, 80))
+        doc.save_copy(snapshot)
+        doc.save(path, incremental=True)
+        assert doc.is_modified is False
+        # 连续第二次编辑+增量保存，验证 refresh_file_stat 生效
+        doc.add_highlight(1, Rect(72, 60, 200, 80))
+        doc.save(path, incremental=True)
+        doc.close()
+
+        reopened = Document.open(PyMuPdfEngine(), path)
+        assert len(reopened.list_annotations(0)) == 1
+        assert len(reopened.list_annotations(1)) == 1
+        reopened.close()
+
+    def test_undo_after_save_copy_actually_reverts_content(self, tmp_path: Path) -> None:
+        """H2 回归：save_copy 之后 undo 必须真正撤销内存中的修改，而不只是移动指针。"""
+        path = _make_pdf(tmp_path / "undo_src.pdf", 2)
+        doc = Document.open(PyMuPdfEngine(), path)
+        doc.add_highlight(0, Rect(72, 60, 200, 80))
+        doc.save_copy(tmp_path / "snap1.pdf")
+        assert doc.undo() is True
+        assert doc.is_modified is False
+        assert doc.list_annotations(0) == []
+        snap2 = tmp_path / "snap2.pdf"
+        doc.save_copy(snap2)
+        doc.close()
+
+        check = Document.open(PyMuPdfEngine(), snap2)
+        assert check.list_annotations(0) == []
+        check.close()
+
+    def test_failed_op_rolls_back_partial_journal_changes(self, tmp_path: Path) -> None:
+        """M1 回归：_op 内部半途抛异常时，已写入的修改应通过 journal_undo 回滚。"""
+        path = _make_pdf(tmp_path / "op_fail.pdf", 1)
+        eng = PyMuPdfEngine()
+        handle = eng.open(path)
+        page = handle.get_page(0)
+        with pytest.raises(RuntimeError, match="boom"), eng._op(handle, "broken_op"):
+            page.add_highlight_annot(pymupdf.Rect(72, 60, 200, 80))
+            raise RuntimeError("boom")
+        assert eng.list_annotations(handle, 0) == []
+        assert eng.history_position(handle) == 0
+        eng.close(handle)
+
+    def test_incremental_save_rejects_externally_modified_file(self, tmp_path: Path) -> None:
+        """M3 回归：原文件在打开期间被外部程序改写后，增量保存应拒绝追加并提示另存为。"""
+        path = _make_pdf(tmp_path / "ext.pdf", 1)
+        doc = Document.open(PyMuPdfEngine(), path)
+        doc.add_highlight(0, Rect(72, 60, 200, 80))
+        # 模拟外部程序改写原文件（增加字节）
+        path.write_bytes(path.read_bytes() + b"\n% external edit\n")
+        with pytest.raises(PdfEngineError, match="外部修改"):
+            doc.save(path, incremental=True)
+        doc.close()
+
+    def test_open_closes_handle_if_metadata_fails(self, tmp_path: Path) -> None:
+        """L-Engine 3 回归：Document.open 中 metadata 抛错时必须关闭底层句柄。"""
+        closed: list[bool] = []
+
+        class FailingMetaEngine(PyMuPdfEngine):
+            def metadata(self, doc):  # type: ignore[no-untyped-def]
+                raise PdfEngineError("meta fail")
+
+            def close(self, doc) -> None:  # type: ignore[no-untyped-def]
+                closed.append(True)
+                super().close(doc)
+
+        path = _make_pdf(tmp_path / "mfail.pdf", 1)
+        with pytest.raises(PdfEngineError, match="meta fail"):
+            Document.open(FailingMetaEngine(), path)
+        assert closed == [True]

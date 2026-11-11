@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractAnimation,
+    QEvent,
     QPointF,
     QPropertyAnimation,
     QRect,
@@ -44,6 +45,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QTransform,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -215,6 +217,8 @@ class PdfView(QGraphicsView):
         self._no_fade: set[int] = set()  # 编辑后重绘的页不做淡入（避免闪烁）
         self._effects: list[QAbstractAnimation] = []  # 进行中的脉冲 / 闪动 / 淡入动画
         self._scroll_anim: QPropertyAnimation | None = None
+        self._wheel_zoom_accum: int = 0
+        self._last_dpr: float = max(1.0, float(self.devicePixelRatioF()))
         self.highlight_color: str = "#FACC15"  # 高亮预览色（主窗口按用户选择同步）
         self._page_items: dict[int, QGraphicsItem] = {}  # 页码 → 场景项
         self._rendered_cache: LRUCache = LRUCache(capacity=cache_size)
@@ -1231,7 +1235,10 @@ class PdfView(QGraphicsView):
                 ("加入术语…", "term"),
             ):
                 menu.addAction(label, lambda k=kind: self.materialRequested.emit(k))
-            menu.exec(event.globalPos())
+            try:
+                menu.exec(event.globalPos())
+            finally:
+                menu.deleteLater()
             return
         super().contextMenuEvent(event)
 
@@ -1325,6 +1332,9 @@ class PdfView(QGraphicsView):
         编辑（删页 / 旋转 / 撤销）后重排时由调用方传入原来的页与页内位置；旧实现在这里
         把当前页清成 None，下一次「删除 / 旋转」就会落到第 1 页上。
         """
+        self._stop_scroll_anim()
+        for effect in list(self._effects):
+            effect.stop()
         self._scene.clear()
         self._capture_item = None
         self._page_items.clear()
@@ -1448,16 +1458,26 @@ class PdfView(QGraphicsView):
             if isinstance(item, QGraphicsPixmapItem):
                 self._restore_placeholder(page_num)
 
+    def _stop_scroll_anim(self) -> None:
+        anim = self._scroll_anim
+        if anim is not None:
+            self._scroll_anim = None
+            anim.stop()
+            anim.deleteLater()
+
     def settle_scroll(self) -> None:
         """平滑滚动进行中就立刻落到终点（标签切到后台时调用，免得停在半路）。"""
         anim = self._scroll_anim
         if anim is None:
             return
         self._scroll_anim = None
+        running = anim.state() == QAbstractAnimation.State.Running
         end = anim.endValue()
         anim.stop()
-        self.verticalScrollBar().setValue(int(end))
-        self._update_current_page()
+        anim.deleteLater()
+        if running:
+            self.verticalScrollBar().setValue(int(end))
+            self._update_current_page()
 
     def request_visible(self) -> None:
         """重新请求视口内尚未渲染的页（标签切回前台时调用）。"""
@@ -1488,8 +1508,10 @@ class PdfView(QGraphicsView):
         # 缩放比例会把 offset 一起缩放，页面越靠后错位越大。
         new_item.setPos(x, y)
         new_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
-        if abs(pixmap.width() - w) > 1 or abs(pixmap.height() - h) > 1:
-            new_item.setScale(w / pixmap.width() if pixmap.width() else 1.0)
+        if (abs(pixmap.width() - w) > 1 or abs(pixmap.height() - h) > 1) and (
+            pixmap.width() > 0 and pixmap.height() > 0
+        ):
+            new_item.setTransform(QTransform.fromScale(w / pixmap.width(), h / pixmap.height()))
         self._page_items[page_num] = new_item
         if page_num in self._no_fade:
             self._no_fade.discard(page_num)
@@ -1683,9 +1705,7 @@ class PdfView(QGraphicsView):
 
         ``animate`` 时平滑滚动（设计稿 scrollTo behavior: smooth）。
         """
-        if self._scroll_anim is not None:
-            self._scroll_anim.stop()
-            self._scroll_anim = None
+        self._stop_scroll_anim()
         bar = self.verticalScrollBar()
         delta = scene_top - self._viewport_scene_rect().top()
         target = min(max(bar.value() + round(delta), bar.minimum()), bar.maximum())
@@ -1695,7 +1715,14 @@ class PdfView(QGraphicsView):
             anim.setEndValue(target)
             anim.setDuration(TOKENS.anim_scroll)
             anim.setEasingCurve(motion.EASE)
-            anim.finished.connect(self._update_current_page)
+
+            def _on_finished(a: QPropertyAnimation = anim) -> None:
+                if self._scroll_anim is a:
+                    self._scroll_anim = None
+                a.deleteLater()
+                self._update_current_page()
+
+            anim.finished.connect(_on_finished)
             self._scroll_anim = anim
             anim.start()
             return
@@ -1764,6 +1791,8 @@ class PdfView(QGraphicsView):
 
     def _reset_page_items(self) -> None:
         """按当前 zoom 重算页位置（水平居中），并把所有页恢复为骨架占位。"""
+        for effect in list(self._effects):
+            effect.stop()
         for item in self._page_items.values():
             _remove_item(item)
         self._page_items.clear()
@@ -1909,6 +1938,9 @@ class PdfView(QGraphicsView):
 
     def clear(self) -> None:
         """清空视图。"""
+        self._stop_scroll_anim()
+        for effect in list(self._effects):
+            effect.stop()
         self._scene.clear()
         self._capture_item = None
         self._page_items.clear()
@@ -1949,19 +1981,45 @@ class PdfView(QGraphicsView):
         self._scene.setSceneRect(0, 0, 0, 0)
 
     def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        # Ctrl + 滚轮 = 缩放；否则正常滚动
+        # Ctrl + 滚轮 = 缩放（累积小步长，防止精确触控板捏合触发数十次全量重排）
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
-            if delta > 0:
+            if (delta > 0 and self._wheel_zoom_accum < 0) or (
+                delta < 0 and self._wheel_zoom_accum > 0
+            ):
+                self._wheel_zoom_accum = 0
+            self._wheel_zoom_accum += delta
+            while self._wheel_zoom_accum >= 120:
+                self._wheel_zoom_accum -= 120
                 self.zoom_in()
-            elif delta < 0:
+            while self._wheel_zoom_accum <= -120:
+                self._wheel_zoom_accum += 120
                 self.zoom_out()
             event.accept()
             return
+        self._wheel_zoom_accum = 0
         super().wheelEvent(event)
+
+    def event(self, ev: QEvent) -> bool:
+        result = super().event(ev)
+        if ev.type() == QEvent.Type.DevicePixelRatioChange:
+            self._handle_dpr_change()
+        return result
+
+    def _handle_dpr_change(self) -> None:
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        if math.isclose(dpr, self._last_dpr, rel_tol=1e-3):
+            return
+        self._last_dpr = dpr
+        if self._page_count > 0:
+            self._rendered_cache.clear()
+            for page_num in list(self._page_items):
+                self._restore_placeholder(page_num)
+            self._request_visible_pages()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
+        self._handle_dpr_change()
         if self._fit_mode is not None:
             self._fit_timer.start()  # 适宽/适页：合并密集的 resize 事件后再重排
         else:

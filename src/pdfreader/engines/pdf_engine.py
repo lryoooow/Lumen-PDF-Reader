@@ -15,7 +15,9 @@ from __future__ import annotations
 import contextlib
 import html
 import logging
+import os
 import re
+import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -134,7 +136,7 @@ def _raw_permissions(doc: pymupdf.Document) -> int | None:
 
 
 def _install_journal_guard_patch() -> None:
-    """绕开 PyMuPDF 1.28.0 中必然抛错的日志守卫 ``ENSURE_OPERATION``。
+    """绕开 PyMuPDF 1.28.0–1.28.2 中必然抛错的日志守卫 ``ENSURE_OPERATION``。
 
     该守卫的实现是 ``JM_have_operation()`` → ``mupdf.pdf_undoredo_step(pdf, 0)``，
     而 ``pdf_undoredo_step`` 在 journal 开启后**两种状态都抛异常**：
@@ -263,9 +265,28 @@ def _add_free_text(
     return annot
 
 
+def _pdf_space_to_unrotated_matrix(page: pymupdf.Page) -> pymupdf.Matrix:
+    """PDF 用户空间（左下原点，含 MediaBox/CropBox 偏移）→ PyMuPDF 未旋转帧（左上原点）。
+
+    不能直接用 ``page.transformation_matrix``：PyMuPDF 在 ``rotation != 0`` 时
+    会返回 ``Matrix(1, 0, 0, -1, 0, cropbox.height)``，忽略了 MediaBox/CropBox
+    的非零原点偏移，导致旋转页上带偏移的外部批注整体错位。
+    """
+    cropbox = page.cropbox
+    mediabox = page.mediabox
+    return pymupdf.Matrix(
+        1.0,
+        0.0,
+        0.0,
+        -1.0,
+        -float(cropbox.x0),
+        float(mediabox.y1 - cropbox.y0),
+    )
+
+
 def _import_one(page: pymupdf.Page, item: PdfSpaceAnnotation) -> bool:
     """写入一条 PDF 用户空间坐标的外部批注；无法表示的返回 False。"""
-    to_page = page.transformation_matrix
+    to_page = _pdf_space_to_unrotated_matrix(page)
     rects = [
         pymupdf.Rect(*r).normalize() * to_page for r in item.rects if r[2] != r[0] or r[3] != r[1]
     ]
@@ -466,7 +487,15 @@ class PyMuPdfDocument:
     上层通过 :class:`PdfEngine` 协议操作文档，不应直接使用本类的内部属性。
     """
 
-    __slots__ = ("_auth_level", "_doc", "_encrypted", "_password", "_path", "_permissions")
+    __slots__ = (
+        "_auth_level",
+        "_doc",
+        "_encrypted",
+        "_file_stat",
+        "_password",
+        "_path",
+        "_permissions",
+    )
 
     def __init__(
         self,
@@ -484,6 +513,24 @@ class PyMuPdfDocument:
         self._auth_level = auth_level
         self._encrypted = encrypted
         self._permissions = permissions
+        self._file_stat: tuple[int, int] | None = self._read_stat(path)
+
+    @staticmethod
+    def _read_stat(path: Path) -> tuple[int, int] | None:
+        try:
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    @property
+    def file_stat(self) -> tuple[int, int] | None:
+        """原文件打开或上次增量保存时的 (mtime_ns, size) 快照。"""
+        return self._file_stat
+
+    def refresh_file_stat(self) -> None:
+        """增量保存写回原文件后刷新文件签名。"""
+        self._file_stat = self._read_stat(self._path)
 
     @property
     def path(self) -> Path:
@@ -526,6 +573,7 @@ class PyMuPdfDocument:
     def replace_native(self, doc: pymupdf.Document) -> None:
         """安装已经验证加密状态与认证级别的合并结果。"""
         self._doc = doc
+        self._file_stat = None
 
     @property
     def page_count(self) -> int:
@@ -602,9 +650,11 @@ class PyMuPdfEngine:
             password_used = password
 
         # 启用 PyMuPDF 日志（撤销/重做的原生支持）
-        with contextlib.suppress(Exception):
-            if doc.is_pdf:
+        if doc.is_pdf:
+            try:
                 doc.journal_enable()
+            except Exception:
+                _logger.warning("启用撤销日志失败：%s", path, exc_info=True)
 
         return PyMuPdfDocument(
             doc,
@@ -620,20 +670,32 @@ class PyMuPdfEngine:
     # ------------------------------------------------------------------
     @contextlib.contextmanager
     def _op(self, handle: PyMuPdfDocument, name: str) -> Iterator[None]:
-        """把一次修改包进日志操作，使其可撤销。日志未启用时直接执行。"""
+        """把一次修改包进日志操作，使其可撤销。日志未启用时直接执行；异常时回滚半截修改。"""
         native = handle.native
         started = False
+        before_pos = -1
         try:
+            before_pos, _ = native.journal_position()
             native.journal_start_op(name)
             started = True
         except Exception:  # 日志未启用 / 不支持：直接改
-            pass
+            _logger.debug("journal_start_op(%s) 未启用", name, exc_info=True)
+        failed = False
         try:
             yield
+        except BaseException:
+            failed = True
+            raise
         finally:
             if started:
-                with contextlib.suppress(Exception):
+                try:
                     native.journal_stop_op()
+                    if failed:
+                        after_pos, _ = native.journal_position()
+                        if before_pos >= 0 and after_pos > before_pos:
+                            native.journal_undo()
+                except Exception:
+                    _logger.warning("结束或回滚日志操作 %s 失败", name, exc_info=True)
 
     def undo(self, doc: EngineDocument) -> bool:
         handle = self._require(doc)
@@ -641,6 +703,7 @@ class PyMuPdfEngine:
             handle.native.journal_undo()
             return True
         except Exception:
+            _logger.debug("journal_undo 未执行", exc_info=True)
             return False
 
     def redo(self, doc: EngineDocument) -> bool:
@@ -649,6 +712,7 @@ class PyMuPdfEngine:
             handle.native.journal_redo()
             return True
         except Exception:
+            _logger.debug("journal_redo 未执行", exc_info=True)
             return False
 
     def can_undo(self, doc: EngineDocument) -> bool:
@@ -874,6 +938,7 @@ class PyMuPdfEngine:
         try:
             data = _textpage(page, page_num, pymupdf.TEXTFLAGS_DICT).extractDICT()
         except Exception:
+            _logger.warning("提取第 %d 页文本片段失败", page_num, exc_info=True)
             return tuple(spans)
 
         for block in data.get("blocks", []):
@@ -1085,6 +1150,12 @@ class PyMuPdfEngine:
             raise FileOpenError(
                 f"“{target.name}”在打开时已被自动修复，无法直接覆盖保存，请另存为新文件"
             )
+        if is_original and handle.file_stat is not None:
+            current_stat = PyMuPdfDocument._read_stat(target)
+            if current_stat != handle.file_stat:
+                raise FileOpenError(
+                    f"“{target.name}”在打开期间已被外部修改，无法直接覆盖保存，请另存为新文件"
+                )
         try:
             # 目标就是打开时的原文件：只能增量保存（PyMuPDF 不允许整份覆盖正在打开的文件）。
             # 「另存为」选中原文件也走这里，否则必报 "save to original must be incremental"
@@ -1093,12 +1164,21 @@ class PyMuPdfEngine:
                 handle.native.save(
                     str(target), incremental=True, encryption=pymupdf.PDF_ENCRYPT_KEEP
                 )
+                handle.refresh_file_stat()
             else:
-                # 目标已不是打开时的原文件（另存为之后 / 合并后的内存文档）：
-                # 增量保存必然报 "incremental needs original file"，必须整份写出
-                handle.native.save(
-                    str(target), garbage=4, deflate=True, **self._encrypt_kwargs(handle)
-                )
+                # 目标已不是打开时的原文件（另存为 / 导出快照 / 合并后的内存文档）：
+                # 必须整份写出，但绝不可在受控文档上使用 garbage>=2——MuPDF 的 compact_xref
+                # 会在内存中重编号 xref 并清除脏对象记录，导致后续增量保存静默丢数据且撤销失效。
+                # 同时先写入同目录临时文件再原子替换，避免写入中途失败破坏已有的目标文件。
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.parent / f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+                try:
+                    handle.native.save(str(tmp), deflate=True, **self._encrypt_kwargs(handle))
+                    tmp.replace(target)
+                finally:
+                    with contextlib.suppress(OSError):
+                        if tmp.exists():
+                            tmp.unlink()
         except Exception as exc:
             _logger.warning("保存到 %s 失败", target, exc_info=True)
             raise FileOpenError(f"保存到 {target.name} 失败：{exc}") from exc

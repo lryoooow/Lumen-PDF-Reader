@@ -15,18 +15,29 @@ class LibraryIndexWorker(QThread):
     succeeded = Signal()
     failed = Signal(str)
 
-    def __init__(self, database: Path, source: str, title: str, pages: list[str]) -> None:
+    def __init__(
+        self,
+        database: Path,
+        source: str,
+        title: str,
+        pages: list[str],
+        *,
+        encrypted: bool = False,
+    ) -> None:
         super().__init__()
         self._database = database
         self._source = source
         self._title = title
         self._pages = pages.copy()
+        self._encrypted = encrypted
 
     def run(self) -> None:
         library: ResearchLibrary | None = None
         try:
             library = ResearchLibrary(self._database)
-            library.index_document(self._source, self._title, self._pages)
+            library.index_document(
+                self._source, self._title, self._pages, encrypted=self._encrypted
+            )
             self.succeeded.emit()
         except Exception:
             logging.getLogger("pdfreader").exception("建立全文索引失败")

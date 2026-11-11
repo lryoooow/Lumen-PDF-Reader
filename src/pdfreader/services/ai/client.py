@@ -158,13 +158,15 @@ class ChatClient:
             self._http.close()
 
     def cancel(self) -> None:
-        """中断进行中的请求（关闭响应流，阻塞的读取会立即返回 / 抛错）。"""
+        """中断进行中的请求（关闭响应流与底层连接，阻塞的读取会立即返回 / 抛错）。"""
         with self._lock:
             self._cancelled = True
             response = self._response
         if response is not None:
             with contextlib.suppress(Exception):
                 response.close()
+        with contextlib.suppress(Exception):
+            self._http.close()
 
     @property
     def cancelled(self) -> bool:
@@ -226,7 +228,8 @@ class ChatClient:
                     raise AiError("向量响应过大")
             if response.status_code != 200:
                 raise AiError(
-                    describe_status(response.status_code, _error_detail(bytes(content), self._key))
+                    describe_status(response.status_code, _error_detail(bytes(content), self._key)),
+                    status=response.status_code,
                 )
             try:
                 payload = json.loads(content)
@@ -285,6 +288,8 @@ class ChatClient:
             raise AiError("尚未填写 Base URL")
         if not model:
             raise AiError("尚未选择模型")
+        if self._cancelled:
+            return
         body: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
         if temperature is not None:
             body["temperature"] = temperature

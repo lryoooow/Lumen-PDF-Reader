@@ -25,7 +25,11 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 
 from pdfreader.engines.types import Rect
-from pdfreader.gui.widgets.translate_popup import TranslatePill, TranslatePopup
+from pdfreader.gui.widgets.translate_popup import (
+    SelectionFloatingBar,
+    TranslatePill,
+    TranslatePopup,
+)
 from pdfreader.services.dictionary import Dictionary, WordEntry, default_dictionary, is_word
 from pdfreader.services.materials import MaterialError, MaterialStore
 from pdfreader.services.ocr import OCR_AVAILABLE
@@ -57,6 +61,7 @@ class SelectionTranslator(QObject):
     continuousChanged = Signal(bool)
     captureRequested = Signal()
     materialsChanged = Signal()
+    stateChanged = Signal()
 
     def __init__(
         self,
@@ -81,6 +86,8 @@ class SelectionTranslator(QObject):
         self._entry: WordEntry | None = None  # 词卡上的词
         self._word = ""  # 正在查的词（选中的原样）
         self.pill = TranslatePill(view)
+        self.floating_bar: SelectionFloatingBar | None = None
+        self._pdf_editable: Callable[[], bool] = lambda: True
         self.popup = TranslatePopup(view)
         self.popup.set_continuous(continuous)
         self._segments: list[str] = []  # 本次浮窗里翻译的原文（连翻时多段）
@@ -97,7 +104,7 @@ class SelectionTranslator(QObject):
         self._auto.timeout.connect(self.translate_selection)
 
         view.selectionFinished.connect(self._on_selection)
-        view.scrolled.connect(self.pill.hide)
+        view.scrolled.connect(self._hide_floating)
         view.viewport().installEventFilter(self)
         view.installEventFilter(self)
         self.pill.clicked.connect(self.translate_selection)
@@ -107,6 +114,24 @@ class SelectionTranslator(QObject):
         self.popup.panelRequested.connect(self._continue_in_panel)
         self.popup.wordSaveToggled.connect(self._on_word_save)
         self.popup.wordExplainRequested.connect(self._on_word_explain)
+
+    def enable_floating_bar(
+        self, *, pdf_editable: Callable[[], bool] | None = None
+    ) -> SelectionFloatingBar:
+        """启用多合一情境悬浮胶囊（高亮 · 下划线 · 复制 · 译 · 解释 · 摘录）。"""
+        if self.floating_bar is None:
+            self.floating_bar = SelectionFloatingBar(self._view, self.pill)
+        if pdf_editable is not None:
+            self._pdf_editable = pdf_editable
+        return self.floating_bar
+
+    def hide_floating(self) -> None:
+        self._hide_floating()
+
+    def _hide_floating(self) -> None:
+        self.pill.hide()
+        if self.floating_bar is not None:
+            self.floating_bar.hide()
 
     # ------------------------------------------------------------------ 设置
     @property
@@ -127,18 +152,31 @@ class SelectionTranslator(QObject):
         self.popup.set_continuous(on)
         if not on:
             self._segments = self._segments[-1:]
+        self.stateChanged.emit()
 
     # ------------------------------------------------------------------ 触发
     def _on_selection(self) -> None:
-        self.pill.hide()
-        if self._mode == "off":
-            return
+        self._hide_floating()
         text = clean_copied_text(self._view.selected_text)
-        word = self._dictionary.available and is_word(text)
-        if not (word or self._ai.is_ready()):  # 查词不需要 AI；翻译需要
+        if not text:
             return
-        if self._mode == "auto":
+        self.stateChanged.emit()
+        word = self._dictionary.available and is_word(text)
+        can_translate = word or self._ai.is_ready()
+        if self._mode == "auto" and can_translate:
             self._auto.start()
+        if self.floating_bar is not None:
+            sel_rect = self._view.selection_view_rect()
+            if sel_rect is not None:
+                show_pill = self._mode == "button" and can_translate
+                self.floating_bar.show_near(
+                    sel_rect,
+                    show_pill=show_pill,
+                    show_ai=self._ai.is_ready(),
+                    pdf_editable=self._pdf_editable(),
+                )
+            return
+        if self._mode == "off" or not can_translate or self._mode == "auto":
             return
         rect = self._view.selection_view_rect(last_word=True)
         if rect is not None:
@@ -147,7 +185,7 @@ class SelectionTranslator(QObject):
     def translate_selection(self) -> None:
         """翻译当前选中的文字（「译」按钮 / 直接翻译 / 快捷入口）。"""
         self._auto.stop()
-        self.pill.hide()
+        self._hide_floating()
         text = clean_copied_text(self._view.selected_text)
         if not text:
             return
@@ -168,6 +206,7 @@ class SelectionTranslator(QObject):
             self._stop_requests()
             self.popup.show_garbled(text)
             self.popup.place_near(self._view.selection_view_rect())
+            self.stateChanged.emit()
             return
         if is_word(text) and not self._continuing():
             self.lookup_word(text)
@@ -200,17 +239,20 @@ class SelectionTranslator(QObject):
                     f"词典里没有「{self._word}」。在「模型设置」里配置 AI 助读后，可以让 AI 解释。"
                 )
                 self.popup.place_near(self._view.selection_view_rect())
+                self.stateChanged.emit()
             return
         self.popup.show_word(
             entry, saved=self._is_saved(entry.word), can_explain=self._ai.is_ready()
         )
         self.popup.place_near(self._view.selection_view_rect())
+        self.stateChanged.emit()
 
     def _explain_word(self, *, keep_card: bool) -> None:
         def prepare(worker: AiWorker) -> None:
             self.popup.begin_word(self._word, keep_card=keep_card)
             self.popup.place_near(self._view.selection_view_rect())
             self._attach(worker)
+            self.stateChanged.emit()
 
         self._ai.quick_word(self._word, self._page, self._rect, prepare=prepare)
 
@@ -325,6 +367,7 @@ class SelectionTranslator(QObject):
             self.popup.begin(text, len(self._segments))
             self.popup.place_near(self._view.selection_view_rect())
             self._attach(worker)
+            self.stateChanged.emit()
 
         self._ai.quick_translate(text, prepare=prepare)
 
@@ -340,16 +383,19 @@ class SelectionTranslator(QObject):
     def _on_delta(self, text: str) -> None:
         if self._is_current():
             self.popup.append(text)
+            self.stateChanged.emit()
 
     def _on_finished(self, text: str) -> None:
         if self._is_current():
             self._worker = None
             self.popup.finish(text)
+            self.stateChanged.emit()
 
     def _on_failed(self, message: str) -> None:
         if self._is_current():
             self._worker = None
             self.popup.fail(message)
+            self.stateChanged.emit()
 
     def _on_ocr_completed(self, request: int, text: str, ok: bool) -> None:
         if self.sender() is not self._ocr or request != self._ocr_request:
@@ -413,8 +459,9 @@ class SelectionTranslator(QObject):
         self._stop_requests()
         self.retire_ocr()
         self._segments = []
-        self.pill.hide()
+        self._hide_floating()
         self.popup.dismiss()
+        self.stateChanged.emit()
 
     def busy(self) -> bool:
         """还有截图 OCR 线程在跑（标签关闭后要等它结束再回收）。"""
@@ -439,7 +486,7 @@ class SelectionTranslator(QObject):
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress and watched is self._view.viewport():
             # 点页面别处：小按钮总是收起；浮窗没钉住、也没开连翻时收起
-            self.pill.hide()
+            self._hide_floating()
             self._auto.stop()
             if self.popup.isVisible() and not (self.popup.pinned or self.popup.continuous):
                 self.popup.dismiss()
@@ -450,7 +497,7 @@ class SelectionTranslator(QObject):
             and isinstance(event, QKeyEvent)
             and event.key() == Qt.Key.Key_Escape
         ):
-            self.pill.hide()
+            self._hide_floating()
             if self.popup.isVisible() and not self.popup.pinned:
                 self.popup.dismiss()
                 self._stop_requests()

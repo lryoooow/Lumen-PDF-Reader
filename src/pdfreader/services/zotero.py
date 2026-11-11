@@ -194,7 +194,7 @@ class ZoteroLibrary:
             copy = folder / "zotero.sqlite"
             try:
                 shutil.copy2(self._db_path, copy)
-                for suffix in ("-wal", "-shm"):
+                for suffix in ("-wal", "-shm", "-journal"):
                     extra = Path(f"{self._db_path}{suffix}")
                     if extra.is_file():
                         shutil.copy2(extra, Path(f"{copy}{suffix}"))
@@ -262,7 +262,7 @@ class ZoteroLibrary:
         for cid, item_id in db.execute("SELECT collectionID, itemID FROM collectionItems"):
             member.setdefault(int(item_id), []).append(int(cid))
         pdfs: dict[int, list[ZoteroPdf]] = {}
-        standalone: list[int] = []
+        standalone: set[int] = set()
         for att_id, parent, link_mode, content_type, path in db.execute(
             "SELECT itemID, parentItemID, linkMode, contentType, path FROM itemAttachments"
         ):
@@ -275,7 +275,7 @@ class ZoteroLibrary:
                 fields.get(int(att_id), {}).get("title", ""),
             )
             if parent is None:
-                standalone.append(int(att_id))
+                standalone.add(int(att_id))
                 pdfs.setdefault(int(att_id), []).append(pdf)
             elif int(parent) not in deleted:
                 pdfs.setdefault(int(parent), []).append(pdf)

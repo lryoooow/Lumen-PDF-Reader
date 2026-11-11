@@ -48,7 +48,7 @@ from pdfreader.gui.widgets import motion
 from pdfreader.services.ai.textfix import tidy_markdown
 from pdfreader.services.dictionary import WordEntry
 
-__all__ = ["TranslatePill", "TranslatePopup", "WordCard"]
+__all__ = ["SelectionFloatingBar", "TranslatePill", "TranslatePopup", "WordCard"]
 
 _MARGIN = 8  # 浮窗离视图边缘至少留这么多
 _GAP = 8  # 浮窗与选区的间距
@@ -94,6 +94,140 @@ class TranslatePill(QToolButton):
         self.show()
         self.raise_()
         motion.pop_in(self)
+
+
+_QUICK_COLORS: tuple[tuple[str, str], ...] = (
+    ("黄", "#FACC15"),
+    ("绿", "#4ADE80"),
+    ("蓝", "#60A5FA"),
+    ("粉", "#F472B6"),
+    ("橙", "#FB923C"),
+)
+
+
+class SelectionFloatingBar(QFrame):
+    """划词情境悬浮胶囊：一键五色高亮 · 下划线 · 去换行复制 · 译 · AI 解释 · 摘录。"""
+
+    highlightRequested = Signal(str)
+    underlineRequested = Signal()
+    copyMergedRequested = Signal()
+    explainRequested = Signal()
+    clipRequested = Signal()
+
+    def __init__(self, parent: QWidget, pill: TranslatePill) -> None:
+        super().__init__(parent)
+        self.setObjectName("SelectionFloatingBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._pill = pill
+        pill.setParent(self)
+        pill.setProperty("embedded", "true")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(7, 4, 7, 4)
+        lay.setSpacing(4)
+
+        self._markup_box = QWidget(self)
+        markup_lay = QHBoxLayout(self._markup_box)
+        markup_lay.setContentsMargins(0, 0, 0, 0)
+        markup_lay.setSpacing(4)
+        self.swatch_buttons: list[QToolButton] = []
+        for name, hex_color in _QUICK_COLORS:
+            dot = QToolButton(self._markup_box)
+            dot.setObjectName("SelectionSwatchDot")
+            dot.setToolTip(f"一键{name}色高亮")
+            dot.setCursor(Qt.CursorShape.PointingHandCursor)
+            dot.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            dot.setStyleSheet(
+                f"QToolButton#SelectionSwatchDot {{ background-color: {hex_color}; }}"
+            )
+            dot.clicked.connect(lambda _c=False, c=hex_color: self.highlightRequested.emit(c))
+            markup_lay.addWidget(dot)
+            self.swatch_buttons.append(dot)
+
+        self.underline_btn = self._btn("underline", "", "添加下划线", self.underlineRequested.emit)
+        markup_lay.addWidget(self.underline_btn)
+        self._markup_sep = self._sep()
+        markup_lay.addWidget(self._markup_sep)
+        lay.addWidget(self._markup_box)
+
+        self.copy_btn = self._btn(
+            "copy", "复制", "去换行复制选中内容", self.copyMergedRequested.emit
+        )
+        self.clip_btn = self._btn(
+            "notes", "摘录", "摘录到引文库与伴随笔记", self.clipRequested.emit
+        )
+        lay.addWidget(self.copy_btn)
+        lay.addWidget(self.clip_btn)
+
+        self._ai_sep = self._sep()
+        lay.addWidget(self._ai_sep)
+        lay.addWidget(pill)
+        self.explain_btn = self._btn("ai", "解释", "AI 解释选中段落", self.explainRequested.emit)
+        lay.addWidget(self.explain_btn)
+
+        self._refresh_icons()
+        get_theme().changed.connect(self._refresh_icons)
+        self.hide()
+
+    def _sep(self) -> QFrame:
+        line = QFrame(self)
+        line.setObjectName("SelectionBarSep")
+        line.setFixedSize(1, 14)
+        return line
+
+    def _btn(self, icon: str, text: str, tip: str, slot) -> QToolButton:  # type: ignore[no-untyped-def]
+        btn = QToolButton(self)
+        btn.setObjectName("SelectionActionBtn")
+        btn.setProperty("iconName", icon)
+        btn.setText(text)
+        btn.setToolTip(tip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setIconSize(QSize(13, 13))
+        btn.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            if text
+            else Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        btn.clicked.connect(slot)
+        return btn
+
+    def _refresh_icons(self, _name: str = "") -> None:
+        theme = get_theme()
+        color = theme.palette.text_secondary
+        for btn in (self.underline_btn, self.copy_btn, self.clip_btn, self.explain_btn):
+            btn.setIcon(theme.colored_icon(str(btn.property("iconName")), color, size=13))
+
+    def show_near(
+        self,
+        selection: QRect,
+        *,
+        show_pill: bool,
+        show_ai: bool,
+        pdf_editable: bool = True,
+    ) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self._markup_box.setVisible(pdf_editable)
+        self._pill.setVisible(show_pill)
+        self.explain_btn.setVisible(show_ai)
+        self._ai_sep.setVisible(show_pill or show_ai)
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()
+        self.adjustSize()
+        area = parent.rect()
+        x = selection.center().x() - self.width() // 2
+        y = selection.top() - self.height() - _GAP
+        if y < area.top() + _MARGIN:
+            y = selection.bottom() + _GAP
+        self.move(_clamp(QPoint(x, y), self.size(), area))
+        self.show()
+        self.raise_()
+        motion.pop_in(self, duration=TOKENS.anim_fast)
 
 
 class _Header(QWidget):
@@ -523,6 +657,7 @@ class TranslatePopup(QFrame):
         parent = self.parentWidget()
         if parent is None:
             return
+        motion.stop_widget_animation(self)
         self._moved = True
         self.move(_clamp(self.pos() + delta, self.size(), parent.rect()))
 

@@ -248,6 +248,13 @@ class ResearchSearchDialog(QDialog):
             self._timer.stop()
             return
         if self._indexing:
+            if (
+                self._controller.document is not self._index_document
+                or self._controller.is_encrypted
+            ):
+                self.stop()
+                self.status.setText("来源文档已变更或已加密，未更新索引。")
+                return
             try:
                 self._text_pages.append(self._controller.page_text(page, strict=True))
             except (PdfEngineError, RuntimeError, IndexError):
@@ -312,11 +319,20 @@ class ResearchSearchDialog(QDialog):
 
     def _commit_index(self) -> None:
         document = self._controller.document
-        if document is None:
+        if (
+            document is None
+            or document is not self._index_document
+            or self._controller.is_encrypted
+        ):
             self.stop()
+            self.status.setText("来源文档已变更或已加密，未更新索引。")
             return
         self._worker = LibraryIndexWorker(
-            self._database, str(document.path), document.title, self._text_pages
+            self._database,
+            str(document.path),
+            document.title,
+            self._text_pages,
+            encrypted=self._controller.is_encrypted,
         )
         self._text_pages = []
         self._worker.succeeded.connect(self._index_succeeded)

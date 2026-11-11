@@ -1,252 +1,297 @@
-"""设计令牌与配色板（Lumen 视觉，2026-10 第二版设计稿：暖纸底 + 赤陶强调色）。
+"""Lumen Pure 设计令牌（简约学术工作台：冷调中性纸感 + 森玉绿 Forest Jade 主色）。
 
-色值取自设计稿 ``UI/src/index.css``（暖灰中性色 + 赤陶 #c96a49 强调色 + 矿物色封面）。设计稿里的
-半透明叠色（如 ``bg-black/[.045]``、``bg-white/[.06]``）在这里预先与底色合成为不透明色，
-因为 Qt 样式表对 rgba 叠加的表现与浏览器不一致。
-
-所有 GUI 视觉常量的唯一来源——控件从不硬编码颜色，一律取自这里。
+所有界面颜色、字号、圆角、阴影均从此处读取，保证浅色 / 深色 / 高对比度三套主题一致。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-
-__all__ = ["CONTRAST", "DARK", "LIGHT", "TOKENS", "Palette", "Tokens", "palette_for"]
+from dataclasses import dataclass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Palette:
-    """一套完整的语义化配色（以用途命名，浅 / 深色各自赋值）。"""
+    """一套主题色板（Lumen Pure 设计规范）。"""
 
-    name: str  # "light" | "dark"
+    name: str  # "light" | "dark" | "contrast"
 
-    # 背景层次
-    window: str  # 应用主背景（暖灰纸感）
-    surface: str  # 标题栏 / 功能区 / 侧边栏 / 状态栏
-    surface_hover: str  # 可交互表面悬停
-    surface_active: str  # 按下 / 分段控件滑块
-    canvas: str  # 阅读区画布（与主背景一致，页面靠阴影浮起）
-    popover: str  # 下拉菜单 / 浮层卡片
-    card: str  # 批注卡片
+    # 表面层级：冷调中性灰白 / 石板暗色，突出 PDF 纸面内容本身
+    window: str
+    surface: str
+    surface_hover: str
+    surface_active: str
+    canvas: str
+    popover: str
+    card: str
 
-    # 描边
+    # 边框（1px 精细分割线）
     border: str
     border_strong: str
 
-    # 文本
+    # 文字层级（全部满足 WCAG AA 对比度 >= 4.5:1）
     text: str
     text_secondary: str
     text_muted: str
+    text_disabled: str
 
-    # 强调色（赤陶 terracotta）
+    # 品牌强调色（森玉绿 Forest Jade：克制、护眼、学术感）
     accent: str
     accent_hover: str
     accent_pressed: str
-    accent_soft: str  # 选中 / 勾选态的淡色底
-    accent_text: str  # 强调色文字（选中按钮、链接）
+    accent_soft: str
+    accent_text: str
     on_accent: str
 
-    # 品牌色（logo 方块：赤陶，略带纵深）
+    # 品牌徽标渐变
     brand_from: str
     brand_to: str
-
-    # 语义色
-    danger: str
-    danger_soft: str
-    success: str  # 状态消息前的小圆点
-    mark: str  # 搜索命中片段底色（amber）
 
     # 图标
     icon: str
     icon_active: str
 
-    # 阴影
-    shadow: str
+    # 语义色
+    danger: str
+    danger_soft: str
+    warning: str
+    success: str
+    mark: str
 
-    # ---- 文献库（Studio）：墨绿导航栏 + 矿物色封面 + 主推卡片 ----
-    nav: str = "#282D29"
-    nav_text: str = "#C2C7BD"
-    nav_muted: str = "#7D877B"
-    nav_active: str = "#3B423A"
-    nav_bright: str = "#EFF1E7"  # 选中项文字 / 品牌字
-    nav_icon_active: str = "#DCA27B"
-    import_button: str = "#CF7855"
-    import_button_hover: str = "#DF8864"
-    hero: str = "#EAECE2"  # 「从上次的思考继续」卡片
-    hero_ink: str = "#3B493B"
-    hero_button: str = "#3E4B3B"
-    hero_button_hover: str = "#53634F"
-    insight: str = "#EEE6DA"  # 「AI 助读」卡片
-    insight_ink: str = "#9E6B46"
-    cream: str = "#EDECE4"  # 视图切换选中底
-    soft_shadow: str = "rgba(48, 58, 48, 0.07)"
-    # 封面（底色, 墨色）：sage / sand / rose / blue，按文件路径稳定取一种
-    covers: tuple[tuple[str, str], ...] = (
-        ("#DCE4D7", "#475C48"),
-        ("#ECE3D2", "#746047"),
-        ("#EADBD4", "#80594C"),
-        ("#DCE3E6", "#49616B"),
-    )
+    # 画布纸张与阴影
+    page_border: str
+    shadow: str  # QColor 可识别的 #AARRGGBB
+    soft_shadow: str
+
+    # 文献库工作台（Lumen Pure 轻量中性侧栏，告别厚重海报风）
+    nav: str
+    nav_active: str
+    nav_text: str
+    nav_muted: str
+    nav_bright: str
+    nav_icon_active: str
+    import_button: str
+    import_button_hover: str
+    hero: str
+    hero_ink: str
+    hero_button: str
+    hero_button_hover: str
+    insight: str
+    insight_ink: str
+    cream: str
+    # 四种低饱和学术纸张封面底色与墨色：(背景, 墨色)
+    covers: tuple[tuple[str, str], tuple[str, str], tuple[str, str], tuple[str, str]]
 
     @property
     def is_dark(self) -> bool:
         return self.name in ("dark", "contrast")
 
 
-@dataclass(frozen=True, slots=True)
+LIGHT = Palette(
+    name="light",
+    window="#F6F7F9",
+    surface="#FFFFFF",
+    surface_hover="#F0F2F6",
+    surface_active="#E6E9EF",
+    canvas="#EDEFF3",
+    popover="#FFFFFF",
+    card="#FFFFFF",
+    border="#E4E7EC",
+    border_strong="#CFD4DC",
+    text="#18181B",
+    text_secondary="#474B54",
+    text_muted="#626773",
+    text_disabled="#A0A6B2",
+    accent="#17795E",
+    accent_hover="#12634C",
+    accent_pressed="#0E4F3D",
+    accent_soft="#E6F4F0",
+    accent_text="#136850",
+    on_accent="#FFFFFF",
+    brand_from="#17795E",
+    brand_to="#115E48",
+    icon="#3F434C",
+    icon_active="#136850",
+    danger="#DC2626",
+    danger_soft="#FEE2E2",
+    warning="#D97706",
+    success="#16A34A",
+    mark="#FCD34D",
+    page_border="#DDE1E8",
+    shadow="#14101828",
+    soft_shadow="#1E101828",
+    nav="#F8F9FB",
+    nav_active="#E6F4F0",
+    nav_text="#474B54",
+    nav_muted="#626773",
+    nav_bright="#18181B",
+    nav_icon_active="#17795E",
+    import_button="#17795E",
+    import_button_hover="#12634C",
+    hero="#FFFFFF",
+    hero_ink="#18181B",
+    hero_button="#17795E",
+    hero_button_hover="#12634C",
+    insight="#F2F8F6",
+    insight_ink="#136850",
+    cream="#EFF2F6",
+    covers=(
+        ("#EDF6F3", "#185946"),
+        ("#EEF3FA", "#284870"),
+        ("#F5F3EE", "#58493A"),
+        ("#F2EFF8", "#483C66"),
+    ),
+)
+
+DARK = Palette(
+    name="dark",
+    window="#111317",
+    surface="#171A21",
+    surface_hover="#212630",
+    surface_active="#2A303C",
+    canvas="#0C0E12",
+    popover="#1C2029",
+    card="#1A1E26",
+    border="#262B36",
+    border_strong="#363D4D",
+    text="#F1F3F5",
+    text_secondary="#B4BCCB",
+    text_muted="#8C95A6",
+    text_disabled="#525968",
+    accent="#2BB68E",
+    accent_hover="#38C89E",
+    accent_pressed="#1F9A76",
+    accent_soft="#152E27",
+    accent_text="#4AD2AA",
+    on_accent="#081712",
+    brand_from="#24A17D",
+    brand_to="#17795E",
+    icon="#A6AEBE",
+    icon_active="#4AD2AA",
+    danger="#F87171",
+    danger_soft="#3B1D22",
+    warning="#FBBF24",
+    success="#4ADE80",
+    mark="#B45309",
+    page_border="#262B36",
+    shadow="#66000000",
+    soft_shadow="#7A000000",
+    nav="#14171D",
+    nav_active="#17322A",
+    nav_text="#B4BCCB",
+    nav_muted="#8C95A6",
+    nav_bright="#F1F3F5",
+    nav_icon_active="#4AD2AA",
+    import_button="#24A17D",
+    import_button_hover="#2BB68E",
+    hero="#171A21",
+    hero_ink="#F1F3F5",
+    hero_button="#24A17D",
+    hero_button_hover="#2BB68E",
+    insight="#152622",
+    insight_ink="#4AD2AA",
+    cream="#1E232D",
+    covers=(
+        ("#182924", "#9AD8C5"),
+        ("#1A2433", "#A4C2E8"),
+        ("#26221D", "#D6C4AE"),
+        ("#221E2E", "#C4B5E6"),
+    ),
+)
+
+CONTRAST = Palette(
+    name="contrast",
+    window="#000000",
+    surface="#0A0A0A",
+    surface_hover="#1F1F1F",
+    surface_active="#2E2E2E",
+    canvas="#000000",
+    popover="#0A0A0A",
+    card="#0A0A0A",
+    border="#FFFFFF",
+    border_strong="#FFD60A",
+    text="#FFFFFF",
+    text_secondary="#FFFFFF",
+    text_muted="#FFE680",
+    text_disabled="#9E9E9E",
+    accent="#FFD60A",
+    accent_hover="#FFE34D",
+    accent_pressed="#E6BE00",
+    accent_soft="#332B00",
+    accent_text="#FFD60A",
+    on_accent="#000000",
+    brand_from="#FFD60A",
+    brand_to="#FFFFFF",
+    icon="#FFFFFF",
+    icon_active="#FFD60A",
+    danger="#FF6B6B",
+    danger_soft="#3D0000",
+    warning="#FFD60A",
+    success="#52FF9A",
+    mark="#3D3200",
+    page_border="#FFFFFF",
+    shadow="#CC000000",
+    soft_shadow="#CC000000",
+    nav="#000000",
+    nav_active="#2E2E2E",
+    nav_text="#FFFFFF",
+    nav_muted="#FFE680",
+    nav_bright="#FFFFFF",
+    nav_icon_active="#FFD60A",
+    import_button="#FFD60A",
+    import_button_hover="#FFE34D",
+    hero="#0A0A0A",
+    hero_ink="#FFFFFF",
+    hero_button="#FFD60A",
+    hero_button_hover="#FFE34D",
+    insight="#0A0A0A",
+    insight_ink="#FFD60A",
+    cream="#1F1F1F",
+    covers=(
+        ("#121212", "#FFFFFF"),
+        ("#121212", "#FFD60A"),
+        ("#121212", "#80E5FF"),
+        ("#121212", "#FFB86C"),
+    ),
+)
+
+
+@dataclass(frozen=True)
 class Tokens:
-    """与主题无关的尺寸 / 字体 / 动效令牌。"""
+    """与主题无关的尺寸与动效令牌（Lumen Pure 紧凑比例）。"""
+
+    font_family: str = '"Microsoft YaHei UI", "PingFang SC", "Segoe UI", system-ui, sans-serif'
+    mono_family: str = '"Cascadia Mono", "Consolas", "SF Mono", ui-monospace, monospace'
+    serif_family: str = '"Georgia", "Times New Roman", "Songti SC", "SimSun", serif'
+
+    font_size_xs: int = 11
+    font_size_sm: int = 12
+    font_size_base: int = 13
+    font_size_lg: int = 15
 
     radius_sm: int = 6
-    radius: int = 8
-    radius_lg: int = 12
-    radius_xl: int = 16
-    gap_sm: int = 6
-    gap: int = 10
-    gap_lg: int = 16
-    font_family: str = (
-        '"Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", '
-        '"Microsoft YaHei", "PingFang SC", sans-serif'
-    )
-    # 正文衬线体（标题、批注引文、搜索片段）：设计稿为 Source Serif 4 + Noto Serif SC
-    serif_family: str = (
-        '"Source Serif 4", "Noto Serif SC", "Source Han Serif SC", "Songti SC", '
-        '"SimSun", "Georgia", serif'
-    )
-    font_pt: int = 10
-    # 动效（毫秒）：与设计稿 CSS 一致；缓动统一用 OutExpo（≈ cubic-bezier(.22,1,.36,1)）
-    anim_fast: int = 200
-    anim_drop: int = 320
-    anim_up: int = 500
-    anim_sidebar: int = 500
-    anim_scroll: int = 380
+    radius_md: int = 8
+    radius_lg: int = 10
+    radius_xl: int = 12
+
+    header_height: int = 40
+    ribbon_height: int = 40
+    status_height: int = 28
+
+    # 动效时长（ms）——短促轻盈的阻尼曲线（OutExpo），不拖泥带水
+    anim_fast: int = 160
+    anim_drop: int = 220
+    anim_up: int = 280
+    anim_sidebar: int = 280
     anim_pulse: int = 900
+    anim_scroll: int = 300
 
 
 TOKENS = Tokens()
 
 
-# ----------------------------------------------------------------------------
-# 浅色：暖纸底 #f6f5f1 + 米白面板 + 暖灰文字 + 赤陶强调
-# ----------------------------------------------------------------------------
-LIGHT = Palette(
-    name="light",
-    window="#F6F5F1",
-    surface="#FCFBF8",
-    surface_hover="#EFEDE7",
-    surface_active="#FFFFFF",
-    canvas="#F6F5F1",
-    popover="#FFFFFF",
-    card="#FFFFFF",
-    border="#E8E5DE",
-    border_strong="#D6D2C9",
-    text="#30312E",
-    text_secondary="#686A63",
-    # 活动说明/状态也使用 muted；在 window/surface/canvas 等主表面保持至少 4.5:1。
-    text_muted="#6B6D64",
-    accent="#C96A49",
-    accent_hover="#B75B3C",
-    accent_pressed="#A44F33",
-    accent_soft="#F5E9DF",
-    accent_text="#B75B3C",
-    on_accent="#FFFFFF",
-    brand_from="#C96A49",
-    brand_to="#B75B3C",
-    danger="#F43F5E",
-    danger_soft="#FDE8EC",
-    success="#10B981",
-    mark="#FCD34D",
-    icon="#3F3F46",
-    icon_active="#B75B3C",
-    shadow="rgba(0, 0, 0, 0.18)",
-)
-
-
-# ----------------------------------------------------------------------------
-# 深色：近黑底 #0f1115 + 面板 #16181d + 浮层 #1d2027
-# ----------------------------------------------------------------------------
-DARK = Palette(
-    name="dark",
-    window="#0F1115",
-    surface="#16181D",
-    surface_hover="#202227",
-    surface_active="#2A2C31",
-    canvas="#0F1115",
-    popover="#1D2027",
-    card="#1B1D22",
-    border="#24262B",
-    border_strong="#33363D",
-    text="#E4E4E7",
-    text_secondary="#A1A1AA",
-    text_muted="#8B8B95",
-    accent="#C96A49",
-    accent_hover="#E28D69",
-    accent_pressed="#B75B3C",
-    accent_soft="#3B2E28",
-    accent_text="#E8A17E",
-    on_accent="#FFFFFF",
-    brand_from="#C96A49",
-    brand_to="#B75B3C",
-    danger="#FB7185",
-    danger_soft="#3A1F27",
-    success="#10B981",
-    mark="#B45309",
-    icon="#D4D4D8",
-    icon_active="#E8A17E",
-    shadow="rgba(0, 0, 0, 0.55)",
-    hero="#303A30",
-    hero_ink="#D8E2D2",
-    hero_button="#4A5A46",
-    hero_button_hover="#5B6D56",
-    insight="#3C352D",
-    insight_ink="#E0A47A",
-    cream="#33362E",
-    soft_shadow="rgba(0, 0, 0, 0.35)",
-)
-
-
-CONTRAST = replace(
-    DARK,
-    name="contrast",
-    window="#000000",
-    surface="#000000",
-    canvas="#000000",
-    popover="#000000",
-    card="#000000",
-    surface_hover="#252525",
-    surface_active="#303030",
-    text="#FFFFFF",
-    text_secondary="#FFFFFF",
-    text_muted="#FFFFFF",
-    border="#FFFFFF",
-    border_strong="#FFFFFF",
-    accent="#FFFF00",
-    accent_hover="#FFFF66",
-    accent_pressed="#FFD700",
-    accent_soft="#303000",
-    accent_text="#FFFF00",
-    on_accent="#000000",
-    icon="#FFFFFF",
-    icon_active="#FFFF00",
-    nav="#000000",
-    nav_text="#FFFFFF",
-    nav_muted="#FFFFFF",
-    nav_bright="#FFFFFF",
-    nav_active="#303030",
-    nav_icon_active="#FFFF00",
-    hero="#000000",
-    hero_ink="#FFFFFF",
-    hero_button="#333333",
-    hero_button_hover="#444444",
-    insight="#000000",
-    insight_ink="#FFFFFF",
-    cream="#303030",
-    import_button="#444444",
-    import_button_hover="#666666",
-    covers=(("#000000", "#FFFFFF"),) * 4,
-)
-
-
 def palette_for(name: str) -> Palette:
-    """按名称取配色板（未知名回退浅色）。"""
-    return CONTRAST if name == "contrast" else DARK if name == "dark" else LIGHT
+    """按名称返回配色板（未知名称回退浅色）。"""
+    if name == "dark":
+        return DARK
+    if name == "contrast":
+        return CONTRAST
+    return LIGHT

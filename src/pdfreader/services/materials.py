@@ -309,14 +309,21 @@ class MaterialStore:
         for m in reversed(self.items(kind)):
             writer.writerow(
                 [
-                    m.text,
-                    m.note,
-                    m.doc_title or m.doc_path,
+                    _csv_safe(m.text),
+                    _csv_safe(m.note),
+                    _csv_safe(m.doc_title or m.doc_path),
                     "" if m.page is None else m.page + 1,
                     time.strftime("%Y-%m-%d %H:%M", time.localtime(m.created)),
                 ]
             )
         return buf.getvalue()
+
+
+def _csv_safe(value: str) -> str:
+    """防止 CSV 在电子表格软件中触发公式执行。"""
+    if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def quote_template(sentence: str) -> str:

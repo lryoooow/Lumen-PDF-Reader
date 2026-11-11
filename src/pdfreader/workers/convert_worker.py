@@ -7,11 +7,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
 from pdfreader.services.converter import ConvertResult, ConvertService
+
+_logger = logging.getLogger("pdfreader")
 
 __all__ = ["ConvertWorker"]
 
@@ -65,6 +68,7 @@ class ConvertWorker(QThread):
                 self._source, self._target, self._format, password=self._password
             )
         except Exception as exc:  # 服务层已把已知错误转成 ConvertError，这里是兜底
+            _logger.warning("格式转换失败", exc_info=True)
             self.convertFailed.emit(str(exc))
         else:
             if isinstance(result, ConvertResult):

@@ -333,10 +333,10 @@ class SearchPanel(QWidget):
 
     # ------------------------------------------------------------------
     def _refresh_icons(self) -> None:
+        from pdfreader.gui.theme.icons import render_pixmap
+
         p = self._theme.palette
-        self._search_icon.setPixmap(
-            self._theme.colored_icon("search", p.text_muted, size=16).pixmap(16, 16)
-        )
+        self._search_icon.setPixmap(render_pixmap("search", p.text_muted, size=16))
         for btn in (self._prev_btn, self._next_btn, self._close_btn):
             btn.setIcon(self._theme.icon(str(btn.property("iconName")), size=14))
 

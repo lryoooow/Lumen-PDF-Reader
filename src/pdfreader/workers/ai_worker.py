@@ -7,11 +7,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
 from pdfreader.services.ai.client import AiError, ChatClient
+
+_logger = logging.getLogger("pdfreader")
 
 __all__ = ["AiWorker"]
 
@@ -110,6 +113,7 @@ class AiWorker(QThread):
             else:
                 self.failed.emit(str(exc))
         except Exception as exc:  # 防御：任何意外都不能让线程静默死掉
+            _logger.warning("AI 请求后台线程异常", exc_info=True)
             if self._stopped:
                 self.cancelled.emit()
             else:

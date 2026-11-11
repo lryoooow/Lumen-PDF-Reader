@@ -39,10 +39,14 @@ _PATH_FIELDS = frozenset(
 )
 _SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9._\-]{8,})")
 _SECRET_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password)")
+_WIN_PDF_PATH_RE = re.compile(
+    r"\b([A-Za-z]:(?:\\\\|[\\/]))(?:[^\\/:\"*?<>|\r\n]+(?:\\\\|[\\/]))+([^\\/:\"*?<>|\r\n]+\.pdf)\b",
+    re.IGNORECASE,
+)
 
 
 def redact_text(text: str, home: Path | None = None) -> str:
-    """去掉用户主目录前缀与疑似密钥。"""
+    """去掉用户主目录前缀、非主盘 PDF 目录路径与疑似密钥。"""
     if home is not None:
         prefix = str(home)
         for escaped in (
@@ -51,6 +55,7 @@ def redact_text(text: str, home: Path | None = None) -> str:
             prefix,
         ):
             text = re.sub(re.escape(escaped), "~", text, flags=re.IGNORECASE)
+    text = _WIN_PDF_PATH_RE.sub(r"\1.../\2", text)
     return _SECRET_RE.sub("***", text)
 
 

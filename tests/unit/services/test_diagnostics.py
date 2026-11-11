@@ -24,6 +24,10 @@ def test_redact_text_hides_home_and_tokens() -> None:
     assert "paper.pdf" in result
     assert "sk-1234567890abcdef" not in result
     assert "Bearer abcdefghijkl" not in result
+    other_drive = redact_text(r"打开 D:\SecretProject\ClientA\contract.pdf 失败", home)
+    assert "SecretProject" not in other_drive
+    assert "ClientA" not in other_drive
+    assert "contract.pdf" in other_drive
 
 
 def test_redact_json_escaped_windows_home() -> None:

@@ -98,6 +98,7 @@ class OcrWorker(QThread):
             self.ocrFailed.emit(str(exc))
             return
         except Exception as exc:
+            _logger.warning("OCR 打开文档失败：%s", path, exc_info=True)
             self.ocrFailed.emit(f"打开文档失败:{exc}")
             return
 
@@ -125,6 +126,7 @@ class OcrWorker(QThread):
             else:
                 self.ocrCancelled.emit(processed)
         except Exception as exc:
+            _logger.warning("OCR 执行异常", exc_info=True)
             if self._running:
                 self.ocrFailed.emit(f"OCR 失败:{exc}")
             else:

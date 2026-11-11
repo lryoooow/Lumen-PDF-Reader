@@ -98,7 +98,7 @@ ALL_FOLDERS = "全部"
 SORTS = ("最近阅读", "名称排序")
 _MAX_COLLECTIONS = 3
 _MAX_FILTER_CHIPS = 6
-_COLLECTION_DOTS = ("#A4B098", "#C79C79", "#8EABB4")
+_COLLECTION_DOTS = ("#17795E", "#3B729F", "#7E6BA8")
 _CONTENT_MAX = 1420
 # 按钮图标放右侧用了 RightToLeft，布局对齐需按绝对方向，否则「左对齐」会被镜像到右边
 _ABS_LEFT = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute
@@ -244,21 +244,23 @@ def _two_line(top: str, bottom: str, top_name: str, bottom_name: str, gap: int =
 
 # ============================================================================ 导航栏部件
 class _BrandMark(QWidget):
-    """品牌标记：三根斜切的竖条（高 18 / 27 / 22，skewY −15°）。"""
+    """品牌标记：三根斜切的森玉绿几何竖条（Lumen Pure）。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(26, 34)
+        self.setFixedSize(24, 28)
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.translate(0, 5)
-        p.shear(0, -0.27)
+        p.translate(1, 4)
+        p.shear(0, -0.24)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#D7DDC7"))
-        for i, h in enumerate((18, 27, 22)):
-            p.drawRoundedRect(QRectF(i * 9, 27 - h + 4, 5, h), 1, 1)
+        for i, (h, alpha) in enumerate(((14, 0.55), (21, 1.0), (17, 0.78))):
+            p.setBrush(_with_alpha(pal.accent, alpha))
+            p.drawRoundedRect(QRectF(i * 7.5, 21 - h + 2, 4.5, h), 1.5, 1.5)
         p.end()
 
 
@@ -396,10 +398,13 @@ class _Cover(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         r = QRectF(self.rect())
         clip = QPainterPath()
-        clip.addRoundedRect(r, 4, 4)
+        clip.addRoundedRect(r, 6, 6)
         p.setClipPath(clip)
         p.fillRect(r, QColor(bg))
         self._paint_art(p, r, ink)
+        p.setPen(QPen(_with_alpha(ink, 0.12), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
 
         small = self.compact or r.height() < 160
         if self.compact:
@@ -460,9 +465,9 @@ class _Cover(QAbstractButton):
         return font
 
     def _paint_art(self, p: QPainter, r: QRectF, ink: str) -> None:
-        """同心几何纹（透明度 .2）：sage 椭圆 / sand 方框 / rose 菱形 / blue 圆角方。"""
+        """极简几何线纹（透明度 .13）：sage 椭圆 / slate 方框 / violet 菱形 / warm 圆角方。"""
         p.save()
-        p.setOpacity(0.2)
+        p.setOpacity(0.13)
         p.setPen(QPen(QColor(ink), 1.0))
         p.setBrush(Qt.BrushStyle.NoBrush)
         k = 0.6 if self.compact else 1.0
@@ -549,10 +554,12 @@ class _ProgressLine(QWidget):
         self.setFixedHeight(2)
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(get_theme().palette.surface_hover))
+        p.fillRect(self.rect(), QColor(pal.surface_hover))
         if self.value > 0:
-            p.fillRect(QRectF(0, 0, self.width() * self.value, 2), _with_alpha(self._ink, 0.45))
+            p.fillRect(QRectF(0, 0, self.width() * self.value, 2), _with_alpha(pal.accent, 0.78))
         p.end()
 
 
@@ -666,14 +673,14 @@ class _BookCard(QFrame):
         self._lift = v
         lay = self.layout()
         if lay is not None:
-            dy = round(5 * v)
+            dy = round(3 * v)
             lay.setContentsMargins(0, 5 - dy, 0, dy)
 
     def _set_shadow(self, on: bool) -> None:
         if on and motion.enabled():
             effect = QGraphicsDropShadowEffect(self.card)
-            effect.setBlurRadius(45)
-            effect.setOffset(0, 16)
+            effect.setBlurRadius(28)
+            effect.setOffset(0, 8)
             effect.setColor(QColor(get_theme().palette.soft_shadow))
             self.card.setGraphicsEffect(effect)
         else:
@@ -690,66 +697,61 @@ class _HeroProgress(QWidget):
         self.setFixedSize(112, 3)
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(90, 112, 86, 34))
+        p.setBrush(QColor(pal.border_strong))
         p.drawRoundedRect(QRectF(self.rect()), 1.5, 1.5)
         if self.value > 0:
-            p.setBrush(QColor("#718066"))
+            p.setBrush(QColor(pal.accent))
             p.drawRoundedRect(QRectF(0, 0, max(3.0, self.width() * self.value), 3), 1.5, 1.5)
         p.end()
 
 
 class _PaperScene:
-    """「继续阅读」卡片右侧的纸张场景（由卡片的 paintEvent 绘制，随卡片圆角裁剪）。"""
+    """「继续阅读」卡片右侧的极简学术纸张微缩图（随主题切换冷白 / 石板纸张）。"""
 
     def __init__(self) -> None:
         self.hover = 0.0
         self.float_phase = 0.0
         self.title = ""
         self.year = ""
-        self.paper = QSize(171, 232)
-        self.right = 24.0
+        self.paper = QSize(142, 184)
+        self.right = 20.0
         self.opacity = 1.0
 
     def paint(self, p: QPainter, area: QRectF) -> None:
+        theme = get_theme()
+        pal = theme.palette
         p.save()
         p.setOpacity(self.opacity)
         w_paper, h_paper = float(self.paper.width()), float(self.paper.height())
-        # 轨道
-        p.setPen(QPen(QColor(117, 131, 102, 28), 1.0))
+        # 细微几何弧线背景
+        p.setPen(QPen(_with_alpha(pal.accent, 0.09), 1.0))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        for size, r_off, top in ((330.0, 90.0, 10.0), (430.0, 140.0, -40.0)):
+        for size, r_off, top in ((260.0, 80.0, 8.0), (340.0, 120.0, -30.0)):
             p.drawEllipse(QRectF(area.right() + r_off - size, area.top() + top, size, size))
         t = self.hover
-        back = QRectF(area.right() - (self.right + 9) - w_paper, area.top() + 47, w_paper, h_paper)
-        front = QRectF(area.right() - self.right - w_paper, area.top() + 38, w_paper, h_paper)
-        self._paper(p, back, -5 - 4 * t, QPointF(-7 * t, 0), QColor("#C5CCBA"), content=False)
-        self._paper(p, front, 9 - 5 * t, QPointF(0, -6 * t), QColor("#FFFEF7"), content=True)
-        self._note(p, area)
-        p.restore()
-
-    def _note(self, p: QPainter, area: QRectF) -> None:
-        """浮动便签「好的想法，值得留下。」：7s 一个周期上下浮动 6px。"""
-        dy = -6 * math.sin(math.pi * self.float_phase) ** 2
-        note_w, note_h = 196.0, 40.0
-        p.save()
-        p.translate(area.right() - 9 - note_w / 2, area.bottom() - 30 - note_h / 2 + dy)
-        p.rotate(-3)
-        rect = QRectF(-note_w / 2, -note_h / 2, note_w, note_h)
-        p.setPen(QPen(QColor(255, 255, 255, 153), 1))
-        p.setBrush(QColor(250, 250, 240, 232))
-        p.drawRoundedRect(rect, 7, 7)
-        icon = render_pixmap("highlight", "#667056", 15)
-        p.drawPixmap(int(rect.left() + 13), int(rect.center().y() - 7), icon)
-        p.setPen(QColor("#667056"))
-        p.setFont(_font(11))
-        p.drawText(
-            rect.adjusted(36, 0, -8, 0),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            "好的想法，值得留下。",
+        dy = -3.0 * math.sin(math.pi * self.float_phase) ** 2
+        top_y = max(18.0, (area.height() - h_paper) / 2.0 + 6.0)
+        back = QRectF(
+            area.right() - (self.right + 10) - w_paper,
+            area.top() + top_y + 8,
+            w_paper,
+            h_paper,
         )
+        front = QRectF(
+            area.right() - self.right - w_paper,
+            area.top() + top_y + dy,
+            w_paper,
+            h_paper,
+        )
+        back_c = QColor("#252B37") if theme.is_dark else QColor("#EAECEF")
+        front_c = QColor("#1D222C") if theme.is_dark else QColor("#FFFFFF")
+        self._paper(p, back, -4 - 3 * t, QPointF(-5 * t, 0), back_c, pal.border, content=False)
+        self._paper(p, front, 6 - 4 * t, QPointF(0, -4 * t), front_c, pal.border, content=True)
         p.restore()
 
     def _paper(
@@ -759,6 +761,7 @@ class _PaperScene:
         angle: float,
         offset: QPointF,
         color: QColor,
+        border_hex: str,
         *,
         content: bool,
     ) -> None:
@@ -767,101 +770,90 @@ class _PaperScene:
         p.rotate(angle)
         local = QRectF(-rect.width() / 2, -rect.height() / 2, rect.width(), rect.height())
         p.setPen(Qt.PenStyle.NoPen)
-        for i, alpha in enumerate((12, 8, 5)):  # 0 10px 28px 的柔和投影
-            p.setBrush(QColor(52, 64, 50, alpha))
+        for i, alpha in enumerate((14, 9, 5)):
+            p.setBrush(QColor(15, 23, 42, alpha))
             p.drawRoundedRect(
-                local.translated(0, 6 + i * 3).adjusted(-i * 2, -i, i * 2, i * 2), 3, 3
+                local.translated(0, 5 + i * 2.5).adjusted(-i * 1.5, -i, i * 1.5, i * 1.5), 4, 4
             )
         p.setBrush(color)
-        p.drawRoundedRect(local, 2, 2)
+        p.setPen(QPen(QColor(border_hex), 1.0))
+        p.drawRoundedRect(local, 4, 4)
         if content:
             self._paper_content(p, local)
         p.restore()
 
     def _paper_content(self, p: QPainter, local: QRectF) -> None:
-        ink = QColor("#404840")
-        muted = _with_alpha("#404840", 0.6)
-        x, y = local.left() + 17, local.top() + 17
-        width = local.width() - 34
+        pal = get_theme().palette
+        ink = QColor(pal.text)
+        muted = _with_alpha(pal.text_secondary, 0.72)
+        line_c = _with_alpha(pal.text_muted, 0.25)
+        x, y = local.left() + 14, local.top() + 14
+        width = local.width() - 28
         p.setPen(muted)
         p.setFont(_font(6, spacing=0.7))
-        p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignLeft, "RESEARCH PAPER")
+        p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignLeft, "PREPRINT")
         p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignRight, self.year)
-        y += 22
-        title_font = serif_font(15)
+        y += 16
+        title_font = serif_font(10)
         title_font.setWeight(QFont.Weight.DemiBold)
         p.setFont(title_font)
         p.setPen(ink)
+        elided_title = p.fontMetrics().elidedText(
+            self.title.replace("\n", " "),
+            Qt.TextElideMode.ElideRight,
+            max(40, int(width * 1.85)),
+        )
         flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        p.drawText(QRectF(x, y, width, 38), flags | int(Qt.TextFlag.TextWordWrap), self.title)
-        y += 44
-        p.fillRect(QRectF(x, y, width, 1), QColor(84, 103, 71, 119))
+        p.drawText(QRectF(x, y, width, 34), flags | int(Qt.TextFlag.TextWordWrap), elided_title)
+        y += 36
+        p.fillRect(QRectF(x, y, width, 1), _with_alpha(pal.accent, 0.45))
         y += 8
-        p.setPen(muted)
-        p.setFont(_font(6))
-        byline = "A quiet place for careful reading"
-        p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignLeft, byline)
-        y += 14
         p.setFont(_font(6, weight=QFont.Weight.DemiBold, spacing=0.5))
         p.setPen(ink)
         p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignLeft, "ABSTRACT")
-        y = self._lines(p, x, y + 11, width, 4)
-        # 注意力矩阵（skewX −12°）
-        grid_w = 63.0
-        cell = (grid_w - 12) / 5
-        p.save()
-        p.translate(x + (width - grid_w) / 2, y + 8)
-        p.shear(-0.21, 0)
-        for i in range(25):
-            filled = i % 6 == 0 or i in (11, 17)
-            p.setPen(QPen(QColor("#CBD2C0"), 1))
-            p.setBrush(QColor("#86997C") if filled else QColor("#E9EADE"))
-            p.drawRect(QRectF((i % 5) * (cell + 3), (i // 5) * 10, cell, 7))
-        p.restore()
-        if y + 79 < local.bottom() - 18:
-            self._lines(p, x, y + 64, width, 3)
-        p.setPen(QColor("#93998C"))
-        p.setFont(_font(6))
-        p.drawText(
-            QRectF(local.left(), local.bottom() - 16, local.width(), 8),
-            Qt.AlignmentFlag.AlignHCenter,
-            "01",
-        )
+        y = self._lines(p, x, y + 10, width, 3, line_c)
+        # 森玉绿摘录高亮条示意
+        p.fillRect(QRectF(x, y + 3, width * 0.82, 4), _with_alpha(pal.accent, 0.22))
+        y += 12
+        if y + 18 < local.bottom() - 14:
+            self._lines(p, x, y, width, 3, line_c)
 
     @staticmethod
-    def _lines(p: QPainter, x: float, y: float, width: float, n: int) -> float:
+    def _lines(p: QPainter, x: float, y: float, width: float, n: int, color: QColor) -> float:
         for i in range(n):
-            p.fillRect(QRectF(x, y, width * (0.72 if i == n - 1 else 1.0), 2), QColor("#C7C9BC"))
+            p.fillRect(QRectF(x, y, width * (0.72 if i == n - 1 else 1.0), 2), color)
             y += 5
         return y
 
 
 class _ContinueCard(QFrame):
-    """「从上次的思考继续」：最近一份文档的书名 / 作者 / 进度 + 继续阅读；右侧纸张场景。"""
+    """「继续上次精读」：最近一份文档的书名 / 作者 / 进度 + 继续阅读；右侧极简论文微缩图。"""
 
     continueRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ContinueCard")
-        self.setMinimumHeight(297)
+        self.setMinimumHeight(204)
+        self._entry: LibraryEntry | None = None
         self.scene = _PaperScene()
         self._copy = QWidget(self)
         self._copy.setObjectName("ContinueCopy")
         lay = QVBoxLayout(self._copy)
         self._copy_lay = lay
-        lay.setContentsMargins(30, 25, 30, 25)
+        lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(0)
         self.kicker = _label("", "SectionKicker")
         self.kicker.setTextFormat(Qt.TextFormat.RichText)
         self.title = _label("", "ContinueTitle")
         self.title.setWordWrap(True)
+        self.title.setContentsMargins(0, 0, 0, 3)
         self.subtitle = _label("", "ContinueSubtitle")
         self.subtitle.setWordWrap(True)
         self.meta_left = _label("", "ContinueMeta")
         self.meta_right = _label("", "ContinueMeta")
         meta = QHBoxLayout()
-        meta.setSpacing(14)
+        meta.setSpacing(12)
         meta.addWidget(self.meta_left)
         meta.addWidget(self.meta_right)
         meta.addStretch(1)
@@ -876,41 +868,46 @@ class _ContinueCard(QFrame):
         self.button.setObjectName("ContinueButton")
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.button.setIconSize(QSize(16, 16))
-        self.button.setIcon(QIcon(render_pixmap("forward", "#F0F0E7", 16)))
+        self.button.setIconSize(QSize(15, 15))
         self.button.clicked.connect(self.continueRequested.emit)
         lay.addWidget(self.kicker)
-        lay.addSpacing(20)
+        lay.addSpacing(8)
         lay.addWidget(self.title)
-        lay.addSpacing(10)
+        lay.addSpacing(4)
         lay.addWidget(self.subtitle)
-        lay.addSpacing(17)
+        lay.addSpacing(8)
         lay.addLayout(meta)
-        lay.addSpacing(15)
+        lay.addSpacing(8)
         lay.addLayout(prog)
-        lay.addSpacing(20)
-        lay.addWidget(self.button, alignment=_ABS_LEFT)
         lay.addStretch(1)
+        lay.addSpacing(10)
+        lay.addWidget(self.button, alignment=_ABS_LEFT)
         self._float: QVariantAnimation | None = None
+        self.refresh()
+
+    def refresh(self) -> None:
+        pal = get_theme().palette
+        self.button.setIcon(QIcon(render_pixmap("forward", pal.on_accent, 15)))
+        self.set_entry(self._entry)
 
     # ---------------------------------------------------------------- 内容
     def set_entry(self, entry: LibraryEntry | None) -> None:
-        dot = '<span style="color:#869879;">●</span>&nbsp;&nbsp;'
+        self._entry = entry
+        accent = get_theme().palette.accent
+        dot = f'<span style="color:{accent};">●</span>&nbsp;&nbsp;'
         if entry is None:
-            self.kicker.setText(f"{dot}从这里开始")
+            self.kicker.setText(f"{dot}开始精读")
             self.title.setText("打开第一篇文献")
-            self.subtitle.setText(
-                "导入 PDF，或把文件拖放到窗口——阅读位置、书签与批注都只留在本机。"
-            )
+            self.subtitle.setText("导入 PDF 或拖放文件至窗口——阅读进度、书签与批注均保存在本地。")
             self.meta_left.setText("")
             self.meta_right.setText("")
             self.bar.setVisible(False)
             self.read_label.setText("")
             self.button.setText("导入 PDF")
-            self.scene.title = "Your next\nfavourite paper"
+            self.scene.title = "Academic\nReading Studio"
             self.scene.year = time.strftime("%Y")
         else:
-            self.kicker.setText(f"{dot}从上次的思考继续")
+            self.kicker.setText(f"{dot}继续上次精读")
             self.title.setText(entry.title)
             self.subtitle.setText(Path(entry.path).name)
             self.meta_left.setText(entry.author or entry.folder)
@@ -929,18 +926,18 @@ class _ContinueCard(QFrame):
         self.update()
 
     def set_scale(self, cls: str) -> None:
-        """按宽度档位（xl / lg / md / sm / xs）套用设计稿的断点尺寸。"""
-        margins = {"xl": (36, 30), "lg": (30, 25), "md": (24, 24), "sm": (24, 24)}.get(
-            cls, (18, 22)
+        """按宽度档位（xl / lg / md / sm / xs）套用紧凑断点尺寸。"""
+        margins = {"xl": (26, 20), "lg": (24, 18), "md": (20, 18), "sm": (20, 18)}.get(
+            cls, (16, 16)
         )
         self._copy_lay.setContentsMargins(margins[0], margins[1], margins[0], margins[1])
-        self.setMinimumHeight({"xl": 320, "lg": 297, "md": 297, "sm": 290}.get(cls, 280))
+        self.setMinimumHeight({"xl": 224, "lg": 216, "md": 214, "sm": 208}.get(cls, 200))
         self.title.setProperty("size", cls)
         _repolish(self.title)
-        paper = {"xl": (190, 255, 45.0), "md": (145, 220, -1.0), "sm": (170, 230, 10.0)}
-        w, h, right = paper.get(cls, (171, 232, 24.0))
+        paper = {"xl": (148, 190, 28.0), "md": (122, 164, 4.0), "sm": (132, 174, 12.0)}
+        w, h, right = paper.get(cls, (138, 180, 20.0))
         self.scene.paper, self.scene.right = QSize(w, h), right
-        self.scene.opacity = {"md": 0.75, "xs": 0.3}.get(cls, 1.0)
+        self.scene.opacity = {"md": 0.78, "xs": 0.32}.get(cls, 1.0)
         self._layout_copy()
         self.update()
 
@@ -1000,83 +997,98 @@ class _ContinueCard(QFrame):
         return QSize(300, max(self.minimumHeight(), self._copy.minimumSizeHint().height()))
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         r = QRectF(self.rect())
         clip = QPainterPath()
-        clip.addRoundedRect(r, 12, 12)
+        clip.addRoundedRect(r, 10, 10)
         p.setClipPath(clip)
-        p.fillRect(r, QColor(get_theme().palette.hero))
+        p.fillRect(r, QColor(pal.hero))
         if self.width() >= 420:
             self.scene.paint(p, self._scene_rect())
+        p.setPen(QPen(QColor(pal.border), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
         p.end()
 
 
 class _InsightCard(QFrame):
-    """AI 助读介绍卡：图标 → 小标题 → 衬线标题 → 说明 → 「探索 AI 助读 →」→ 脚注；右侧淡淡的大火花。"""
+    """右侧多合一学术助读工作台卡片（翻译 · AI 导读 · 伴随笔记）。"""
 
     exploreRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("InsightCard")
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(240)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(27, 24, 27, 19)
+        lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(0)
         self._lay = lay
+        head = QHBoxLayout()
+        head.setSpacing(8)
         self.icon = QLabel()
-        self.icon.setFixedSize(24, 24)
-        kicker = _label("YOUR READING COMPANION", "InsightKicker")
-        self.title = _label("不止读懂，\n更进一步。", "InsightTitle")
-        body = _label("让 AI 帮你梳理脉络、解释难点，\n为每一个好问题找到起点。", "InsightBody")
+        self.icon.setFixedSize(18, 18)
+        kicker = _label("ACADEMIC STUDIO", "InsightKicker")
+        head.addWidget(self.icon)
+        head.addWidget(kicker)
+        head.addStretch(1)
+        self.title = _label("翻译 · 导读 · 笔记", "InsightTitle")
+        body = _label("划词对照译文、全文要点速览与 Markdown 伴随笔记同屏协同。", "InsightBody")
         body.setWordWrap(True)
-        self.button = QPushButton("探索 AI 助读")
+        self.button = QPushButton("开启 AI 助读")
         self.button.setObjectName("InsightButton")
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.button.setIconSize(QSize(16, 16))
+        self.button.setIconSize(QSize(14, 14))
         self.button.clicked.connect(self.exploreRequested.emit)
-        foot = _label("·&nbsp;&nbsp;仅在你主动提问时使用 AI", "InsightFootnote")
+        foot = _label("·&nbsp;&nbsp;仅在你主动发起时请求模型", "InsightFootnote")
         foot.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(self.icon)
-        lay.addSpacing(19)
-        lay.addWidget(kicker)
-        lay.addSpacing(12)
-        lay.addWidget(self.title)
+        lay.addLayout(head)
         lay.addSpacing(10)
+        lay.addWidget(self.title)
+        lay.addSpacing(6)
         lay.addWidget(body)
-        lay.addSpacing(17)
-        lay.addWidget(self.button, alignment=_ABS_LEFT)
-        lay.addSpacing(18)
-        lay.addWidget(foot)
         lay.addStretch(1)
+        lay.addSpacing(12)
+        lay.addWidget(self.button, alignment=_ABS_LEFT)
+        lay.addSpacing(10)
+        lay.addWidget(foot)
         self.refresh()
 
     def refresh(self) -> None:
         p = get_theme().palette
-        self.icon.setPixmap(render_pixmap("ai", "#A47852", 24))
-        self.button.setIcon(QIcon(render_pixmap("forward", p.insight_ink, 16)))
+        self.icon.setPixmap(render_pixmap("ai", p.accent, 18))
+        self.button.setIcon(QIcon(render_pixmap("forward", p.insight_ink, 14)))
+        self.update()
 
     def set_compact(self, compact: bool) -> None:
-        m = (21, 24, 21, 18) if compact else (27, 24, 27, 19)
+        m = (18, 16, 18, 14) if compact else (22, 18, 22, 16)
         self._lay.setContentsMargins(*m)
-        self.setMinimumWidth(220 if compact else 260)
+        self.setMinimumWidth(210 if compact else 240)
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = QRectF(self.rect())
         clip = QPainterPath()
-        clip.addRoundedRect(r, 12, 12)
+        clip.addRoundedRect(r, 10, 10)
         p.setClipPath(clip)
-        p.fillRect(r, QColor(get_theme().palette.insight))
-        # 火花：right −12 / top 72 / rotate −15° / 透明度 .24
-        p.setOpacity(0.24)
-        p.translate(r.right() + 12 - 70, 72 + 70)
-        p.rotate(-15)
-        p.drawPixmap(-70, -70, render_pixmap("ai", "#C6B08A", 140, stroke=0.7))
+        p.fillRect(r, QColor(pal.insight))
+        p.save()
+        p.setOpacity(0.08)
+        p.translate(r.right() - 42, r.top() + 56)
+        p.rotate(-12)
+        p.drawPixmap(-56, -56, render_pixmap("ai", pal.accent, 112, stroke=0.8))
+        p.restore()
+        p.setPen(QPen(QColor(pal.border), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
         p.end()
 
 
@@ -1158,17 +1170,18 @@ class LibraryHome(QWidget):
 
         brand = QHBoxLayout()
         self._brand_lay = brand
-        brand.setContentsMargins(12, 0, 0, 0)
-        brand.setSpacing(12)
-        brand.addWidget(_BrandMark())
-        self._brand_text = _label('lumen<span style="color:#D99A75;">.</span>', "StudioBrand")
+        brand.setContentsMargins(8, 0, 0, 0)
+        brand.setSpacing(10)
+        self._brand_mark = _BrandMark()
+        brand.addWidget(self._brand_mark)
+        self._brand_text = _label('lumen<span style="color:#17795E;">.</span>', "StudioBrand")
         self._brand_text.setTextFormat(Qt.TextFormat.RichText)
         brand.addWidget(self._brand_text)
         brand.addStretch(1)
         lay.addLayout(brand)
-        lay.addSpacing(40)
+        lay.addSpacing(36)
 
-        self._ws_label = _label("PERSONAL WORKSPACE", "NavCaption")
+        self._ws_label = _label("ACADEMIC WORKSPACE", "NavCaption")
         self._ws_label.setWordWrap(True)
         lay.addWidget(self._ws_label)
         lay.addSpacing(14)
@@ -1180,38 +1193,37 @@ class LibraryHome(QWidget):
         ws.setContentsMargins(10, 0, 10, 0)
         ws.setSpacing(10)
         avatar = _label("L", "WorkspaceAvatar")
-        avatar.setFixedSize(32, 34)
+        avatar.setFixedSize(30, 30)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ws_chevron = QLabel()
         _passthrough(avatar, self._ws_chevron)
         ws.addWidget(avatar)
-        ws.addWidget(_two_line("我的阅读空间", "Personal space", "NavStrong", "NavSmall"), 1)
+        ws.addWidget(_two_line("本地精读空间", "Local-first studio", "NavStrong", "NavSmall"), 1)
         ws.addWidget(self._ws_chevron)
         self._ws_switch.setFixedHeight(40)
         self._ws_switch.clicked.connect(self.reset_filters)
         lay.addWidget(self._ws_switch)
-        lay.addSpacing(23)
+        lay.addSpacing(22)
 
         self.import_button = QPushButton()
         self.import_button.setObjectName("ImportButton")
         self.import_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.import_button.setToolTip("导入 PDF  (Ctrl+O)")
         self.import_button.setAccessibleName("导入 PDF")
-        self.import_button.setFixedHeight(41)
+        self.import_button.setFixedHeight(40)
         imp = QHBoxLayout(self.import_button)
-        imp.setContentsMargins(13, 0, 13, 0)
-        imp.setSpacing(9)
-        import_icon = QLabel()
-        import_icon.setPixmap(render_pixmap("plus", "#FFF6ED", 18))
+        imp.setContentsMargins(12, 0, 12, 0)
+        imp.setSpacing(8)
+        self._import_icon = QLabel()
         self._import_text = _label("导入 PDF", "ImportText")
         self._import_key = _label("Ctrl O", "ImportKey")
-        _passthrough(import_icon, self._import_text, self._import_key)
-        imp.addWidget(import_icon)
+        _passthrough(self._import_icon, self._import_text, self._import_key)
+        imp.addWidget(self._import_icon)
         imp.addWidget(self._import_text, 1)
         imp.addWidget(self._import_key)
         self.import_button.clicked.connect(self.openRequested.emit)
         lay.addWidget(self.import_button)
-        lay.addSpacing(29)
+        lay.addSpacing(28)
 
         self._lib_caption = _label("文献库", "NavCaption")
         lay.addWidget(self._lib_caption)
@@ -1303,13 +1315,13 @@ class LibraryHome(QWidget):
     def _build_topbar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("StudioTopbar")
-        bar.setFixedHeight(70)
+        bar.setFixedHeight(52)
         self._topbar = bar
         lay = QHBoxLayout(bar)
         self._topbar_lay = lay
-        lay.setContentsMargins(42, 0, 42, 0)
-        lay.setSpacing(13)
-        lay.addWidget(_label("工作空间", "CrumbMuted"))
+        lay.setContentsMargins(36, 0, 36, 0)
+        lay.setSpacing(10)
+        lay.addWidget(_label("文献工作台", "CrumbMuted"))
         self._crumb_arrow = QLabel()
         lay.addWidget(self._crumb_arrow)
         self.crumb = _label(self.section, "CrumbCurrent")
@@ -1323,28 +1335,28 @@ class LibraryHome(QWidget):
         self.return_button.clicked.connect(self.returnRequested.emit)
         self.return_button.setVisible(False)
         lay.addWidget(self.return_button)
-        lay.addSpacing(7)
+        lay.addSpacing(6)
         self._local = _label(
-            '<span style="color:#869879;">●</span>&nbsp;&nbsp;已在本地就绪', "LocalStatus"
+            '<span style="color:#17795E;">●</span>&nbsp;&nbsp;已在本地就绪', "LocalStatus"
         )
         self._local.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(self._local)
-        lay.addSpacing(7)
+        lay.addSpacing(6)
         self._divider = QFrame()
         self._divider.setObjectName("TopbarDivider")
-        self._divider.setFixedSize(1, 17)
+        self._divider.setFixedSize(1, 15)
         lay.addWidget(self._divider)
-        lay.addSpacing(7)
+        lay.addSpacing(6)
         self.theme_button = QToolButton()
         self.theme_button.setObjectName("TopbarIcon")
         self.theme_button.setToolTip("切换主题")
         self.theme_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_button.setIconSize(QSize(17, 17))
+        self.theme_button.setIconSize(QSize(16, 16))
         self.theme_button.clicked.connect(self.themeToggleRequested.emit)
         lay.addWidget(self.theme_button)
-        lay.addSpacing(7)
+        lay.addSpacing(6)
         mini = _label("L", "MiniAvatar")
-        mini.setFixedSize(28, 28)
+        mini.setFixedSize(26, 26)
         mini.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(mini)
         return bar
@@ -1406,13 +1418,13 @@ class LibraryHome(QWidget):
         scroll.setWidget(holder)
         lay = QVBoxLayout(content)
         self._content_lay = lay
-        lay.setContentsMargins(42, 38, 42, 0)
+        lay.setContentsMargins(36, 24, 36, 0)
         lay.setSpacing(0)
 
         lay.addWidget(self._build_greeting())
-        lay.addSpacing(30)
+        lay.addSpacing(20)
         self._featured = QBoxLayout(QBoxLayout.Direction.LeftToRight)
-        self._featured.setSpacing(20)
+        self._featured.setSpacing(16)
         self.continue_card = _ContinueCard()
         self.continue_card.continueRequested.connect(self._on_continue)
         self.insight_card = _InsightCard()
@@ -1420,21 +1432,21 @@ class LibraryHome(QWidget):
         self._featured.addWidget(self.continue_card, 185)
         self._featured.addWidget(self.insight_card, 100)
         lay.addLayout(self._featured)
-        lay.addSpacing(34)
+        lay.addSpacing(26)
         lay.addWidget(self._build_library_heading())
-        lay.addSpacing(21)
+        lay.addSpacing(14)
         lay.addWidget(self._build_filters())
-        lay.addSpacing(19)
+        lay.addSpacing(14)
         grid_host = QWidget()
         grid_host.setObjectName("BookGrid")
         self._grid = QGridLayout(grid_host)
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(18)
-        self._grid.setVerticalSpacing(18)
+        self._grid.setHorizontalSpacing(16)
+        self._grid.setVerticalSpacing(16)
         lay.addWidget(grid_host)
         self._empty = self._build_empty()
         lay.addWidget(self._empty)
-        lay.addSpacing(19)
+        lay.addSpacing(18)
         lay.addWidget(self._build_quiet_import())
         lay.addWidget(self._build_footer())
         lay.addStretch(1)
@@ -1446,26 +1458,27 @@ class LibraryHome(QWidget):
         greet.setContentsMargins(0, 0, 0, 0)
         left = QVBoxLayout()
         left.setSpacing(0)
-        left.addWidget(_label("A LITTLE FOCUS, A LOT OF POSSIBILITY", "Eyebrow"))
-        left.addSpacing(14)
+        left.addWidget(_label("LUMEN PURE · LOCAL ACADEMIC STUDIO", "Eyebrow"))
+        left.addSpacing(8)
         self._title = _label("", "GreetingTitle")
         self._title.setTextFormat(Qt.TextFormat.RichText)
         self._title.setWordWrap(True)
         left.addWidget(self._title)
-        left.addSpacing(9)
-        sub = _label("在文字之间发现联结，把片刻灵感变成自己的见解。", "GreetingBody")
+        left.addSpacing(6)
+        sub = _label(
+            "轻装上阵的学术文献阅读台 · 划词精译、要点导读与伴随笔记井然有序。", "GreetingBody"
+        )
         sub.setWordWrap(True)
         left.addWidget(sub)
         greet.addLayout(left, 1)
         self._aside = QWidget()
         aside = QVBoxLayout(self._aside)
         aside.setContentsMargins(0, 0, 0, 2)
-        aside.setSpacing(9)
+        aside.setSpacing(6)
         aside.addStretch(1)
         self._sun = QLabel()
-        self._sun.setPixmap(render_pixmap("sun", "#B29164", 22))
         aside.addWidget(self._sun, alignment=Qt.AlignmentFlag.AlignRight)
-        aside.addWidget(_label("今天，也是适合阅读的一天", "GreetingAside"))
+        aside.addWidget(_label("专注阅读 · 本地存储", "GreetingAside"))
         greet.addWidget(self._aside, alignment=Qt.AlignmentFlag.AlignBottom)
         return self._greeting
 
@@ -1868,12 +1881,12 @@ class LibraryHome(QWidget):
             self._nav_lay.setAlignment(item, align)
         self._sync_nav_visibility()
 
-        pad = {"xl": 42, "lg": 42, "md": 26, "sm": 22}.get(cls, 15)
-        top = {"xl": 50, "lg": 38, "md": 30, "sm": 26}.get(cls, 25)
+        pad = {"xl": 38, "lg": 36, "md": 24, "sm": 20}.get(cls, 15)
+        top = {"xl": 28, "lg": 24, "md": 20, "sm": 18}.get(cls, 16)
         self._content_lay.setContentsMargins(pad, top, pad, 0)
-        bar_pad = {"md": 26, "sm": 26, "xs": 17}.get(cls, 42)
+        bar_pad = {"md": 24, "sm": 20, "xs": 15}.get(cls, 36)
         self._topbar_lay.setContentsMargins(bar_pad, 0, bar_pad, 0)
-        self._topbar.setFixedHeight(55 if cls == "xs" else 70)
+        self._topbar.setFixedHeight(48 if cls == "xs" else 52)
         self._local.setVisible(cls != "xs")
         self._divider.setVisible(cls != "xs")
         self._aside.setVisible(cls in ("xl", "lg"))
@@ -1927,23 +1940,30 @@ class LibraryHome(QWidget):
     def _on_theme_changed(self) -> None:
         p = self._theme.palette
         mode_icon = "sun" if self._theme.is_dark else "moon"
-        self._title.setText(f'让每一次阅读，<span style="color:{p.accent};">都有回响。</span>')
+        self._brand_text.setText(f'lumen<span style="color:{p.accent};">.</span>')
+        self._brand_mark.update()
+        self._import_icon.setPixmap(render_pixmap("plus", p.on_accent, 16))
+        self._local.setText(f'<span style="color:{p.accent};">●</span>&nbsp;&nbsp;已在本地就绪')
+        self._title.setText(f'专注精读，<span style="color:{p.accent};">安静沉淀。</span>')
+        self._sun.setPixmap(render_pixmap("sun", p.accent, 18))
         self._ws_chevron.setPixmap(render_pixmap("chevron_down", p.nav_text, 14))
-        self._privacy_icon.setPixmap(render_pixmap("eye", "#A5B198", 18))
+        self._privacy_icon.setPixmap(render_pixmap("eye", p.accent, 17))
         self._profile_theme.setPixmap(render_pixmap(mode_icon, p.nav_text, 17))
         self._compact_theme.setIcon(QIcon(render_pixmap(mode_icon, p.nav_text, 18)))
         self._crumb_arrow.setPixmap(render_pixmap("forward", p.text_muted, 12))
-        self.theme_button.setIcon(QIcon(render_pixmap(mode_icon, p.icon, 17)))
+        self.theme_button.setIcon(QIcon(render_pixmap(mode_icon, p.icon, 16)))
         self.return_button.setIcon(QIcon(render_pixmap("back", p.accent_text, 14)))
         self._search_icon.setPixmap(render_pixmap("search", p.text_muted, 16))
         for mode, btn in self.view_buttons.items():
             btn.setIcon(QIcon(render_pixmap(mode, p.text, 16)))
-        self._quiet_icon.setPixmap(render_pixmap("plus", p.text_muted, 17))
+        self._quiet_icon.setPixmap(render_pixmap("plus", p.text_muted, 16))
         self._empty_icon.setPixmap(render_pixmap("search", p.text_muted, 28))
         self.about_button.setIcon(QIcon(render_pixmap("forward", p.text_muted, 12)))
         for item in self.nav_items.values():
             item.refresh()
         for col in self._collections:
             col.refresh()
+        if hasattr(self, "continue_card"):
+            self.continue_card.refresh()
         self.insight_card.refresh()
         self.update()

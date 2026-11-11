@@ -562,8 +562,21 @@ class SidePanel(QWidget):
         self._pages.addWidget(self._build_materials())
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._theme.changed.connect(self._on_theme_changed)
         self.set_annotations(())
         self.set_bookmarks(())
+
+    def _on_theme_changed(self, _name: str = "") -> None:
+        self._style_toc_items()
+        p = self._theme.palette
+        for i in range(self.bookmark_list.topLevelItemCount()):
+            item = self.bookmark_list.topLevelItem(i)
+            if item is not None:
+                item.setForeground(0, QColor(p.text))
+                item.setForeground(1, QColor(p.text_muted))
+        self.annot_list.viewport().update()
+        self.thumb_list.viewport().update()
+        self.material_list.viewport().update()
 
     def _build_materials(self) -> QWidget:
         page = QWidget()
@@ -758,7 +771,10 @@ class SidePanel(QWidget):
         menu.addAction("重命名…", lambda: self.bookmarkRenameRequested.emit(idx))
         menu.addSeparator()
         menu.addAction("删除书签", lambda: self.bookmarkDeleteRequested.emit(idx))
-        menu.exec(self.bookmark_list.viewport().mapToGlobal(pos))
+        try:
+            menu.exec(self.bookmark_list.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
 
     # ------------------------------------------------------------------ 批注
     def set_annotations(self, annotations: Sequence[Annotation]) -> None:
@@ -882,7 +898,10 @@ class SidePanel(QWidget):
         menu.addAction("编辑笔记…", lambda: self.annotationEditRequested.emit(annot))
         menu.addSeparator()
         menu.addAction("删除批注", lambda: self.annotationDeleteRequested.emit(annot))
-        menu.exec(self.annot_list.viewport().mapToGlobal(pos))
+        try:
+            menu.exec(self.annot_list.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
 
     # ------------------------------------------------------------------ 素材
     @property
@@ -982,7 +1001,10 @@ class SidePanel(QWidget):
         menu.addAction(_MATERIAL_EDIT_LABELS[m.kind], lambda: self.materialEditRequested.emit(m))
         menu.addSeparator()
         menu.addAction("删除", lambda: self.materialDeleteRequested.emit(m))
-        menu.exec(self.material_list.viewport().mapToGlobal(pos))
+        try:
+            menu.exec(self.material_list.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
 
     # ------------------------------------------------------------------ 缩略图
     def set_page_count(self, count: int) -> None:
@@ -1002,6 +1024,19 @@ class SidePanel(QWidget):
             return
         item.setIcon(QIcon(pixmap))
         self._thumb_done.add(page_num)
+        if len(self._thumb_done) > 120:
+            visible = set(self.visible_thumbnail_pages())
+            anchor = page_num
+            evict = max(
+                (p for p in self._thumb_done if p not in visible and p != page_num),
+                key=lambda p: abs(p - anchor),
+                default=None,
+            )
+            if evict is not None:
+                self._thumb_done.discard(evict)
+                old_item = self.thumb_list.item(evict)
+                if old_item is not None:
+                    old_item.setIcon(QIcon())
 
     def invalidate_thumbnail(self, page_num: int) -> None:
         """该页内容变了（批注 / 编辑）：下次可见时重新渲染。"""
@@ -1051,7 +1086,7 @@ class SidePanel(QWidget):
 
 
 _MATERIAL_TITLES = {"word": "单词本", "corpus": "语料库", "quote": "引文库", "term": "术语库"}
-_MATERIAL_COLORS = {"word": "#C96A49", "corpus": "#5B8DB8", "quote": "#7A9E6E", "term": "#B48A3C"}
+_MATERIAL_COLORS = {"word": "#17795E", "corpus": "#4E7FA8", "quote": "#5B8E73", "term": "#A87E36"}
 _MATERIAL_EDIT_LABELS = {
     "word": "编辑释义…",
     "corpus": "编辑备注…",

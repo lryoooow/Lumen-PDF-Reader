@@ -84,6 +84,9 @@ def test_exports(store: MaterialStore) -> None:
     rows = store.export_csv("word").splitlines()
     assert rows[0] == "内容,备注,来源文档,页码,收藏时间"
     assert rows[1].startswith("gradient,n. 梯度,P,1,")
+    store.add("term", "=SUM(A1:A2)", "@cmd")
+    term_csv = store.export_csv("term")
+    assert "'=SUM(A1:A2),'@cmd" in term_csv
 
 
 def test_persists_across_instances(tmp_path: Path) -> None:

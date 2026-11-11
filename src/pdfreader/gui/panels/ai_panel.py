@@ -105,12 +105,16 @@ class AiPanel(QFrame):
         root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(8)
 
-        # ---- 标题行
+        # ---- 标题行（独立使用时显示标题与关闭；嵌入右侧多合一工作台时精简为模型状态行）
         head = QHBoxLayout()
         head.setSpacing(4)
-        title = QLabel("AI 助读")
-        title.setObjectName("AiTitle")
-        head.addWidget(title)
+        self._title_lbl = QLabel("AI 助读")
+        self._title_lbl.setObjectName("AiTitle")
+        head.addWidget(self._title_lbl)
+        self.provider_label = QLabel()
+        self.provider_label.setObjectName("AiProvider")
+        self.provider_label.setTextFormat(Qt.TextFormat.PlainText)
+        head.addWidget(self.provider_label)
         head.addStretch(1)
         self.settings_btn = self._icon_button("settings", "模型设置", self.settingsRequested.emit)
         self.clear_btn = self._icon_button("delete_page", "清空对话", self.clearRequested.emit)
@@ -119,17 +123,15 @@ class AiPanel(QFrame):
             head.addWidget(btn)
         root.addLayout(head)
 
-        self.provider_label = QLabel()
-        self.provider_label.setObjectName("AiProvider")
-        self.provider_label.setTextFormat(Qt.TextFormat.PlainText)
-        root.addWidget(self.provider_label)
-
         # ---- 预设动作
         actions = QHBoxLayout()
         actions.setSpacing(6)
         self.summary_btn = self._chip("总结全文", lambda: self.actionRequested.emit("summary"))
         self.suggest_btn = self._chip("推荐问题", lambda: self.actionRequested.emit("suggest"))
-        self.more_btn = self._chip("更多 ▾", None)
+        self.more_btn = self._chip("更多", None)
+        self.more_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.more_btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.more_btn.setIconSize(QSize(12, 12))
         menu = QMenu(self.more_btn)
         menu.addAction("TL;DR 速览", lambda: self.actionRequested.emit("tldr"))
         menu.addAction("速读高亮（当前页）", lambda: self.actionRequested.emit("speedread"))
@@ -184,6 +186,14 @@ class AiPanel(QFrame):
         self.chat.set_configured(False)
         self._update_controls()
 
+    def set_hosted(self, hosted: bool) -> None:
+        """嵌入右侧多合一工作台时，隐藏自身标题与关闭叉号，统一由外层分段顶栏接管。"""
+        self.setProperty("hosted", "true" if hosted else "false")
+        self._title_lbl.setVisible(not hosted)
+        self.close_btn.setVisible(not hosted)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
     # ------------------------------------------------------------------ 构建辅助
     def _icon_button(self, icon: str, tip: str, slot) -> QToolButton:  # type: ignore[no-untyped-def]
         btn = QToolButton()
@@ -211,6 +221,9 @@ class AiPanel(QFrame):
     def _refresh_icons(self) -> None:
         for btn in (self.settings_btn, self.clear_btn, self.close_btn):
             btn.setIcon(self._theme.icon(str(btn.property("iconName")), size=16))
+        self.more_btn.setIcon(
+            self._theme.colored_icon("chevron_down", self._theme.palette.text_secondary, size=12)
+        )
         self.send_btn.setIcon(
             self._theme.colored_icon(
                 "stop" if self._busy else "send", self._theme.palette.on_accent, size=16
