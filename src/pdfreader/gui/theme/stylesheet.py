@@ -336,7 +336,7 @@ QSlider#ZoomSlider::handle:horizontal {
 }
 QSlider#ZoomSlider::handle:horizontal:hover { background: $accent_hover; }
 
-/* ================================================================ 文献库工作台（Lumen Pure 清爽学术风） */
+/* ================================================================ 文献库工作台（极简清透版） */
 #LibraryRoot, #StudioMain, #StudioScroll, #StudioScrollBody, #StudioContent { background-color: $window; }
 #StudioNavScroll {
     background-color: $nav;
@@ -344,9 +344,16 @@ QSlider#ZoomSlider::handle:horizontal:hover { background: $accent_hover; }
 }
 #StudioNav { background-color: $nav; }
 #StudioNav QLabel { color: $nav_text; }
+QPushButton#StudioBrandBtn {
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 0px;
+}
+QPushButton#StudioBrandBtn:hover { background-color: $surface_hover; }
 #StudioNav QLabel#StudioBrand {
     font-family: $serif_family;
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 600;
     color: $nav_bright;
 }
@@ -354,37 +361,19 @@ QSlider#ZoomSlider::handle:horizontal:hover { background: $accent_hover; }
     color: $nav_muted;
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.4px;
     padding: 0px 10px;
 }
-#StudioNav QLabel#NavStrong { color: $nav_bright; font-size: 12px; font-weight: 600; }
-#StudioNav QLabel#NavSmall { color: $nav_muted; font-size: 11px; }
-QPushButton#WorkspaceSwitch, QPushButton#ProfileRow {
+QPushButton#ProfileRow {
     background: transparent;
     border: none;
     border-radius: 7px;
-    padding: 0px;
+    padding: 0px 8px;
+    font-size: 12px;
+    color: $nav_text;
     text-align: left;
 }
-QPushButton#WorkspaceSwitch:hover, QPushButton#ProfileRow:hover {
-    background-color: $surface_hover;
-}
-#StudioNav QLabel#WorkspaceAvatar {
-    background-color: $accent_soft;
-    color: $accent_text;
-    border: 1px solid $border;
-    border-radius: 7px;
-    font-weight: 600;
-    font-size: 14px;
-}
-QLabel#ProfileAvatar, QLabel#MiniAvatar, #StudioNav QLabel#ProfileAvatar {
-    background-color: $accent_soft;
-    color: $accent_text;
-    border-radius: 14px;
-    font-weight: 600;
-    font-size: 12px;
-}
-QLabel#MiniAvatar { border-radius: 13px; font-size: 11px; }
+QPushButton#ProfileRow:hover { background-color: $surface_hover; color: $text; }
 QPushButton#ImportButton {
     background-color: $import_button;
     border: none;
@@ -394,7 +383,7 @@ QPushButton#ImportButton {
 QPushButton#ImportButton:hover { background-color: $import_button_hover; }
 QPushButton#ImportButton:pressed { background-color: $accent_pressed; }
 #StudioNav QLabel#ImportText { color: $on_accent; font-size: 13px; font-weight: 600; }
-#StudioNav QLabel#ImportKey { color: $on_accent; font-size: 11px; }
+#StudioNav QLabel#ImportKey { color: $on_accent; font-size: 10px; }
 QPushButton#NavItem, QPushButton#CollectionItem {
     background: transparent;
     border: none;
@@ -405,47 +394,103 @@ QPushButton#NavItem, QPushButton#CollectionItem {
 QPushButton#NavItem:hover, QPushButton#CollectionItem:hover { background-color: $surface_hover; }
 QPushButton#NavItem:checked, QPushButton#CollectionItem:checked { background-color: $nav_active; }
 #StudioNav QLabel#NavItemText { color: $nav_text; font-size: 13px; }
-#StudioNav QPushButton#NavItem:checked QLabel#NavItemText { color: $accent_text; font-weight: 600; }
+#StudioNav QLabel#NavItemText[active="true"] { color: $accent_text; font-weight: 600; }
 #StudioNav QLabel#NavItemCount { color: $nav_muted; font-size: 11px; }
-#StudioNav QPushButton#NavItem:checked QLabel#NavItemCount { color: $accent_text; font-weight: 600; }
+#StudioNav QLabel#NavItemCount[zero="true"] { color: $text_disabled; }
+#StudioNav QLabel#NavItemCount[active="true"] { color: $accent_text; font-weight: 600; }
 #StudioNav QLabel#CollectionText { color: $nav_text; font-size: 12px; }
-#StudioNav QPushButton#CollectionItem:checked QLabel#CollectionText { color: $accent_text; font-weight: 600; }
-#PrivacyCard {
-    background-color: $surface;
-    border: 1px solid $border;
-    border-radius: 8px;
-}
-#StudioNav QLabel#PrivacyTitle { color: $nav_bright; font-size: 11px; font-weight: 600; }
-#StudioNav QLabel#PrivacyBody { color: $nav_muted; font-size: 11px; }
+#StudioNav QLabel#CollectionText[active="true"] { color: $accent_text; font-weight: 600; }
 QFrame#NavRule { background-color: $border; border: none; }
 QToolButton#NavIconButton {
     background: transparent;
     border: none;
     border-radius: 7px;
-    min-width: 38px; min-height: 38px;
+    min-width: 36px; min-height: 36px;
 }
 QToolButton#NavIconButton:hover { background-color: $surface_hover; }
-
-#StudioTopbar { background-color: $surface; border-bottom: 1px solid $border; }
-QLabel#CrumbMuted { color: $text_muted; font-size: 12px; }
-QLabel#CrumbCurrent { color: $text; font-size: 12px; font-weight: 600; }
-QLabel#LocalStatus { color: $text_muted; font-size: 11px; }
-QFrame#TopbarDivider { background-color: $border; border: none; }
-QToolButton#TopbarIcon {
+QPushButton#FooterLink {
     background: transparent;
     border: none;
-    border-radius: 7px;
-    min-width: 30px; min-height: 30px;
+    border-radius: 6px;
+    padding: 0px 8px;
+    font-size: 12px;
+    color: $nav_muted;
 }
-QToolButton#TopbarIcon:hover { background-color: $surface_hover; }
+QPushButton#FooterLink:hover { color: $text; background-color: $surface_hover; }
+
+/* 常驻一体化命令顶栏 */
+#StudioTopbar { background-color: $surface; border-bottom: 1px solid $border; }
+QLabel#LibraryHeading { font-size: 16px; font-weight: 600; color: $text; }
+QLabel#LibraryCount {
+    background-color: $surface_hover;
+    color: $text_secondary;
+    border-radius: 9px;
+    padding: 0px 7px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#LibraryDesc {
+    font-size: 12px;
+    color: $text_secondary;
+    background-color: $surface;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
+#LibrarySearch {
+    background-color: $window;
+    border: 1px solid $border;
+    border-radius: 8px;
+}
+#LibrarySearch:hover { border-color: $border_strong; }
+#LibrarySearch[focused="true"] {
+    background-color: $surface;
+    border: 1px solid $accent;
+}
+QLineEdit#LibrarySearchInput {
+    background: transparent;
+    border: none;
+    padding: 0px;
+    font-size: 12px;
+    color: $text;
+}
+QLabel#Kbd {
+    color: $text_muted;
+    font-size: 10px;
+    border: 1px solid $border;
+    border-radius: 4px;
+    padding: 0px 5px;
+    background-color: $surface;
+}
+QComboBox#LibrarySort {
+    background-color: $window;
+    border: 1px solid $border;
+    border-radius: 8px;
+    color: $text_secondary;
+    font-size: 12px;
+    padding: 4px 10px;
+    min-width: 84px;
+}
+QComboBox#LibrarySort:hover { border-color: $border_strong; color: $text; background-color: $surface; }
+QComboBox#LibrarySort::drop-down { width: 16px; }
+QComboBox#LibrarySort::down-arrow { image: url($chevron); width: 10px; height: 10px; }
+#ViewToggle { border: 1px solid $border; border-radius: 8px; background-color: $window; }
+QToolButton#ViewToggleButton {
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    padding: 4px 5px;
+}
+QToolButton#ViewToggleButton:hover { background-color: $surface_hover; }
+QToolButton#ViewToggleButton:checked { background-color: $surface; }
 QPushButton#ReturnButton {
     background-color: $accent_soft;
     border: 1px solid transparent;
-    border-radius: 7px;
+    border-radius: 8px;
     color: $accent_text;
-    padding: 5px 12px;
+    padding: 0px 12px;
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
 }
 QPushButton#ReturnButton:hover { border-color: $accent; }
 
@@ -485,178 +530,127 @@ QPushButton#RecoveryLater {
 }
 QPushButton#RecoveryLater:hover { color: $text; }
 
-QLabel#Eyebrow { color: $accent_text; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; }
-QLabel#GreetingTitle {
-    font-size: 22px;
-    font-weight: 600;
-    color: $text;
-}
-QLabel#GreetingTitle[size="md"] { font-size: 20px; }
-QLabel#GreetingTitle[size="sm"] { font-size: 18px; }
-QLabel#GreetingTitle[size="xs"] { font-size: 17px; }
-QLabel#GreetingBody { color: $text_muted; font-size: 12px; }
-QLabel#GreetingAside { color: $text_muted; font-size: 11px; }
-
+/* 单行紧凑「上次阅读」横条 */
 #ContinueCard {
-    background-color: $hero;
+    background-color: $surface;
     border: 1px solid $border;
     border-radius: 10px;
 }
-#ContinueCopy QLabel { color: $hero_ink; }
-#ContinueCopy QLabel#SectionKicker { color: $accent_text; font-size: 11px; font-weight: 600; }
-#ContinueCopy QLabel#ContinueTitle {
-    font-size: 16px;
+QLabel#ContinueBadge {
+    background-color: $accent_soft;
+    color: $accent_text;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#ContinueTitle {
+    font-size: 14px;
     font-weight: 600;
     color: $text;
 }
-#ContinueCopy QLabel#ContinueTitle[size="xl"] { font-size: 17px; }
-#ContinueCopy QLabel#ContinueTitle[size="md"] { font-size: 15px; }
-#ContinueCopy QLabel#ContinueTitle[size="xs"] { font-size: 15px; }
-#ContinueCopy QLabel#ContinueSubtitle { font-size: 12px; color: $text_muted; }
-#ContinueCopy QLabel#ContinueMeta { font-size: 11px; color: $text_secondary; }
-#ContinueCopy QLabel#ContinueRead { font-size: 11px; color: $accent_text; font-weight: 500; }
+QLabel#ContinueMeta { font-size: 12px; color: $text_muted; }
+QLabel#ContinueRead { font-size: 11px; color: $accent_text; font-weight: 600; }
+QPushButton#InsightButton {
+    background-color: transparent;
+    border: 1px solid $border;
+    border-radius: 7px;
+    padding: 0px 11px;
+    color: $accent_text;
+    font-size: 12px;
+    font-weight: 500;
+}
+QPushButton#InsightButton:hover {
+    background-color: $accent_soft;
+    border-color: $accent;
+}
 QPushButton#ContinueButton {
     background-color: $hero_button;
     color: $on_accent;
     border: none;
     border-radius: 7px;
-    padding: 7px 14px;
-    min-width: 92px;
+    padding: 0px 14px;
+    min-width: 84px;
     font-size: 12px;
     font-weight: 600;
 }
 QPushButton#ContinueButton:hover { background-color: $hero_button_hover; }
 
-#InsightCard {
-    background-color: $insight;
-    border: 1px solid $border;
-    border-radius: 10px;
-}
-QLabel#InsightKicker { color: $accent_text; font-size: 10px; font-weight: 600; letter-spacing: 0.8px; }
-QLabel#InsightTitle {
-    font-size: 15px;
-    font-weight: 600;
-    color: $text;
-}
-QLabel#InsightBody { color: $text_secondary; font-size: 12px; }
-QPushButton#InsightButton {
-    background: transparent;
-    border: none;
-    padding: 0px;
-    color: $insight_ink;
-    font-size: 12px;
-    font-weight: 600;
-}
-QPushButton#InsightButton:hover { color: $accent; }
-QLabel#InsightFootnote { color: $text_muted; font-size: 11px; }
-
-QLabel#LibraryHeading { font-size: 16px; font-weight: 600; color: $text; }
-QLabel#LibraryCount {
-    background-color: $surface_hover;
-    color: $text_secondary;
-    border-radius: 9px;
-    padding: 1px 8px;
-    font-size: 11px;
-    font-weight: 600;
-}
-QLabel#LibraryDesc { font-size: 12px; color: $text_muted; }
-#LibrarySearch {
-    background-color: $surface;
-    border: 1px solid $border;
-    border-radius: 7px;
-}
-QLineEdit#LibrarySearchInput {
-    background: transparent;
-    border: none;
-    padding: 0px;
-    font-size: 12px;
-}
-QLabel#Kbd {
-    color: $text_muted;
-    font-size: 10px;
-    border: 1px solid $border;
-    border-radius: 4px;
-    padding: 0px 5px;
-    background-color: $window;
-}
-QComboBox#LibrarySort {
-    background-color: $surface;
-    border: 1px solid $border;
-    border-radius: 7px;
-    color: $text_secondary;
-    font-size: 12px;
-    padding: 4px 8px;
-    min-width: 82px;
-}
-QComboBox#LibrarySort:hover { border-color: $border_strong; color: $text; }
-QComboBox#LibrarySort::drop-down { width: 16px; }
-QComboBox#LibrarySort::down-arrow { image: url($chevron); width: 10px; height: 10px; }
-#ViewToggle { border: 1px solid $border; border-radius: 7px; background-color: $surface; }
-QToolButton#ViewToggleButton {
-    background: transparent;
-    border: none;
-    border-radius: 5px;
-    padding: 4px;
-}
-QToolButton#ViewToggleButton:hover { background-color: $surface_hover; }
-QToolButton#ViewToggleButton:checked { background-color: $accent_soft; }
+/* 文件夹筛选胶囊 */
 QPushButton#FilterChip {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 4px 11px;
+    background-color: $surface;
+    border: 1px solid $border;
+    border-radius: 7px;
+    padding: 0px 12px;
     font-size: 12px;
-    color: $text_muted;
+    color: $text_secondary;
 }
-QPushButton#FilterChip:hover { color: $text; background-color: $surface_hover; }
+QPushButton#FilterChip:hover { color: $text; border-color: $border_strong; }
 QPushButton#FilterChip:checked {
     background-color: $accent_soft;
     border-color: transparent;
     color: $accent_text;
     font-weight: 600;
 }
-QLabel#LibraryHint { font-size: 11px; color: $text_muted; }
 
-#BookCard { background-color: $card; border: 1px solid $border; border-radius: 9px; }
+/* 极简文献卡片与列表行 */
+#BookCard {
+    background-color: $card;
+    border: 1px solid $border;
+    border-radius: 10px;
+}
 #BookCard:hover { border-color: $border_strong; }
-QLabel#BookTag { font-size: 10px; color: $text_muted; }
+QLabel#BookTag { font-size: 11px; color: $text_muted; }
+QLabel#BookFolderPill {
+    font-size: 11px;
+    color: $text_secondary;
+    background-color: $window;
+    border: 1px solid $border;
+    border-radius: 5px;
+    padding: 2px 7px;
+}
 QLabel#BookTagPdf {
-    font-size: 9px;
+    font-size: 10px;
     color: $accent_text;
     background-color: $accent_soft;
-    border-radius: 3px;
+    border-radius: 4px;
     padding: 1px 5px;
     font-weight: 600;
 }
-QPushButton#BookTitle {
-    background: transparent;
-    border: none;
-    padding: 0px;
-    text-align: left;
-    font-size: 13px;
-    font-weight: 600;
-    color: $text;
-}
-QPushButton#BookTitle[compact="true"] { font-size: 13px; }
-QPushButton#BookTitle:hover { color: $accent_text; }
+QLabel#BookAuthor { font-size: 12px; color: $text_secondary; }
 QLabel#BookInfo { font-size: 11px; color: $text_muted; }
+QLabel#BookStatus { font-size: 11px; color: $accent_text; font-weight: 600; }
 QToolButton#BookStar { background: transparent; border: none; }
 
+/* 空态与底部拖放导入区 */
+QFrame#LibraryEmpty {
+    background-color: $surface;
+    border: 1px dashed $border_strong;
+    border-radius: 12px;
+}
+QFrame#LibraryEmpty[dragging="true"] {
+    background-color: $accent_soft;
+    border-color: $accent;
+}
+QLabel#EmptyIconBadge {
+    background-color: $accent_soft;
+    border-radius: 22px;
+}
 #LibraryEmpty QLabel#EmptyTitle { font-size: 15px; font-weight: 600; color: $text; }
 #LibraryEmpty QLabel#EmptyBody { font-size: 12px; color: $text_muted; }
 QPushButton#EmptyAction {
-    background-color: $accent_soft;
+    background-color: $accent;
     border: none;
-    border-radius: 6px;
-    color: $accent_text;
+    border-radius: 7px;
+    color: $on_accent;
     font-size: 12px;
     font-weight: 600;
-    padding: 6px 14px;
+    padding: 7px 18px;
 }
-QPushButton#EmptyAction:hover { background-color: $accent; color: $on_accent; }
+QPushButton#EmptyAction:hover { background-color: $accent_hover; }
 
 QPushButton#QuietImport {
-    background-color: $surface;
+    background-color: transparent;
     border: 1px dashed $border_strong;
     border-radius: 8px;
     padding: 0px;
@@ -665,20 +659,8 @@ QPushButton#QuietImport:hover, QPushButton#QuietImport[dragging="true"] {
     background-color: $accent_soft;
     border-color: $accent;
 }
-QLabel#QuietImportText { font-size: 12px; color: $text_muted; }
 QLabel#QuietImportCta { font-size: 12px; font-weight: 600; color: $accent_text; }
-QLabel#QuietImportMuted { font-size: 11px; color: $text_muted; }
-
-QLabel#FooterMark { font-family: $serif_family; font-size: 16px; font-weight: 600; color: $text_secondary; }
-QLabel#FooterText, QLabel#FooterDot { font-size: 11px; color: $text_muted; }
-QPushButton#FooterLink {
-    background: transparent;
-    border: none;
-    padding: 0px;
-    font-size: 11px;
-    color: $text_muted;
-}
-QPushButton#FooterLink:hover { color: $accent_text; }
+QLabel#QuietImportMuted { font-size: 12px; color: $text_muted; }
 
 /* ================================================================ 搜索浮层 */
 #SearchPanel {

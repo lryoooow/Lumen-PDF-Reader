@@ -104,13 +104,15 @@ def test_empty_library_offers_import(home: LibraryHome) -> None:
 def test_sections_folders_and_search(home: LibraryHome) -> None:
     home.set_entries(_entries())
     assert home.folders() == ["ml", "report"]
-    assert home.nav_items["我的收藏"].count.text() == "01"
+    assert home.nav_items["我的收藏"].count.text() == "1"
     assert len(home._collections) == 2 and len(home._chips) == 3
     assert not home._empty.isVisibleTo(home)
+    assert home.continue_card.isVisibleTo(home)
 
     home.set_section("我的收藏")
     assert home.entry_paths() == ["/lib/ml/bert.pdf"]
-    assert home.heading.text() == "我的收藏" and home.heading_count.text() == "01"
+    assert home.heading.text() == "我的收藏" and home.heading_count.text() == "1"
+    assert not home.continue_card.isVisibleTo(home)  # 筛选态隐藏上次阅读横条，直达列表
     home.set_section("含批注文档")
     assert "PDF 批注" in home.heading_desc.text()
     home.set_section("不存在")  # 无效分区忽略
@@ -121,6 +123,9 @@ def test_sections_folders_and_search(home: LibraryHome) -> None:
     assert home.section == "全部文档" and home.folder == "report"
     assert home.entry_paths() == ["/lib/report/annual.pdf"]
     assert [c.isChecked() for c in home._chips] == [False, False, True]
+    home._collections[1].click()  # 再次点击同一文件夹 → 取消过滤回到全部
+    assert home.folder == ALL_FOLDERS
+    home._collections[1].click()
     home._chips[0].click()
     assert home.folder == ALL_FOLDERS
     home.set_folder("nope")
@@ -145,14 +150,14 @@ def test_annotation_documents_section_matches_name_scope_and_counts(home: Librar
     assert "含批注文档" in home.nav_items
     assert "阅读笔记" not in home.nav_items
     item = home.nav_items["含批注文档"]
-    assert item.count.text() == "01"
+    assert item.count.text() == "1"
     assert item.accessibleName() == "含批注文档"
     assert item.toolTip() == "含批注文档"
 
     item.click()
     assert home.section == "含批注文档" and item.isChecked()
     assert home.heading.text() == home.crumb.text() == "含批注文档"
-    assert home.heading_count.text() == "01"
+    assert home.heading_count.text() == "1"
     assert "PDF 批注" in home.heading_desc.text()
     assert "Markdown" in home.heading_desc.text()
     assert home.heading_desc.wordWrap()  # 范围说明不能挤掉窄窗口中的搜索与视图入口
@@ -162,7 +167,7 @@ def test_annotation_documents_section_matches_name_scope_and_counts(home: Librar
     assert home.entry_paths() == ["/lib/ml/attention.pdf"]
     home.search.setText("Devlin")
     assert home.entry_paths() == []  # 非批注文档即使匹配作者也不混入
-    assert home.heading_count.text() == "00" and item.count.text() == "01"
+    assert home.heading_count.text() == "0" and item.count.text() == "1"
     assert home.empty_title.text() == "没有匹配的批注文档"
     home.empty_button.click()
     assert home.section == "全部文档" and home.search.text() == ""
@@ -193,9 +198,9 @@ def test_short_window_keeps_navigation_search_recovery_and_return_reachable(
     home.set_entries(_entries())
     home.set_can_return(True)
     home.set_recovery_notice(["待恢复文献.pdf"])
-    home.resize(1024, 768)
+    home.resize(1024, 380)
     home.activateWindow()
-    qtbot.waitUntil(lambda: home.size() == QSize(1024, 768))
+    qtbot.waitUntil(lambda: home.size() == QSize(1024, 380))
 
     def fully_inside(widget: QWidget, container: QWidget) -> bool:
         bounds = QRect(widget.mapTo(container, QPoint()), widget.size())
@@ -221,11 +226,12 @@ def test_short_window_keeps_navigation_search_recovery_and_return_reachable(
     qtbot.mouseClick(restore, Qt.MouseButton.LeftButton)
     assert returned == [True] and restored == [True]
 
-    # 即使主体滚到底部，Ctrl+K 的焦点入口也应将搜索真正带回可见视口。
+    # 即使主体滚到底部，常驻顶栏中的 Ctrl+K 搜索框仍始终可见并展示聚焦环。
     home.scroll_area.verticalScrollBar().setValue(home.scroll_area.verticalScrollBar().maximum())
     qtbot.keyClick(home, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
     qtbot.waitUntil(home.search.hasFocus)
-    qtbot.waitUntil(lambda: fully_inside(home.search, home.scroll_area.viewport()))
+    assert home._search_box.property("focused") == "true"
+    assert fully_inside(home.search, home)
     qtbot.keyClicks(home.search, "Devlin")
     assert home.entry_paths() == ["/lib/ml/bert.pdf"]
     assert fully_inside(home.return_button, home)  # 主体滚动不带走返回与恢复操作
@@ -244,16 +250,16 @@ def test_short_window_keeps_navigation_search_recovery_and_return_reachable(
     qtbot.keyClick(home.profile, Qt.Key.Key_Space)
     assert toggled == [True]
 
-    home.resize(1360, 860)
+    home.resize(1024, 768)
     qtbot.waitUntil(lambda: home._nav.verticalScrollBar().maximum() == 0)
     assert fully_inside(home.profile, home._nav.viewport())
     home.resize(700, 768)
-    qtbot.waitUntil(lambda: home._nav.width() == 68)
+    qtbot.waitUntil(lambda: home._nav.width() == 64)
     qtbot.waitUntil(lambda: home._nav.horizontalScrollBar().maximum() == 0)
     assert home.nav_items["含批注文档"].toolTip() == "含批注文档"
 
 
-def test_cards_and_continue_emit_paths(home: LibraryHome) -> None:
+def test_cards_and_continue_emit_paths(home: LibraryHome, qtbot) -> None:  # type: ignore[no-untyped-def]
     home.set_entries(_entries())
     opened: list[str] = []
     starred: list[str] = []
@@ -261,12 +267,14 @@ def test_cards_and_continue_emit_paths(home: LibraryHome) -> None:
     home.favoriteToggled.connect(starred.append)
     card = home._cards[0]
     card.title_btn.click()
+    # 点击卡片空白区域同样可直接打开文献，点收藏按钮仅切换收藏不误触打开
+    qtbot.mouseClick(card, Qt.MouseButton.LeftButton, pos=QPoint(20, card.height() - 12))
     card.star.click()
     home.continue_card.button.click()
-    assert opened == ["/lib/ml/attention.pdf", "/lib/ml/attention.pdf"]
+    assert opened == ["/lib/ml/attention.pdf"] * 3
     assert starred == ["/lib/ml/attention.pdf"]
     assert "3 条批注" in card.info.text()
-    assert home._cards[2].when.text() == "正在阅读"
+    assert "正在阅读" in home._cards[2].when.text()
     explore: list[bool] = []
     home.exploreAiRequested.connect(lambda: explore.append(True))
     home.insight_card.button.click()
@@ -301,16 +309,23 @@ def test_view_mode_return_and_dragging(home: LibraryHome) -> None:
 
 
 @pytest.mark.parametrize(
-    ("width", "cls", "nav"),
-    [(1600, "xl", 228), (1200, "lg", 228), (1000, "md", 195), (700, "sm", 68), (400, "xs", 68)],
+    ("width", "cls", "nav", "cols"),
+    [
+        (1600, "xl", 212, 4),
+        (1200, "lg", 212, 3),
+        (1000, "md", 188, 2),
+        (700, "sm", 64, 2),
+        (400, "xs", 64, 1),
+    ],
 )
-def test_apply_width_breakpoints(home: LibraryHome, width: int, cls: str, nav: int) -> None:
+def test_apply_width_breakpoints(
+    home: LibraryHome, width: int, cls: str, nav: int, cols: int
+) -> None:
     home.set_entries(_entries())
     home.apply_width(width)
     assert home.width_class == cls
     assert home._nav.width() == nav or home._nav.minimumWidth() == nav
-    assert home._columns == (4 if cls in ("xl", "lg", "md") else 2)
-    assert home._aside.isVisibleTo(home) == (cls in ("xl", "lg"))
+    assert home._columns == cols
     assert home._col_box.isVisibleTo(home) == (cls not in ("sm", "xs"))
 
 
@@ -325,6 +340,7 @@ def test_animate_in_and_theme_switch(home: LibraryHome, qtbot) -> None:  # type:
     finally:
         motion.set_enabled(False)
     theme.set_mode("dark")
-    assert theme.palette.accent in home._title.text()
+    assert theme.palette.accent in home._brand_text.text()
+    assert home.profile.text() == "浅色模式"
     theme.set_mode(mode)
-    home.grab()  # 封面 / 星标 / 进度条 / 场景都能绘制
+    home.grab()  # 微缩页标 / 星标 / 进度条均能正常绘制

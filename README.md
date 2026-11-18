@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.7-17795E"></a>
+  <a href="https://github.com/lryoooow/Lumen-PDF-Reader/releases"><img alt="版本" src="https://img.shields.io/badge/版本-0.0.8-17795E"></a>
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS-0078D4">
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/许可证-AGPL--3.0-7C3AED"></a>
   <img alt="免费" src="https://img.shields.io/badge/价格-免费-10B981">
@@ -94,8 +94,9 @@
 AI 默认关闭，只在你主动发起时才把所选内容发送给**你自己配置**的服务；首次发送前会征得同意，
 API Key 保存在系统凭据管理器中，不写入应用配置或日志。
 
-## 0.0.7 学术工作台与桌面研究工具
+## 0.0.8 极简文献库与学术工作台
 
+- **极简清透文献库首页**：去除宣传标语、虚拟头像、重复主题入口与花哨几何海报封面；采用 `56px` 常驻搜索/排序/视图切换顶栏、`68px` 单行上次阅读接续条与舒展的三列纯白/深岩文献卡片（整卡可点，自适应双行省略标题与行内圆角进度条）。
 - **划词情境悬浮条与三合一学术工作台**：默认选择模式下划选文字即浮现五色高亮、下划线、复制、摘录、「译」与「解释」；右侧工作台通过弹性分段栏统一承载「翻译（含离线查词与术语命中） / AI 导读 / 伴随笔记」。
 - **段落对照翻译**：先预览要发送的段落，源译文同行对照；数字与术语异常提示核对，缓存仅留在当前窗口内存。
 - **笔记与引用**：Markdown 模板、批注来源追踪、同目录双链/反向链接、素材插入、中文 Word/PDF 导出，BibTeX/RIS 与 CSL JSON 交换及 DOI 元数据查询。

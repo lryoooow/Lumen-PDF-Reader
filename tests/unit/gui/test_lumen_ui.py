@@ -331,7 +331,7 @@ class TestSidebarCiteLibrary:
 
     def test_library_lists_recent_files(self, window: MainWindow, tmp_path: Path) -> None:
         assert window._shell.currentWidget() is window.library
-        assert "安静沉淀" in window.library._title.text()
+        assert window.library.heading.text() == "全部文档"
         path = _make_paper(tmp_path / "recent.pdf")
         window._settings.recent_files = [str(path), str(tmp_path / "gone.pdf")]
         window._refresh_library()

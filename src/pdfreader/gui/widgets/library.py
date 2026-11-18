@@ -1,58 +1,54 @@
-"""文献库首页（Lumen 第二版设计稿 ``UI/src/lumen/Studio.tsx``）。
+"""文献库首页（Lumen 极简清透版）。
 
-没有打开文档、或在阅读时点标题栏的「l. lumen.」/ 网格按钮时显示，占满整个窗口::
+没有打开文档、或在阅读时点击标题栏品牌标 / 网格按钮时显示，占满整个窗口::
 
-    ┌ 墨绿导航栏 228 ┐┌ 工作空间 › 全部文档 ··········· [返回阅读] ● 已在本地就绪 | ☾ (L) ┐
-    │ lumen.         ││ A LITTLE FOCUS…   让每一次阅读，都有回响。              ☼ 今天… │
-    │ 我的阅读空间   ││ ┌ 从上次的思考继续 ──────────── 纸张 ┐┌ AI 助读 ───┐           │
-    │ [+ 导入 PDF]   ││ └──────────────────────────────────┘└────────────┘           │
-    │ 文献库 ×4      ││ 我的文献库 04         [搜索文档… Ctrl K] [最近阅读▾] [▦ ☰]     │
-    │ 我的合集       ││ 全部 4 · 文件夹 …                                 为专注而整理 │
-    │ 隐私卡 / 主题  ││ ▢ ▢ ▢ ▢  （封面卡片，悬停上浮）                               │
-    └────────────────┘│ ┄┄ 为你的下一次灵感，留一个位置 · 导入 PDF ┄┄      页脚        │
+    ┌ 简洁侧栏 212 ──┐┌ 全部文档 [4] ··········· [🔍 搜索文献… Ctrl K] [最近阅读▾] [▦|☰] [返回阅读] ┐
+    │ ||| lumen.     ││ ┌ [📄] 上次阅读 · 论文标题 / 作者 · 页数 · 进度 ── [✦ AI 导读] [继续阅读 →] ┐ │
+    │ [+ 导入文献]   ││ └───────────────────────────────────────────────────────────────────────────┘ │
+    │ 文献库 ×4      ││ [全部 4]  [文件夹 A]  [文件夹 B]                                              │
+    │ 文件夹         ││ ┌─ 论文卡片 ─────────┐ ┌─ 论文卡片 ─────────┐ ┌─ 论文卡片 ─────────┐          │
+    │ ────────────── ││ │ [📄] 文件夹     ☆ │ │ [📄] 文件夹     ★ │ │ [📄] 文件夹     ☆ │          │
+    │ ☾ 深色   关于  ││ │ 论文标题（两行内） │ │ 论文标题（两行内） │ │ 论文标题（两行内） │          │
+    └────────────────┘│ │ 作者               │ │ 作者               │ │ 作者               │          │
+                      │ │ 6 页    ● 正在阅读 │ │ 8 页      已读 45% │ │ 12 页     2 小时前 │          │
+                      │ └────────────────────┘ └────────────────────┘ └────────────────────┘          │
+                      │ ┄┄┄┄┄┄┄┄┄┄┄ + 拖放 PDF / EPUB 到窗口，或点击导入文献 ┄┄┄┄┄┄┄┄┄┄┄              │
+                      └───────────────────────────────────────────────────────────────────────────────┘
 
-数据全部来自真实设置（不放演示数据）：
-
-* 全部文档 = 最近文件；最近阅读 = 读过（有阅读进度）的；我的收藏 = 收藏列表；
-  含批注文档 = 记录有 PDF 批注的文档（不是独立 Markdown 笔记列表）
-* 「我的合集」与筛选标签 = 文档所在文件夹（本地优先：不另造一套标签体系）
-* 封面按路径稳定地取一种矿物色（sage / sand / rose / blue），标题取 PDF 元数据或文件名
-
-设计稿字号是按网页缩略尺寸标的（5–12px），桌面端整体放大到 ≥10px 并保持比例。
-响应式断点与设计稿一致：≥1550 宽松；≤1100 导航收窄、隐藏问候侧注；≤820 导航只留图标、
-隐藏 AI 卡；≤500 单列。
+设计原则：
+* 功能壳层优先（无营销标语、无虚拟头像、无重复主题开关与重复标题）
+* 搜索、排序、视图切换与返回阅读统一收敛至常驻顶栏，长列表滚动时始终可达
+* 卡片专注呈现「标题 → 作者 → 页数与阅读状态」单主线层级，3 列标准桌面网格保证长标题舒展可读
 """
 
 from __future__ import annotations
 
 import hashlib
-import math
 import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QEnterEvent,
     QFont,
-    QFontMetricsF,
-    QHideEvent,
+    QFontMetrics,
     QIcon,
     QKeySequence,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPaintEvent,
     QPen,
     QResizeEvent,
     QShortcut,
-    QShowEvent,
+    QTextLayout,
 )
 from PySide6.QtWidgets import (
     QAbstractButton,
-    QBoxLayout,
     QButtonGroup,
     QComboBox,
     QFrame,
@@ -72,7 +68,6 @@ from PySide6.QtWidgets import (
 
 from pdfreader.gui.theme import ThemeManager, get_theme
 from pdfreader.gui.theme.icons import render_pixmap
-from pdfreader.gui.theme.manager import serif_font
 from pdfreader.gui.widgets import motion
 
 __all__ = [
@@ -92,16 +87,14 @@ SECTIONS = (
     ("全部文档", "grid"),
     ("最近阅读", "stamp"),
     ("我的收藏", "bookmark"),
-    ("含批注文档", "notes"),
+    ("含批注文档", "note"),
 )
 ALL_FOLDERS = "全部"
 SORTS = ("最近阅读", "名称排序")
-_MAX_COLLECTIONS = 3
+_MAX_COLLECTIONS = 6
 _MAX_FILTER_CHIPS = 6
-_COLLECTION_DOTS = ("#17795E", "#3B729F", "#7E6BA8")
-_CONTENT_MAX = 1420
-# 按钮图标放右侧用了 RightToLeft，布局对齐需按绝对方向，否则「左对齐」会被镜像到右边
-_ABS_LEFT = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute
+_COLLECTION_DOTS = ("#17795E", "#3B729F", "#7E6BA8", "#B87D3B")
+_CONTENT_MAX = 1360
 
 
 @dataclass(frozen=True)
@@ -109,7 +102,7 @@ class LibraryEntry:
     """文献库里的一份文档（由主窗口据设置组装）。"""
 
     path: str
-    title: str  # 封面标题（元数据标题或文件名）
+    title: str  # 展示标题（元数据标题或文件名）
     author: str = ""
     pages: int = 0
     annotations: int = 0
@@ -133,11 +126,7 @@ class LibraryEntry:
 
 
 def display_title(meta_title: str, path: str | Path) -> str:
-    """封面标题：PDF 元数据标题可用就用它，否则用文件名（去掉扩展名）。
-
-    很多 PDF 的标题是生成工具塞进去的文件名（``Microsoft Word - 报告.docx``、``untitled``），
-    这类一律视为没有标题。
-    """
+    """文献标题：PDF 元数据标题可用就用它，否则回退文件名（去扩展名）。"""
     title = " ".join(meta_title.split())
     for prefix in ("Microsoft Word - ", "Microsoft PowerPoint - "):
         if title.startswith(prefix):
@@ -169,7 +158,7 @@ def relative_time(opened_at: float, now: float | None = None) -> str:
 
 
 def cover_variant(path: str) -> int:
-    """按路径稳定地选一种封面色（同一文件每次都一样）。"""
+    """按路径稳定选取四种低饱和纸感色之一。"""
     digest = hashlib.md5(path.encode("utf-8"), usedforsecurity=False).digest()
     return digest[0] % 4
 
@@ -204,12 +193,10 @@ def _with_alpha(color: str, alpha: float) -> QColor:
     return c
 
 
-def _font(px: int, *, weight: QFont.Weight = QFont.Weight.Normal, spacing: float = 0.0) -> QFont:
+def _font(px: int, *, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     font = QFont()
     font.setPixelSize(px)
     font.setWeight(weight)
-    if spacing:
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, spacing)
     return font
 
 
@@ -229,43 +216,31 @@ def _repolish(widget: QWidget) -> None:
     widget.style().polish(widget)
 
 
-def _two_line(top: str, bottom: str, top_name: str, bottom_name: str, gap: int = 3) -> QWidget:
-    box = QWidget()
-    lay = QVBoxLayout(box)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(gap)
-    lay.addWidget(_label(top, top_name))
-    second = _label(bottom, bottom_name)
-    second.setWordWrap(True)
-    lay.addWidget(second)
-    _passthrough(box)
-    return box
-
-
 # ============================================================================ 导航栏部件
 class _BrandMark(QWidget):
-    """品牌标记：三根斜切的森玉绿几何竖条（Lumen Pure）。"""
+    """品牌标记：三根斜切的森玉绿几何竖条。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(24, 28)
+        self.setFixedSize(22, 24)
+        _passthrough(self)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         pal = get_theme().palette
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.translate(1, 4)
-        p.shear(0, -0.24)
+        p.translate(1, 3)
+        p.shear(0, -0.22)
         p.setPen(Qt.PenStyle.NoPen)
-        for i, (h, alpha) in enumerate(((14, 0.55), (21, 1.0), (17, 0.78))):
+        for i, (h, alpha) in enumerate(((12, 0.55), (18, 1.0), (15, 0.78))):
             p.setBrush(_with_alpha(pal.accent, alpha))
-            p.drawRoundedRect(QRectF(i * 7.5, 21 - h + 2, 4.5, h), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(i * 6.8, 18 - h + 1, 4.2, h), 1.4, 1.4)
         p.end()
 
 
 class _NavItem(QPushButton):
-    """导航项：图标 + 名称 + 右侧两位计数（窄屏只留图标）。"""
+    """导航项：左侧选中指示条 + 图标 + 名称 + 简洁计数（窄屏只留图标）。"""
 
     def __init__(self, label: str, icon: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -277,245 +252,267 @@ class _NavItem(QPushButton):
         self.label = label
         self.icon_name = icon
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(13, 0, 13, 0)
-        lay.setSpacing(12)
+        lay.setContentsMargins(12, 0, 12, 0)
+        lay.setSpacing(10)
         self._icon = QLabel()
-        self._icon.setFixedSize(18, 18)
+        self._icon.setFixedSize(16, 16)
         self._text = _label(label, "NavItemText")
-        self.count = _label("00", "NavItemCount")
+        self.count = _label("0", "NavItemCount")
         _passthrough(self._icon, self._text, self.count)
         lay.addWidget(self._icon)
         lay.addWidget(self._text, stretch=1)
         lay.addWidget(self.count)
-        self.setFixedHeight(42)
+        self.setFixedHeight(36)
         self.toggled.connect(lambda _c: self.refresh())
 
     def set_count(self, n: int) -> None:
-        self.count.setText(f"{n:02d}")
+        self.count.setText(str(n))
+        self.count.setProperty("zero", "true" if n == 0 else "false")
+        _repolish(self.count)
 
     def set_compact(self, compact: bool) -> None:
         self._text.setVisible(not compact)
         self.count.setVisible(not compact)
         if compact:
-            self.setFixedWidth(44)
+            self.setFixedWidth(40)
         else:
             self.setMinimumWidth(0)
             self.setMaximumWidth(16777215)
+        lay = self.layout()
+        if lay is not None:
+            lay.setContentsMargins(12, 0, 12, 0)
 
     def refresh(self) -> None:
         p = get_theme().palette
-        color = p.nav_icon_active if self.isChecked() else p.nav_text
-        self._icon.setPixmap(render_pixmap(self.icon_name, color, 18))
+        checked = self.isChecked()
+        active = "true" if checked else "false"
+        color = p.nav_icon_active if checked else p.nav_text
+        self._icon.setPixmap(render_pixmap(self.icon_name, color, 16))
+        self._text.setProperty("active", active)
+        self.count.setProperty("active", active)
+        _repolish(self._text)
+        _repolish(self.count)
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self.isChecked():
+            pal = get_theme().palette
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(pal.accent))
+            p.drawRoundedRect(QRectF(3.0, (self.height() - 16.0) / 2.0, 3.0, 16.0), 1.5, 1.5)
+            p.end()
 
 
 class _CollectionItem(QPushButton):
-    """「我的合集」一项：色点 + 文件夹名 + 悬停 / 选中才出现的 ›。"""
+    """「文件夹」筛选项：圆色点 + 文件夹名 + 文档数。"""
 
-    def __init__(self, label: str, dot: str, parent: QWidget | None = None) -> None:
+    def __init__(self, label: str, dot: str, count: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CollectionItem")
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(label)
+        self.setAccessibleName(label)
         self.label = label
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 0, 14, 0)
-        lay.setSpacing(12)
+        lay.setContentsMargins(14, 0, 12, 0)
+        lay.setSpacing(10)
         dot_lbl = QLabel()
-        dot_lbl.setFixedSize(7, 7)
-        dot_lbl.setStyleSheet(f"background-color:{dot}; border-radius:2px;")
+        dot_lbl.setFixedSize(6, 6)
+        dot_lbl.setStyleSheet(f"background-color:{dot}; border-radius:3px;")
         self._text = _label(label, "CollectionText")
-        self._arrow = QLabel()
-        self._arrow.setFixedSize(12, 12)
-        _passthrough(dot_lbl, self._text, self._arrow)
+        self._text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._count = _label(str(count), "NavItemCount")
+        _passthrough(dot_lbl, self._text, self._count)
         lay.addWidget(dot_lbl)
         lay.addWidget(self._text, stretch=1)
-        lay.addWidget(self._arrow)
-        self.setFixedHeight(36)
-        self._hover = False
+        lay.addWidget(self._count)
+        self.setFixedHeight(32)
         self.toggled.connect(lambda _c: self.refresh())
         self.refresh()
 
-    def enterEvent(self, event: QEnterEvent) -> None:
-        super().enterEvent(event)
-        self._hover = True
-        self.refresh()
-
-    def leaveEvent(self, event: QEvent) -> None:
-        super().leaveEvent(event)
-        self._hover = False
-        self.refresh()
-
     def refresh(self) -> None:
-        if self._hover or self.isChecked():
-            color = _with_alpha(get_theme().palette.nav_text, 0.6)
-            self._arrow.setPixmap(
-                render_pixmap("forward", color.name(QColor.NameFormat.HexArgb), 12)
-            )
-        else:
-            self._arrow.clear()
+        active = "true" if self.isChecked() else "false"
+        self._text.setProperty("active", active)
+        self._count.setProperty("active", active)
+        _repolish(self._text)
+        _repolish(self._count)
+        self.update()
 
 
-# ============================================================================ 封面与卡片
+# ============================================================================ 微缩纸张与卡片部件
 class _Cover(QAbstractButton):
-    """自绘封面：矿物色底 + 字距小标题 + 衬线书名 + 同心几何纹 + 作者；悬停浮出「→」。"""
+    """安静的直立文献微缩页标（无倾斜几何杂线，点击打开文档）。"""
 
-    def __init__(self, entry: LibraryEntry, compact: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        entry: LibraryEntry | None,
+        compact: bool = False,
+        *,
+        size: tuple[int, int] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.entry = entry
         self.compact = compact
-        self.variant = cover_variant(entry.path)
-        self.hover = 0.0
+        self.variant = cover_variant(entry.path) if entry is not None else 0
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        name = Path(entry.path).name
-        self.setToolTip(f"打开 {name}")
-        self.setAccessibleName(f"打开 {name}")
-        if compact:
-            self.setFixedSize(110, 80)
-        else:
-            self.setFixedHeight(177)
-            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        if entry is not None:
+            name = Path(entry.path).name
+            self.setToolTip(f"打开 {name}")
+            self.setAccessibleName(f"打开 {name}")
+        w, h = size if size is not None else ((26, 32) if compact else (28, 34))
+        self.setFixedSize(w, h)
 
     def sizeHint(self) -> QSize:
-        return QSize(110, 80) if self.compact else QSize(200, self.height())
+        return QSize(self.width(), self.height())
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
+        bg, ink = pal.covers[self.variant]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        fold = 6.5
+
+        page = QPainterPath()
+        page.moveTo(r.left() + 4, r.top())
+        page.lineTo(r.right() - fold, r.top())
+        page.lineTo(r.right(), r.top() + fold)
+        page.lineTo(r.right(), r.bottom() - 4)
+        page.quadTo(r.right(), r.bottom(), r.right() - 4, r.bottom())
+        page.lineTo(r.left() + 4, r.bottom())
+        page.quadTo(r.left(), r.bottom(), r.left(), r.bottom() - 4)
+        page.lineTo(r.left(), r.top() + 4)
+        page.quadTo(r.left(), r.top(), r.left() + 4, r.top())
+        page.closeSubpath()
+
+        p.fillPath(page, QColor(bg))
+        p.setPen(QPen(_with_alpha(ink, 0.24), 1.0))
+        p.drawPath(page)
+
+        # 右上折角细节
+        crease = QPainterPath()
+        crease.moveTo(r.right() - fold, r.top())
+        crease.lineTo(r.right() - fold, r.top() + fold)
+        crease.lineTo(r.right(), r.top() + fold)
+        p.setPen(QPen(_with_alpha(ink, 0.20), 1.0))
+        p.drawPath(crease)
+
+        # 内页抽象正文横线（克制清晰，代表学术论文排版）
+        lx = r.left() + 5.5
+        lw = r.width() - 11.0
+        ly = r.top() + 11.0
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_with_alpha(ink, 0.52))
+        p.drawRoundedRect(QRectF(lx, ly, lw * 0.68, 2.0), 1.0, 1.0)
+        p.setBrush(_with_alpha(ink, 0.24))
+        p.drawRoundedRect(QRectF(lx, ly + 5.0, lw, 1.6), 0.8, 0.8)
+        p.drawRoundedRect(QRectF(lx, ly + 9.2, lw * 0.84, 1.6), 0.8, 0.8)
+        if r.height() >= 34:
+            p.drawRoundedRect(QRectF(lx, ly + 13.4, lw * 0.60, 1.6), 0.8, 0.8)
+        p.end()
+
+
+class _CardTitleButton(QAbstractButton):
+    """自绘多行省略标题按钮（网格视图最多 2 行，列表视图单行，中英文混排零截断错位）。"""
+
+    def __init__(self, text: str, compact: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("BookTitle")
+        self.setText(text)
+        self.compact = compact
+        self._hovered = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if compact:
+            self.setFixedHeight(20)
+        else:
+            self.setFixedHeight(40)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_card_hovered(self, hovered: bool) -> None:
+        if self._hovered != hovered:
+            self._hovered = hovered
+            self.update()
 
     def enterEvent(self, event: QEnterEvent) -> None:
         super().enterEvent(event)
-        motion.tween(self, self.hover, 1.0, 300, self._set_hover)
+        self.set_card_hovered(True)
 
     def leaveEvent(self, event: QEvent) -> None:
         super().leaveEvent(event)
-        motion.tween(self, self.hover, 0.0, 300, self._set_hover)
-
-    def _set_hover(self, v: float) -> None:
-        self.hover = v
-        self.update()
+        self.set_card_hovered(False)
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        bg, ink = get_theme().palette.covers[self.variant]
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        r = QRectF(self.rect())
-        clip = QPainterPath()
-        clip.addRoundedRect(r, 6, 6)
-        p.setClipPath(clip)
-        p.fillRect(r, QColor(bg))
-        self._paint_art(p, r, ink)
-        p.setPen(QPen(_with_alpha(ink, 0.12), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        font = _font(13 if self.compact else 14, weight=QFont.Weight.DemiBold)
+        p.setFont(font)
+        p.setPen(QColor(pal.accent_text if self._hovered else pal.text))
+        fm = QFontMetrics(font)
+        w = max(20, self.width())
+        raw = " ".join(self.text().split())
 
-        small = self.compact or r.height() < 160
         if self.compact:
-            pad_x, pad_top = 10.0, 10.0
-        else:
-            pad_x, pad_top = (12.0, 16.0) if small else (17.0, 20.0)
-        inner_w = r.width() - 2 * pad_x
-        # 小标题：文件夹名，大写 + 字距
-        p.setPen(_with_alpha(ink, 0.7))
-        p.setFont(_font(7 if self.compact else 8, spacing=0.6 if small else 1.3))
-        overline = p.fontMetrics().elidedText(
-            self.entry.folder.upper() or "PDF", Qt.TextElideMode.ElideRight, int(inner_w)
-        )
-        p.drawText(QRectF(pad_x, pad_top, inner_w, 12), Qt.AlignmentFlag.AlignLeft, overline)
-        # 衬线书名
-        top = pad_top + (14 if self.compact else 26)
-        bottom = 8 if self.compact else 34
-        title_rect = QRectF(pad_x, top, inner_w - 4, r.height() - top - bottom)
-        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        flags |= int(Qt.TextFlag.TextWordWrap)
-        p.setFont(self._fit_title(title_rect, flags, 13 if self.compact else (18 if small else 21)))
-        p.setPen(QColor(ink))
-        p.drawText(title_rect, flags, self.entry.title)
-        if not self.compact:
-            author = self.entry.author or (f"{self.entry.pages} 页" if self.entry.pages else "")
-            p.setFont(_font(10))
+            elided = fm.elidedText(raw, Qt.TextElideMode.ElideRight, w)
             p.drawText(
-                QRectF(pad_x, r.height() - 26, inner_w - 40, 14),
+                QRectF(0, 0, w, self.height()),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                p.fontMetrics().elidedText(author, Qt.TextElideMode.ElideRight, int(inner_w) - 40),
+                elided,
             )
-        # 悬停：右下角从左滑入的打开箭头
-        if self.hover > 0.01 and not self.compact:
-            t = self.hover
-            p.setOpacity(t)
-            cx = r.width() - 12 - 16 - 8 * (1 - t)
-            cy = r.height() - 12 - 16
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 168))
-            p.drawEllipse(QPointF(cx, cy), 16, 16)
-            p.drawPixmap(int(cx - 10), int(cy - 10), render_pixmap("forward", ink, 20))
-            p.setOpacity(1.0)
+            p.end()
+            return
+
+        layout = QTextLayout(raw, font)
+        layout.beginLayout()
+        line1 = layout.createLine()
+        if not line1.isValid():
+            layout.endLayout()
+            p.end()
+            return
+        line1.setLineWidth(w)
+        line1.setPosition(QPointF(0, 0))
+        end1 = line1.textStart() + line1.textLength()
+        layout.endLayout()
+        layout.draw(p, QPointF(0, 0))
+
+        rest = raw[end1:].lstrip()
+        if rest:
+            line2_text = fm.elidedText(rest, Qt.TextElideMode.ElideRight, w)
+            p.drawText(
+                QRectF(0, 20, w, 20),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                line2_text,
+            )
         p.end()
-
-    def _fit_title(self, rect: QRectF, flags: int, px: int) -> QFont:
-        """衬线书名从设计字号起逐级缩小，直到最长的词放得下、整段不超出封面。"""
-        words = self.entry.title.split() or [self.entry.title]
-        font = serif_font(px)
-        while px > 11:
-            font = serif_font(px)
-            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.4)
-            fm = QFontMetricsF(font)
-            widest = max(fm.horizontalAdvance(w) for w in words)
-            used = fm.boundingRect(rect, flags, self.entry.title)
-            if widest <= rect.width() and used.height() <= rect.height():
-                break
-            px -= 1
-        return font
-
-    def _paint_art(self, p: QPainter, r: QRectF, ink: str) -> None:
-        """极简几何线纹（透明度 .13）：sage 椭圆 / slate 方框 / violet 菱形 / warm 圆角方。"""
-        p.save()
-        p.setOpacity(0.13)
-        p.setPen(QPen(QColor(ink), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        k = 0.6 if self.compact else 1.0
-        w, h, right, bottom, angle = {
-            0: (180.0, 130.0, -35.0, -39.0, -30.0),
-            1: (180.0, 130.0, -35.0, -40.0, -25.0),
-            2: (140.0, 140.0, -45.0, -30.0, 0.0),
-            3: (180.0, 130.0, -30.0, -60.0, 45.0),
-        }[self.variant]
-        w, h, right, bottom = w * k, h * k, right * k, bottom * k
-        p.translate(r.width() - right - w / 2, r.height() - bottom - h / 2)
-        p.rotate(angle)
-        for i in range(5):
-            inset = i * 10 * k
-            rect = QRectF(-w / 2 + inset, -h / 2 + inset, w - 2 * inset, h - 2 * inset)
-            if self.variant == 0:
-                p.drawEllipse(rect)
-            elif self.variant == 1:
-                p.drawRect(rect)
-            elif self.variant == 2:
-                p.save()
-                p.translate(rect.center())
-                p.rotate(45)
-                p.drawRect(
-                    QRectF(-rect.width() / 2, -rect.height() / 2, rect.width(), rect.height())
-                )
-                p.restore()
-            else:
-                radius = min(rect.width(), rect.height()) * 0.3
-                p.drawRoundedRect(rect, radius, radius)
-        p.restore()
 
 
 class _Star(QToolButton):
-    """封面右上角的收藏书签（收藏后实心、常亮；未收藏时悬停才看清）。"""
+    """右上角收藏书签（已收藏常亮森玉绿；未收藏平时极淡，卡片悬停时浮现）。"""
 
-    def __init__(self, ink: str, starred: bool, parent: QWidget | None = None) -> None:
+    def __init__(self, starred: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("BookStar")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(24, 24)
-        self.ink = ink
+        self.setFixedSize(26, 26)
         self.starred = starred
         self._hover = False
+        self._card_hover = False
         tip = "取消收藏" if starred else "收藏文档"
         self.setToolTip(tip)
         self.setAccessibleName(tip)
 
+    def set_card_hovered(self, hovered: bool) -> None:
+        if self._card_hover != hovered:
+            self._card_hover = hovered
+            self.update()
+
     def enterEvent(self, event: QEnterEvent) -> None:
         super().enterEvent(event)
         self._hover = True
@@ -527,10 +524,18 @@ class _Star(QToolButton):
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        pal = get_theme().palette
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setOpacity(1.0 if (self.starred or self._hover) else 0.35)
+        if self._hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(pal.surface_hover))
+            p.drawRoundedRect(QRectF(self.rect()), 6, 6)
+        opacity = 1.0 if self.starred else (0.85 if (self._hover or self._card_hover) else 0.28)
+        p.setOpacity(opacity)
         ox, oy = (self.width() - 14) / 2, (self.height() - 14) / 2
+        color = pal.accent if self.starred else pal.text_muted
         if self.starred:
             s = 14 / 24
             path = QPainterPath()
@@ -539,32 +544,38 @@ class _Star(QToolButton):
             for x, y in pts[1:]:
                 path.lineTo(QPointF(ox + x * s, oy + y * s))
             path.closeSubpath()
-            p.fillPath(path, _with_alpha(self.ink, 0.15))
-        p.drawPixmap(int(ox), int(oy), render_pixmap("bookmark", self.ink, 14))
+            p.fillPath(path, _with_alpha(pal.accent, 0.22))
+        p.drawPixmap(int(ox), int(oy), render_pixmap("bookmark", color, 14))
         p.end()
 
 
 class _ProgressLine(QWidget):
-    """卡片底部 2px 阅读进度（封面墨色，45% 不透明）。"""
+    """行内紧凑 44×4 圆角阅读进度条（未读文档隐藏，不与卡片底边框粘连）。"""
 
-    def __init__(self, value: float, ink: str, parent: QWidget | None = None) -> None:
+    def __init__(self, value: float, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.value = max(0.0, min(1.0, value))
-        self._ink = ink
-        self.setFixedHeight(2)
+        self.setFixedSize(44, 4)
+        self.setVisible(self.value > 0)
+        _passthrough(self)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
+        if self.value <= 0:
+            return
         pal = get_theme().palette
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(pal.surface_hover))
-        if self.value > 0:
-            p.fillRect(QRectF(0, 0, self.width() * self.value, 2), _with_alpha(pal.accent, 0.78))
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(pal.surface_hover))
+        p.drawRoundedRect(QRectF(self.rect()), 2.0, 2.0)
+        p.setBrush(_with_alpha(pal.accent, 0.85))
+        p.drawRoundedRect(QRectF(0, 0, max(4.0, self.width() * self.value), 4.0), 2.0, 2.0)
         p.end()
 
 
 class _BookCard(QFrame):
-    """一张文档卡片（网格：封面在上；列表：封面在左）。悬停时上浮 5px 并投出柔和阴影。"""
+    """极简文献卡片（网格：清爽留白四层排版；列表：紧凑单行学术表格行）。"""
 
     openRequested = Signal(str)
     favoriteToggled = Signal(str)
@@ -574,127 +585,180 @@ class _BookCard(QFrame):
         self.setObjectName("BookCardHolder")
         self.entry = entry
         self.compact = compact
-        _bg, ink = get_theme().palette.covers[cover_variant(entry.path)]
+        self._press_inside = False
+
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 5, 0, 0)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self.card = QFrame()
         self.card.setObjectName("BookCard")
+        self.card.setCursor(Qt.CursorShape.PointingHandCursor)
         outer.addWidget(self.card)
 
         self.cover = _Cover(entry, compact)
-        self.star = _Star(ink, entry.favorite, self.cover)
-        self.title_btn = QPushButton(entry.name)
-        self.title_btn.setObjectName("BookTitle")
-        self.title_btn.setProperty("compact", "true" if compact else "false")
-        self.title_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.title_btn.setToolTip(entry.path)
-        self.title_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.star = _Star(entry.favorite)
+        self.title_btn = _CardTitleButton(entry.title, compact)
+        tip = f"{entry.title}\n{entry.path}" if entry.title != entry.path else entry.path
+        self.card.setToolTip(tip)
+        self.title_btn.setToolTip(tip)
+
         tag = _label(entry.folder, "BookTag")
-        tag.setToolTip(str(Path(entry.path).parent))
         tag.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        pdf = _label("PDF", "BookTagPdf")
-        info_text = f"{entry.pages} 页" if entry.pages else "PDF 文档"
+        is_epub = entry.path.lower().endswith(".epub")
+        ext_badge = _label("EPUB", "BookTagPdf") if is_epub else None
+
+        author_str = entry.author or (entry.name if entry.name != entry.title else "")
+        self.author_lbl = _label(author_str, "BookAuthor")
+        self.author_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+        info_text = f"{entry.pages} 页" if entry.pages else "文档"
         if entry.annotations:
             info_text += f" · {entry.annotations} 条批注"
         self.info = _label(info_text, "BookInfo")
-        self.when = _label(
-            "正在阅读" if entry.is_open else relative_time(entry.opened_at), "BookInfo"
-        )
-        self.progress = _ProgressLine(entry.progress, ink)
 
-        details = QVBoxLayout()
-        details.setSpacing(0)
-        tag_row = QHBoxLayout()
-        tag_row.setSpacing(8)
-        tag_row.addWidget(tag, stretch=1)
-        tag_row.addWidget(pdf)
-        details.addLayout(tag_row)
-        details.addSpacing(6)
-        details.addWidget(self.title_btn)
-        details.addSpacing(8)
-        info_row = QHBoxLayout()
-        info_row.setSpacing(8)
-        info_row.addWidget(self.info, stretch=1)
-        info_row.addWidget(self.when)
-        details.addLayout(info_row)
-        details.addSpacing(11)
-        details.addWidget(self.progress)
-
-        lay: QBoxLayout
-        if compact:
-            lay = QHBoxLayout(self.card)
-            lay.setContentsMargins(8, 8, 18, 8)
-            lay.setSpacing(22)
-            lay.addWidget(self.cover)
-            lay.addLayout(details, stretch=1)
+        if entry.is_open:
+            when_str = "● 正在阅读"
+        elif entry.progress > 0:
+            when_str = f"{round(entry.progress * 100)}%"
         else:
-            lay = QVBoxLayout(self.card)
-            lay.setContentsMargins(9, 9, 9, 0)
-            lay.setSpacing(0)
-            lay.addWidget(self.cover)
-            box = QVBoxLayout()
-            box.setContentsMargins(4, 12, 4, 14)
-            box.addLayout(details)
-            lay.addLayout(box)
-        self._lift = 0.0
+            when_str = relative_time(entry.opened_at)
+        self.when = _label(when_str, "BookStatus" if entry.is_open else "BookInfo")
+
+        self.progress = _ProgressLine(0.0 if entry.is_open else entry.progress)
+        _passthrough(tag, self.author_lbl, self.info, self.when)
+        if ext_badge is not None:
+            _passthrough(ext_badge)
+
+        status_box = QHBoxLayout()
+        status_box.setContentsMargins(0, 0, 0, 0)
+        status_box.setSpacing(6)
+        status_box.addWidget(self.progress, alignment=Qt.AlignmentFlag.AlignVCenter)
+        status_box.addWidget(self.when, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        if compact:
+            self.card.setFixedHeight(56)
+            row = QHBoxLayout(self.card)
+            row.setContentsMargins(14, 0, 12, 0)
+            row.setSpacing(12)
+            row.addWidget(self.cover, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+            title_col = QVBoxLayout()
+            title_col.setContentsMargins(0, 0, 0, 0)
+            title_col.setSpacing(2)
+            title_col.addStretch(1)
+            title_col.addWidget(self.title_btn)
+            if author_str:
+                title_col.addWidget(self.author_lbl)
+            title_col.addStretch(1)
+            row.addLayout(title_col, stretch=1)
+
+            if ext_badge is not None:
+                ext_badge.setFixedHeight(20)
+                ext_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                row.addWidget(ext_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
+            tag.setObjectName("BookFolderPill")
+            tag.setFixedHeight(22)
+            tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tag.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            row.addWidget(tag, alignment=Qt.AlignmentFlag.AlignVCenter)
+            row.addSpacing(4)
+            row.addWidget(self.info, alignment=Qt.AlignmentFlag.AlignVCenter)
+            row.addSpacing(8)
+            status_wrap = QWidget()
+            status_wrap.setMinimumWidth(92)
+            _passthrough(status_wrap)
+            sw_lay = QHBoxLayout(status_wrap)
+            sw_lay.setContentsMargins(0, 0, 0, 0)
+            sw_lay.setSpacing(6)
+            sw_lay.addStretch(1)
+            sw_lay.addLayout(status_box)
+            row.addWidget(status_wrap, alignment=Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(self.star, alignment=Qt.AlignmentFlag.AlignVCenter)
+        else:
+            self.card.setFixedHeight(148)
+            vlay = QVBoxLayout(self.card)
+            vlay.setContentsMargins(16, 14, 14, 13)
+            vlay.setSpacing(0)
+
+            top_row = QHBoxLayout()
+            top_row.setSpacing(8)
+            top_row.addWidget(self.cover)
+            top_row.addWidget(tag, stretch=1)
+            if ext_badge is not None:
+                ext_badge.setFixedHeight(18)
+                ext_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                top_row.addWidget(ext_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
+            top_row.addWidget(self.star)
+            vlay.addLayout(top_row)
+            vlay.addSpacing(10)
+
+            vlay.addWidget(self.title_btn)
+            vlay.addSpacing(3)
+            vlay.addWidget(self.author_lbl)
+            vlay.addStretch(1)
+
+            foot = QHBoxLayout()
+            foot.setContentsMargins(0, 0, 2, 0)
+            foot.setSpacing(8)
+            foot.addWidget(self.info, stretch=1)
+            foot.addLayout(status_box)
+            vlay.addLayout(foot)
+
         self.cover.clicked.connect(lambda: self.openRequested.emit(entry.path))
         self.title_btn.clicked.connect(lambda: self.openRequested.emit(entry.path))
         self.star.clicked.connect(lambda: self.favoriteToggled.emit(entry.path))
 
     def set_cover_height(self, h: int) -> None:
-        if not self.compact:
-            self.cover.setFixedHeight(h)
+        del h
 
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._place_star()
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_inside = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
-    def showEvent(self, event: QShowEvent) -> None:
-        super().showEvent(event)
-        self._place_star()
-
-    def _place_star(self) -> None:
-        inset = 8 if self.compact else 10
-        self.star.move(self.cover.width() - self.star.width() - inset, inset)
-        self.star.raise_()
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._press_inside:
+            self._press_inside = False
+            if self.rect().contains(event.position().toPoint()):
+                self.openRequested.emit(self.entry.path)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def enterEvent(self, event: QEnterEvent) -> None:
         super().enterEvent(event)
+        self.title_btn.set_card_hovered(True)
+        self.star.set_card_hovered(True)
         self._set_shadow(True)
-        motion.tween(self, self._lift, 1.0, 400, self._apply_lift)
 
     def leaveEvent(self, event: QEvent) -> None:
         super().leaveEvent(event)
-        motion.tween(self, self._lift, 0.0, 400, self._apply_lift)
+        self._press_inside = False
+        self.title_btn.set_card_hovered(False)
+        self.star.set_card_hovered(False)
         self._set_shadow(False)
-
-    def _apply_lift(self, v: float) -> None:
-        self._lift = v
-        lay = self.layout()
-        if lay is not None:
-            dy = round(3 * v)
-            lay.setContentsMargins(0, 5 - dy, 0, dy)
 
     def _set_shadow(self, on: bool) -> None:
         if on and motion.enabled():
             effect = QGraphicsDropShadowEffect(self.card)
-            effect.setBlurRadius(28)
-            effect.setOffset(0, 8)
+            effect.setBlurRadius(18)
+            effect.setOffset(0, 4)
             effect.setColor(QColor(get_theme().palette.soft_shadow))
             self.card.setGraphicsEffect(effect)
         else:
             self.card.setGraphicsEffect(None)
 
 
-# ============================================================================ 精选卡片
+# ============================================================================ 顶部单行「上次阅读」横条
 class _HeroProgress(QWidget):
-    """「继续阅读」卡上的 112×3 进度条。"""
+    """「继续阅读」横条上的 72×4 进度条。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.value = 0.0
-        self.setFixedSize(112, 3)
+        self.setFixedSize(72, 4)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
@@ -702,399 +766,160 @@ class _HeroProgress(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(pal.border_strong))
-        p.drawRoundedRect(QRectF(self.rect()), 1.5, 1.5)
+        p.setBrush(QColor(pal.surface_hover))
+        p.drawRoundedRect(QRectF(self.rect()), 2.0, 2.0)
         if self.value > 0:
             p.setBrush(QColor(pal.accent))
-            p.drawRoundedRect(QRectF(0, 0, max(3.0, self.width() * self.value), 3), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(0, 0, max(4.0, self.width() * self.value), 4.0), 2.0, 2.0)
         p.end()
 
 
-class _PaperScene:
-    """「继续阅读」卡片右侧的极简学术纸张微缩图（随主题切换冷白 / 石板纸张）。"""
-
-    def __init__(self) -> None:
-        self.hover = 0.0
-        self.float_phase = 0.0
-        self.title = ""
-        self.year = ""
-        self.paper = QSize(142, 184)
-        self.right = 20.0
-        self.opacity = 1.0
-
-    def paint(self, p: QPainter, area: QRectF) -> None:
-        theme = get_theme()
-        pal = theme.palette
-        p.save()
-        p.setOpacity(self.opacity)
-        w_paper, h_paper = float(self.paper.width()), float(self.paper.height())
-        # 细微几何弧线背景
-        p.setPen(QPen(_with_alpha(pal.accent, 0.09), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        for size, r_off, top in ((260.0, 80.0, 8.0), (340.0, 120.0, -30.0)):
-            p.drawEllipse(QRectF(area.right() + r_off - size, area.top() + top, size, size))
-        t = self.hover
-        dy = -3.0 * math.sin(math.pi * self.float_phase) ** 2
-        top_y = max(18.0, (area.height() - h_paper) / 2.0 + 6.0)
-        back = QRectF(
-            area.right() - (self.right + 10) - w_paper,
-            area.top() + top_y + 8,
-            w_paper,
-            h_paper,
-        )
-        front = QRectF(
-            area.right() - self.right - w_paper,
-            area.top() + top_y + dy,
-            w_paper,
-            h_paper,
-        )
-        back_c = QColor("#252B37") if theme.is_dark else QColor("#EAECEF")
-        front_c = QColor("#1D222C") if theme.is_dark else QColor("#FFFFFF")
-        self._paper(p, back, -4 - 3 * t, QPointF(-5 * t, 0), back_c, pal.border, content=False)
-        self._paper(p, front, 6 - 4 * t, QPointF(0, -4 * t), front_c, pal.border, content=True)
-        p.restore()
-
-    def _paper(
-        self,
-        p: QPainter,
-        rect: QRectF,
-        angle: float,
-        offset: QPointF,
-        color: QColor,
-        border_hex: str,
-        *,
-        content: bool,
-    ) -> None:
-        p.save()
-        p.translate(rect.center() + offset)
-        p.rotate(angle)
-        local = QRectF(-rect.width() / 2, -rect.height() / 2, rect.width(), rect.height())
-        p.setPen(Qt.PenStyle.NoPen)
-        for i, alpha in enumerate((14, 9, 5)):
-            p.setBrush(QColor(15, 23, 42, alpha))
-            p.drawRoundedRect(
-                local.translated(0, 5 + i * 2.5).adjusted(-i * 1.5, -i, i * 1.5, i * 1.5), 4, 4
-            )
-        p.setBrush(color)
-        p.setPen(QPen(QColor(border_hex), 1.0))
-        p.drawRoundedRect(local, 4, 4)
-        if content:
-            self._paper_content(p, local)
-        p.restore()
-
-    def _paper_content(self, p: QPainter, local: QRectF) -> None:
-        pal = get_theme().palette
-        ink = QColor(pal.text)
-        muted = _with_alpha(pal.text_secondary, 0.72)
-        line_c = _with_alpha(pal.text_muted, 0.25)
-        x, y = local.left() + 14, local.top() + 14
-        width = local.width() - 28
-        p.setPen(muted)
-        p.setFont(_font(6, spacing=0.7))
-        p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignLeft, "PREPRINT")
-        p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignRight, self.year)
-        y += 16
-        title_font = serif_font(10)
-        title_font.setWeight(QFont.Weight.DemiBold)
-        p.setFont(title_font)
-        p.setPen(ink)
-        elided_title = p.fontMetrics().elidedText(
-            self.title.replace("\n", " "),
-            Qt.TextElideMode.ElideRight,
-            max(40, int(width * 1.85)),
-        )
-        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        p.drawText(QRectF(x, y, width, 34), flags | int(Qt.TextFlag.TextWordWrap), elided_title)
-        y += 36
-        p.fillRect(QRectF(x, y, width, 1), _with_alpha(pal.accent, 0.45))
-        y += 8
-        p.setFont(_font(6, weight=QFont.Weight.DemiBold, spacing=0.5))
-        p.setPen(ink)
-        p.drawText(QRectF(x, y, width, 8), Qt.AlignmentFlag.AlignLeft, "ABSTRACT")
-        y = self._lines(p, x, y + 10, width, 3, line_c)
-        # 森玉绿摘录高亮条示意
-        p.fillRect(QRectF(x, y + 3, width * 0.82, 4), _with_alpha(pal.accent, 0.22))
-        y += 12
-        if y + 18 < local.bottom() - 14:
-            self._lines(p, x, y, width, 3, line_c)
-
-    @staticmethod
-    def _lines(p: QPainter, x: float, y: float, width: float, n: int, color: QColor) -> float:
-        for i in range(n):
-            p.fillRect(QRectF(x, y, width * (0.72 if i == n - 1 else 1.0), 2), color)
-            y += 5
-        return y
-
-
-class _ContinueCard(QFrame):
-    """「继续上次精读」：最近一份文档的书名 / 作者 / 进度 + 继续阅读；右侧极简论文微缩图。"""
-
-    continueRequested = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("ContinueCard")
-        self.setMinimumHeight(204)
-        self._entry: LibraryEntry | None = None
-        self.scene = _PaperScene()
-        self._copy = QWidget(self)
-        self._copy.setObjectName("ContinueCopy")
-        lay = QVBoxLayout(self._copy)
-        self._copy_lay = lay
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(0)
-        self.kicker = _label("", "SectionKicker")
-        self.kicker.setTextFormat(Qt.TextFormat.RichText)
-        self.title = _label("", "ContinueTitle")
-        self.title.setWordWrap(True)
-        self.title.setContentsMargins(0, 0, 0, 3)
-        self.subtitle = _label("", "ContinueSubtitle")
-        self.subtitle.setWordWrap(True)
-        self.meta_left = _label("", "ContinueMeta")
-        self.meta_right = _label("", "ContinueMeta")
-        meta = QHBoxLayout()
-        meta.setSpacing(12)
-        meta.addWidget(self.meta_left)
-        meta.addWidget(self.meta_right)
-        meta.addStretch(1)
-        self.bar = _HeroProgress()
-        self.read_label = _label("", "ContinueRead")
-        prog = QHBoxLayout()
-        prog.setSpacing(10)
-        prog.addWidget(self.bar)
-        prog.addWidget(self.read_label)
-        prog.addStretch(1)
-        self.button = QPushButton()
-        self.button.setObjectName("ContinueButton")
-        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.button.setIconSize(QSize(15, 15))
-        self.button.clicked.connect(self.continueRequested.emit)
-        lay.addWidget(self.kicker)
-        lay.addSpacing(8)
-        lay.addWidget(self.title)
-        lay.addSpacing(4)
-        lay.addWidget(self.subtitle)
-        lay.addSpacing(8)
-        lay.addLayout(meta)
-        lay.addSpacing(8)
-        lay.addLayout(prog)
-        lay.addStretch(1)
-        lay.addSpacing(10)
-        lay.addWidget(self.button, alignment=_ABS_LEFT)
-        self._float: QVariantAnimation | None = None
-        self.refresh()
-
-    def refresh(self) -> None:
-        pal = get_theme().palette
-        self.button.setIcon(QIcon(render_pixmap("forward", pal.on_accent, 15)))
-        self.set_entry(self._entry)
-
-    # ---------------------------------------------------------------- 内容
-    def set_entry(self, entry: LibraryEntry | None) -> None:
-        self._entry = entry
-        accent = get_theme().palette.accent
-        dot = f'<span style="color:{accent};">●</span>&nbsp;&nbsp;'
-        if entry is None:
-            self.kicker.setText(f"{dot}开始精读")
-            self.title.setText("打开第一篇文献")
-            self.subtitle.setText("导入 PDF 或拖放文件至窗口——阅读进度、书签与批注均保存在本地。")
-            self.meta_left.setText("")
-            self.meta_right.setText("")
-            self.bar.setVisible(False)
-            self.read_label.setText("")
-            self.button.setText("导入 PDF")
-            self.scene.title = "Academic\nReading Studio"
-            self.scene.year = time.strftime("%Y")
-        else:
-            self.kicker.setText(f"{dot}继续上次精读")
-            self.title.setText(entry.title)
-            self.subtitle.setText(Path(entry.path).name)
-            self.meta_left.setText(entry.author or entry.folder)
-            parts = [f"{entry.pages} 页"] if entry.pages else []
-            if entry.annotations:
-                parts.append(f"{entry.annotations} 条批注")
-            self.meta_right.setText(" · ".join(parts))
-            self.bar.setVisible(True)
-            self.bar.value = entry.progress
-            self.bar.update()
-            self.read_label.setText(f"已读 {round(entry.progress * 100)}%")
-            self.button.setText("回到阅读" if entry.is_open else "继续阅读")
-            self.scene.title = entry.title
-            stamp = entry.opened_at if entry.opened_at > 0 else time.time()
-            self.scene.year = time.strftime("%Y", time.localtime(stamp))
-        self.update()
-
-    def set_scale(self, cls: str) -> None:
-        """按宽度档位（xl / lg / md / sm / xs）套用紧凑断点尺寸。"""
-        margins = {"xl": (26, 20), "lg": (24, 18), "md": (20, 18), "sm": (20, 18)}.get(
-            cls, (16, 16)
-        )
-        self._copy_lay.setContentsMargins(margins[0], margins[1], margins[0], margins[1])
-        self.setMinimumHeight({"xl": 224, "lg": 216, "md": 214, "sm": 208}.get(cls, 200))
-        self.title.setProperty("size", cls)
-        _repolish(self.title)
-        paper = {"xl": (148, 190, 28.0), "md": (122, 164, 4.0), "sm": (132, 174, 12.0)}
-        w, h, right = paper.get(cls, (138, 180, 20.0))
-        self.scene.paper, self.scene.right = QSize(w, h), right
-        self.scene.opacity = {"md": 0.78, "xs": 0.32}.get(cls, 1.0)
-        self._layout_copy()
-        self.update()
-
-    # ---------------------------------------------------------------- 动效
-    def showEvent(self, event: QShowEvent) -> None:
-        super().showEvent(event)
-        if motion.enabled() and self._float is None:
-            anim = QVariantAnimation(self)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setDuration(7000)
-            anim.setLoopCount(-1)
-            anim.valueChanged.connect(self._on_float)
-            self._float = anim
-        if self._float is not None:
-            self._float.start()
-
-    def hideEvent(self, event: QHideEvent) -> None:
-        super().hideEvent(event)
-        if self._float is not None:
-            self._float.stop()
-
-    def _on_float(self, v: object) -> None:
-        self.scene.float_phase = float(v) if isinstance(v, (int, float)) else 0.0
-        self.update()
-
-    def enterEvent(self, event: QEnterEvent) -> None:
-        super().enterEvent(event)
-        motion.tween(self, self.scene.hover, 1.0, 700, self._on_hover)
-
-    def leaveEvent(self, event: QEvent) -> None:
-        super().leaveEvent(event)
-        motion.tween(self, self.scene.hover, 0.0, 700, self._on_hover)
-
-    def _on_hover(self, v: float) -> None:
-        self.scene.hover = v
-        self.update()
-
-    # ---------------------------------------------------------------- 布局与绘制
-    def _scene_rect(self) -> QRectF:
-        w = self.width() * 0.46
-        return QRectF(self.width() - w, 0, w, self.height())
-
-    def _layout_copy(self) -> None:
-        ratio = 0.8 if self.width() <= 420 else 0.53
-        copy_w = min(self.width(), max(int(self.width() * ratio), 300))
-        self._copy.setGeometry(0, 0, copy_w, self.height())
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._layout_copy()
-
-    def sizeHint(self) -> QSize:
-        return QSize(640, max(self.minimumHeight(), self._copy.sizeHint().height()))
-
-    def minimumSizeHint(self) -> QSize:
-        return QSize(300, max(self.minimumHeight(), self._copy.minimumSizeHint().height()))
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
-        pal = get_theme().palette
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        r = QRectF(self.rect())
-        clip = QPainterPath()
-        clip.addRoundedRect(r, 10, 10)
-        p.setClipPath(clip)
-        p.fillRect(r, QColor(pal.hero))
-        if self.width() >= 420:
-            self.scene.paint(p, self._scene_rect())
-        p.setPen(QPen(QColor(pal.border), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
-        p.end()
-
-
-class _InsightCard(QFrame):
-    """右侧多合一学术助读工作台卡片（翻译 · AI 导读 · 伴随笔记）。"""
+class _InsightAction(QWidget):
+    """嵌入上次阅读横条的轻量「AI 导读」快捷入口（兼容 insight_card.button 接口）。"""
 
     exploreRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("InsightCard")
-        self.setMinimumWidth(240)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 18, 22, 16)
+        self.setObjectName("InsightAction")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self._lay = lay
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        self.icon = QLabel()
-        self.icon.setFixedSize(18, 18)
-        kicker = _label("ACADEMIC STUDIO", "InsightKicker")
-        head.addWidget(self.icon)
-        head.addWidget(kicker)
-        head.addStretch(1)
-        self.title = _label("翻译 · 导读 · 笔记", "InsightTitle")
-        body = _label("划词对照译文、全文要点速览与 Markdown 伴随笔记同屏协同。", "InsightBody")
-        body.setWordWrap(True)
-        self.button = QPushButton("开启 AI 助读")
+        self.button = QPushButton("AI 导读")
         self.button.setObjectName("InsightButton")
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.button.setToolTip("打开最近文献并展开右侧 AI 导读工作台")
+        self.button.setAccessibleName("AI 导读")
         self.button.setIconSize(QSize(14, 14))
+        self.button.setFixedHeight(32)
         self.button.clicked.connect(self.exploreRequested.emit)
-        foot = _label("·&nbsp;&nbsp;仅在你主动发起时请求模型", "InsightFootnote")
-        foot.setTextFormat(Qt.TextFormat.RichText)
-        lay.addLayout(head)
-        lay.addSpacing(10)
-        lay.addWidget(self.title)
-        lay.addSpacing(6)
-        lay.addWidget(body)
-        lay.addStretch(1)
-        lay.addSpacing(12)
-        lay.addWidget(self.button, alignment=_ABS_LEFT)
-        lay.addSpacing(10)
-        lay.addWidget(foot)
+        lay.addWidget(self.button)
         self.refresh()
 
     def refresh(self) -> None:
         p = get_theme().palette
-        self.icon.setPixmap(render_pixmap("ai", p.accent, 18))
-        self.button.setIcon(QIcon(render_pixmap("forward", p.insight_ink, 14)))
-        self.update()
+        self.button.setIcon(QIcon(render_pixmap("ai", p.accent_text, 14)))
 
     def set_compact(self, compact: bool) -> None:
-        m = (18, 16, 18, 14) if compact else (22, 18, 22, 16)
-        self._lay.setContentsMargins(*m)
-        self.setMinimumWidth(210 if compact else 240)
+        self.button.setVisible(not compact)
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
+
+class _ContinueCard(QFrame):
+    """紧凑单行「上次阅读」接续条（仅在有文献且未筛选时显示，取代高大插画横幅）。"""
+
+    continueRequested = Signal()
+
+    def __init__(self, insight: _InsightAction, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("ContinueCard")
+        self._entry: LibraryEntry | None = None
+        self._insight = insight
+
+        lay = QHBoxLayout(self)
+        self._lay = lay
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(14)
+
+        self._thumb = _Cover(None, size=(34, 42))
+        self._thumb.clicked.connect(self.continueRequested.emit)
+        lay.addWidget(self._thumb)
+
+        mid = QVBoxLayout()
+        mid.setContentsMargins(0, 0, 0, 0)
+        mid.setSpacing(4)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.kicker = _label("上次阅读", "ContinueBadge")
+        self.title = _label("", "ContinueTitle")
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        top.addWidget(self.kicker)
+        top.addWidget(self.title, stretch=1)
+        mid.addLayout(top)
+
+        sub = QHBoxLayout()
+        sub.setSpacing(10)
+        self.meta_left = _label("", "ContinueMeta")
+        self.meta_left.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        self.bar = _HeroProgress()
+        self.read_label = _label("", "ContinueRead")
+        sub.addWidget(self.meta_left)
+        sub.addWidget(self.bar)
+        sub.addWidget(self.read_label)
+        sub.addStretch(1)
+        mid.addLayout(sub)
+
+        lay.addLayout(mid, stretch=1)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addWidget(self._insight)
+        self.button = QPushButton()
+        self.button.setObjectName("ContinueButton")
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.button.setIconSize(QSize(14, 14))
+        self.button.setFixedHeight(32)
+        self.button.clicked.connect(self.continueRequested.emit)
+        actions.addWidget(self.button)
+        lay.addLayout(actions)
+        self.refresh()
+
+    def refresh(self) -> None:
         pal = get_theme().palette
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        r = QRectF(self.rect())
-        clip = QPainterPath()
-        clip.addRoundedRect(r, 10, 10)
-        p.setClipPath(clip)
-        p.fillRect(r, QColor(pal.insight))
-        p.save()
-        p.setOpacity(0.08)
-        p.translate(r.right() - 42, r.top() + 56)
-        p.rotate(-12)
-        p.drawPixmap(-56, -56, render_pixmap("ai", pal.accent, 112, stroke=0.8))
-        p.restore()
-        p.setPen(QPen(QColor(pal.border), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
-        p.end()
+        self.button.setIcon(QIcon(render_pixmap("forward", pal.on_accent, 14)))
+        self._insight.refresh()
+        self.set_entry(self._entry)
+
+    def set_entry(self, entry: LibraryEntry | None) -> None:
+        self._entry = entry
+        self._thumb.entry = entry
+        self._thumb.variant = cover_variant(entry.path) if entry is not None else 0
+        self._thumb.update()
+        if entry is None:
+            self.kicker.setText("开始阅读")
+            self.title.setText("打开第一篇文献")
+            self.meta_left.setText("PDF / EPUB 本地精读")
+            self.bar.setVisible(False)
+            self.read_label.setText("")
+            self.button.setText("导入文献")
+        else:
+            self.kicker.setText("正在阅读" if entry.is_open else "上次阅读")
+            self.title.setText(entry.title)
+            self.title.setToolTip(f"{entry.title}\n{entry.path}")
+            parts: list[str] = []
+            if entry.author:
+                parts.append(entry.author)
+            elif entry.folder:
+                parts.append(entry.folder)
+            if entry.pages:
+                parts.append(f"{entry.pages} 页")
+            if entry.annotations:
+                parts.append(f"{entry.annotations} 条批注")
+            self.meta_left.setText(" · ".join(parts))
+            has_prog = entry.progress > 0
+            self.bar.setVisible(has_prog)
+            self.bar.value = entry.progress
+            self.bar.update()
+            self.read_label.setText(
+                f"已读 {round(entry.progress * 100)}%"
+                if has_prog
+                else relative_time(entry.opened_at)
+            )
+            self.button.setText("回到阅读" if entry.is_open else "继续阅读")
+        self.update()
+
+    def set_scale(self, cls: str) -> None:
+        compact = cls in ("sm", "xs")
+        self._thumb.setVisible(cls != "xs")
+        self._insight.set_compact(compact)
+        pad_x = 12 if compact else 16
+        self._lay.setContentsMargins(pad_x, 11, pad_x, 11)
 
 
-# ============================================================================ 首页
+# ============================================================================ 首页主体
 class LibraryHome(QWidget):
-    """文献库首页（导航 + 顶栏 + 问候 + 精选 + 文献网格 + 导入 + 页脚）。"""
+    """文献库首页（极简导航栏 + 一体化常驻命令顶栏 + 上次阅读条 + 清爽文献网格）。"""
 
     openRequested = Signal()
     openRecentRequested = Signal(str)
@@ -1117,8 +942,7 @@ class LibraryHome(QWidget):
         self.section = SECTIONS[0][0]
         self.folder = ALL_FOLDERS
         self.view_mode = "grid"
-        self._columns = 4
-        self._cover_h = 177
+        self._columns = 3
         self._cards: list[_BookCard] = []
         self._chips: list[QPushButton] = []
         self._collections: list[_CollectionItem] = []
@@ -1128,6 +952,7 @@ class LibraryHome(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_nav())
+
         main = QWidget()
         main.setObjectName("StudioMain")
         main_lay = QVBoxLayout(main)
@@ -1145,10 +970,8 @@ class LibraryHome(QWidget):
         self.apply_width(1280)
         self.set_entries([])
 
-    # ---------------------------------------------------------------- 构建：导航
+    # ---------------------------------------------------------------- 构建：左侧导航栏
     def _build_nav(self) -> QWidget:
-        # 导航的固定间距、合集及底部信息会超过短窗口高度。让导航单独滚动，
-        # 不把整窗撑高，也不带走右侧常驻的返回阅读和恢复操作。
         scroll = QScrollArea()
         scroll.setObjectName("StudioNavScroll")
         scroll.setAccessibleName("文献库导航")
@@ -1156,78 +979,67 @@ class LibraryHome(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        scroll.setFixedWidth(228)
+        scroll.setFixedWidth(212)
         scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self._nav = scroll
+
         nav = QFrame()
         nav.setObjectName("StudioNav")
         scroll.setWidget(nav)
         lay = QVBoxLayout(nav)
         lay.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         self._nav_lay = lay
-        lay.setContentsMargins(20, 33, 20, 18)
+        lay.setContentsMargins(14, 14, 14, 14)
         lay.setSpacing(0)
 
-        brand = QHBoxLayout()
+        # 顶部品牌标（点击重置筛选）
+        self._brand_btn = QPushButton()
+        self._brand_btn.setObjectName("StudioBrandBtn")
+        self._brand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._brand_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._brand_btn.setToolTip("回到全部文档")
+        self._brand_btn.setFixedHeight(32)
+        brand = QHBoxLayout(self._brand_btn)
         self._brand_lay = brand
-        brand.setContentsMargins(8, 0, 0, 0)
-        brand.setSpacing(10)
+        brand.setContentsMargins(8, 0, 8, 0)
+        brand.setSpacing(9)
         self._brand_mark = _BrandMark()
         brand.addWidget(self._brand_mark)
         self._brand_text = _label('lumen<span style="color:#17795E;">.</span>', "StudioBrand")
         self._brand_text.setTextFormat(Qt.TextFormat.RichText)
+        _passthrough(self._brand_text)
         brand.addWidget(self._brand_text)
         brand.addStretch(1)
-        lay.addLayout(brand)
-        lay.addSpacing(36)
-
-        self._ws_label = _label("ACADEMIC WORKSPACE", "NavCaption")
-        self._ws_label.setWordWrap(True)
-        lay.addWidget(self._ws_label)
+        self._brand_btn.clicked.connect(self.reset_filters)
+        lay.addWidget(self._brand_btn)
         lay.addSpacing(14)
-        self._ws_switch = QPushButton()
-        self._ws_switch.setObjectName("WorkspaceSwitch")
-        self._ws_switch.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._ws_switch.setToolTip("回到全部文档")
-        ws = QHBoxLayout(self._ws_switch)
-        ws.setContentsMargins(10, 0, 10, 0)
-        ws.setSpacing(10)
-        avatar = _label("L", "WorkspaceAvatar")
-        avatar.setFixedSize(30, 30)
-        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._ws_chevron = QLabel()
-        _passthrough(avatar, self._ws_chevron)
-        ws.addWidget(avatar)
-        ws.addWidget(_two_line("本地精读空间", "Local-first studio", "NavStrong", "NavSmall"), 1)
-        ws.addWidget(self._ws_chevron)
-        self._ws_switch.setFixedHeight(40)
-        self._ws_switch.clicked.connect(self.reset_filters)
-        lay.addWidget(self._ws_switch)
-        lay.addSpacing(22)
 
+        # 主操作：导入文献
         self.import_button = QPushButton()
         self.import_button.setObjectName("ImportButton")
         self.import_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.import_button.setToolTip("导入 PDF  (Ctrl+O)")
-        self.import_button.setAccessibleName("导入 PDF")
-        self.import_button.setFixedHeight(40)
+        self.import_button.setToolTip("导入 PDF / EPUB  (Ctrl+O)")
+        self.import_button.setAccessibleName("导入文献")
+        self.import_button.setFixedHeight(36)
         imp = QHBoxLayout(self.import_button)
-        imp.setContentsMargins(12, 0, 12, 0)
+        imp.setContentsMargins(12, 0, 11, 0)
         imp.setSpacing(8)
         self._import_icon = QLabel()
-        self._import_text = _label("导入 PDF", "ImportText")
-        self._import_key = _label("Ctrl O", "ImportKey")
+        self._import_icon.setFixedSize(15, 15)
+        self._import_text = _label("导入文献", "ImportText")
+        self._import_key = _label("Ctrl+O", "ImportKey")
         _passthrough(self._import_icon, self._import_text, self._import_key)
         imp.addWidget(self._import_icon)
         imp.addWidget(self._import_text, 1)
         imp.addWidget(self._import_key)
         self.import_button.clicked.connect(self.openRequested.emit)
         lay.addWidget(self.import_button)
-        lay.addSpacing(28)
+        lay.addSpacing(20)
 
+        # 分区导航
         self._lib_caption = _label("文献库", "NavCaption")
         lay.addWidget(self._lib_caption)
-        lay.addSpacing(13)
+        lay.addSpacing(6)
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         self.nav_items: dict[str, _NavItem] = {}
@@ -1237,144 +1049,176 @@ class LibraryHome(QWidget):
             item.clicked.connect(lambda _c=False, s=label: self.set_section(s))
             self.nav_items[label] = item
             lay.addWidget(item)
-            lay.addSpacing(5)
+            lay.addSpacing(2)
         self.nav_items[self.section].setChecked(True)
 
+        # 文件夹筛选
         self._col_caption_box = QWidget()
         cap = QHBoxLayout(self._col_caption_box)
-        cap.setContentsMargins(0, 0, 0, 0)
-        cap.addWidget(_label("我的合集", "NavCaption"))
+        cap.setContentsMargins(0, 16, 0, 6)
+        cap.addWidget(_label("文件夹", "NavCaption"))
         cap.addStretch(1)
-        self._col_count = _label("00", "NavCaption")
-        cap.addWidget(self._col_count)
-        lay.addSpacing(24)
         lay.addWidget(self._col_caption_box)
-        lay.addSpacing(13)
         self._col_box = QWidget()
         self._col_lay = QVBoxLayout(self._col_box)
         self._col_lay.setContentsMargins(0, 0, 0, 0)
-        self._col_lay.setSpacing(0)
+        self._col_lay.setSpacing(1)
         lay.addWidget(self._col_box)
         lay.addStretch(1)
 
+        # 底部极简工具栏（单一外观切换入口 + 关于，去除虚拟头像与标语框）
         self._nav_bottom = QWidget()
         bottom = QVBoxLayout(self._nav_bottom)
-        bottom.setContentsMargins(0, 35, 0, 0)
-        bottom.setSpacing(0)
-        privacy = QFrame()
-        privacy.setObjectName("PrivacyCard")
-        pv = QHBoxLayout(privacy)
-        pv.setContentsMargins(11, 14, 11, 14)
-        pv.setSpacing(9)
-        self._privacy_icon = QLabel()
-        self._privacy_icon.setFixedSize(18, 18)
-        pv.addWidget(self._privacy_icon, alignment=Qt.AlignmentFlag.AlignTop)
-        pv.addWidget(
-            _two_line(
-                "只属于你的思考空间", "文档在本地，灵感无边界。", "PrivacyTitle", "PrivacyBody", 7
-            ),
-            1,
-        )
-        bottom.addWidget(privacy)
-        bottom.addSpacing(22)
+        bottom.setContentsMargins(0, 14, 0, 0)
+        bottom.setSpacing(8)
         rule = QFrame()
         rule.setObjectName("NavRule")
         rule.setFixedHeight(1)
         bottom.addWidget(rule)
-        self.profile = QPushButton()
+
+        util = QHBoxLayout()
+        util.setContentsMargins(2, 0, 2, 0)
+        util.setSpacing(6)
+        self.profile = QPushButton("深色模式")
         self.profile.setObjectName("ProfileRow")
         self.profile.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.profile.setToolTip("切换主题")
-        prof = QHBoxLayout(self.profile)
-        prof.setContentsMargins(3, 20, 3, 0)
-        prof.setSpacing(10)
-        pav = _label("L", "ProfileAvatar")
-        pav.setFixedSize(31, 31)
-        pav.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._profile_theme = QLabel()
-        _passthrough(pav, self._profile_theme)
-        prof.addWidget(pav)
-        prof.addWidget(_two_line("独立思考者", "本地工作空间", "NavStrong", "NavSmall"), 1)
-        prof.addWidget(self._profile_theme)
-        self.profile.setFixedHeight(51)
+        self.profile.setToolTip("切换浅色 / 深色外观")
+        self.profile.setAccessibleName("切换主题")
+        self.profile.setIconSize(QSize(15, 15))
+        self.profile.setFixedHeight(32)
         self.profile.clicked.connect(self.themeToggleRequested.emit)
-        bottom.addWidget(self.profile)
+        self.theme_button = self.profile  # 统一主题按钮引用，避免多处重复渲染月亮图标
+        util.addWidget(self.profile)
+        util.addStretch(1)
+
+        self.about_button = QPushButton("关于")
+        self.about_button.setObjectName("FooterLink")
+        self.about_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.about_button.setToolTip("关于 Lumen")
+        self.about_button.setAccessibleName("关于 Lumen")
+        self.about_button.setFixedHeight(32)
+        self.about_button.clicked.connect(self.aboutRequested.emit)
+        util.addWidget(self.about_button)
+        bottom.addLayout(util)
         lay.addWidget(self._nav_bottom)
 
         self._compact_theme = QToolButton()
         self._compact_theme.setObjectName("NavIconButton")
-        self._compact_theme.setToolTip("切换主题")
+        self._compact_theme.setToolTip("切换浅色 / 深色外观")
+        self._compact_theme.setAccessibleName("切换主题")
         self._compact_theme.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._compact_theme.setIconSize(QSize(18, 18))
+        self._compact_theme.setIconSize(QSize(16, 16))
         self._compact_theme.clicked.connect(self.themeToggleRequested.emit)
         self._compact_theme.setVisible(False)
         lay.addWidget(self._compact_theme, alignment=Qt.AlignmentFlag.AlignHCenter)
         return scroll
 
-    # ---------------------------------------------------------------- 构建：顶栏
+    # ---------------------------------------------------------------- 构建：一体化常驻命令顶栏
     def _build_topbar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("StudioTopbar")
-        bar.setFixedHeight(52)
+        bar.setFixedHeight(56)
         self._topbar = bar
         lay = QHBoxLayout(bar)
         self._topbar_lay = lay
-        lay.setContentsMargins(36, 0, 36, 0)
+        lay.setContentsMargins(28, 0, 28, 0)
         lay.setSpacing(10)
-        lay.addWidget(_label("文献工作台", "CrumbMuted"))
-        self._crumb_arrow = QLabel()
-        lay.addWidget(self._crumb_arrow)
-        self.crumb = _label(self.section, "CrumbCurrent")
-        lay.addWidget(self.crumb)
+
+        self.heading = _label(self.section, "LibraryHeading")
+        self.crumb = self.heading
+        self.heading_count = _label("0", "LibraryCount")
+        self.heading_count.setFixedHeight(20)
+        self.heading_count.setMinimumWidth(22)
+        self.heading_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.heading, alignment=Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self.heading_count, alignment=Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch(1)
 
+        # 搜索框（支持聚焦高亮环与 Ctrl+K；使用最大宽度而非死锁最小宽度，保证窗口可自由缩窄）
+        self._search_box = QFrame()
+        self._search_box.setObjectName("LibrarySearch")
+        self._search_box.setProperty("focused", "false")
+        self._search_box.setFixedHeight(34)
+        self._search_box.setMinimumWidth(96)
+        self._search_box.setMaximumWidth(260)
+        self._search_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        sb = QHBoxLayout(self._search_box)
+        sb.setContentsMargins(10, 0, 8, 0)
+        sb.setSpacing(7)
+        self._search_icon = QLabel()
+        self._search_icon.setFixedSize(15, 15)
+        self.search = QLineEdit()
+        self.search.setObjectName("LibrarySearchInput")
+        self.search.setPlaceholderText("搜索标题、作者或文件夹…")
+        self.search.setAccessibleName("搜索文档")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(48)
+        self.search.installEventFilter(self)
+        self.search.textChanged.connect(self._on_search_changed)
+        self._kbd = _label("Ctrl K", "Kbd")
+        self._kbd.setFixedHeight(20)
+        self._kbd.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sb.addWidget(self._search_icon, alignment=Qt.AlignmentFlag.AlignVCenter)
+        sb.addWidget(self.search, 1)
+        sb.addWidget(self._kbd, alignment=Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self._search_box, 1)
+
+        # 排序下拉
+        self.sort = QComboBox()
+        self.sort.setObjectName("LibrarySort")
+        self.sort.setAccessibleName("文档排序")
+        self.sort.setFixedHeight(34)
+        self.sort.addItems(list(SORTS))
+        self.sort.currentIndexChanged.connect(lambda _i: self._rebuild())
+        lay.addWidget(self.sort)
+
+        # 网格 / 列表切换
+        toggle = QFrame()
+        toggle.setObjectName("ViewToggle")
+        toggle.setFixedHeight(34)
+        tl = QHBoxLayout(toggle)
+        tl.setContentsMargins(3, 3, 3, 3)
+        tl.setSpacing(2)
+        self._view_group = QButtonGroup(self)
+        self.view_buttons: dict[str, QToolButton] = {}
+        for mode, tip in (("grid", "网格视图"), ("list", "列表视图")):
+            btn = QToolButton()
+            btn.setObjectName("ViewToggleButton")
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.setAccessibleName(tip)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setIconSize(QSize(15, 15))
+            btn.clicked.connect(lambda _c=False, m=mode: self.set_view_mode(m, notify=True))
+            self._view_group.addButton(btn)
+            self.view_buttons[mode] = btn
+            tl.addWidget(btn)
+        self.view_buttons["grid"].setChecked(True)
+        lay.addWidget(toggle)
+
+        # 返回阅读（仅后台有已打开标签时显示）
         self.return_button = QPushButton("返回阅读")
         self.return_button.setObjectName("ReturnButton")
         self.return_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.return_button.setIconSize(QSize(14, 14))
+        self.return_button.setFixedHeight(34)
         self.return_button.clicked.connect(self.returnRequested.emit)
         self.return_button.setVisible(False)
         lay.addWidget(self.return_button)
-        lay.addSpacing(6)
-        self._local = _label(
-            '<span style="color:#17795E;">●</span>&nbsp;&nbsp;已在本地就绪', "LocalStatus"
-        )
-        self._local.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(self._local)
-        lay.addSpacing(6)
-        self._divider = QFrame()
-        self._divider.setObjectName("TopbarDivider")
-        self._divider.setFixedSize(1, 15)
-        lay.addWidget(self._divider)
-        lay.addSpacing(6)
-        self.theme_button = QToolButton()
-        self.theme_button.setObjectName("TopbarIcon")
-        self.theme_button.setToolTip("切换主题")
-        self.theme_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_button.setIconSize(QSize(16, 16))
-        self.theme_button.clicked.connect(self.themeToggleRequested.emit)
-        lay.addWidget(self.theme_button)
-        lay.addSpacing(6)
-        mini = _label("L", "MiniAvatar")
-        mini.setFixedSize(26, 26)
-        mini.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(mini)
         return bar
 
-    # ---------------------------------------------------------------- 构建：恢复提示
+    # ---------------------------------------------------------------- 构建：崩溃恢复提示条
     def _build_recovery_banner(self) -> QFrame:
-        """顶部恢复提示条：非模态，避免启动时弹窗打断（也便于自动化测试）。"""
         bar = QFrame()
         bar.setObjectName("RecoveryBanner")
-        bar.setFixedHeight(52)
+        bar.setFixedHeight(48)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(42, 0, 42, 0)
+        lay.setContentsMargins(28, 0, 28, 0)
         lay.setSpacing(10)
         self._recovery_title = _label("", "RecoveryTitle")
         lay.addWidget(self._recovery_title)
         self._recovery_text = _label("", "RecoveryText")
         self._recovery_text.setWordWrap(False)
-        # 文件名很长时让正文先收缩，别把「恢复 / 丢弃 / 稍后」挤出窗口
         self._recovery_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(self._recovery_text, 1)
 
@@ -1399,7 +1243,7 @@ class LibraryHome(QWidget):
         bar.setVisible(False)
         return bar
 
-    # ---------------------------------------------------------------- 构建：主体
+    # ---------------------------------------------------------------- 构建：内容滚动区
     def _build_scroll(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setObjectName("StudioScroll")
@@ -1407,6 +1251,7 @@ class LibraryHome(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area = scroll
+
         holder = QWidget()
         holder.setObjectName("StudioScrollBody")
         center = QHBoxLayout(holder)
@@ -1416,171 +1261,78 @@ class LibraryHome(QWidget):
         content.setMaximumWidth(_CONTENT_MAX)
         center.addWidget(content)
         scroll.setWidget(holder)
+
         lay = QVBoxLayout(content)
         self._content_lay = lay
-        lay.setContentsMargins(36, 24, 36, 0)
-        lay.setSpacing(0)
+        lay.setContentsMargins(28, 22, 28, 24)
+        lay.setSpacing(16)
 
-        lay.addWidget(self._build_greeting())
-        lay.addSpacing(20)
-        self._featured = QBoxLayout(QBoxLayout.Direction.LeftToRight)
-        self._featured.setSpacing(16)
-        self.continue_card = _ContinueCard()
-        self.continue_card.continueRequested.connect(self._on_continue)
-        self.insight_card = _InsightCard()
+        # 仅特定分区需要说明范围时才显示（其余分区隐藏，零多余副标题）
+        self.heading_desc = _label("", "LibraryDesc")
+        self.heading_desc.setWordWrap(True)
+        self.heading_desc.setVisible(False)
+        lay.addWidget(self.heading_desc)
+
+        # 单行紧凑「上次阅读」横条
+        self.insight_card = _InsightAction()
         self.insight_card.exploreRequested.connect(self.exploreAiRequested.emit)
-        self._featured.addWidget(self.continue_card, 185)
-        self._featured.addWidget(self.insight_card, 100)
-        lay.addLayout(self._featured)
-        lay.addSpacing(26)
-        lay.addWidget(self._build_library_heading())
-        lay.addSpacing(14)
-        lay.addWidget(self._build_filters())
-        lay.addSpacing(14)
-        grid_host = QWidget()
-        grid_host.setObjectName("BookGrid")
-        self._grid = QGridLayout(grid_host)
+        self.continue_card = _ContinueCard(self.insight_card)
+        self.continue_card.continueRequested.connect(self._on_continue)
+        lay.addWidget(self.continue_card)
+
+        # 多文件夹快速筛选胶囊（少于 2 个文件夹时自动隐藏，避免同义重复）
+        self._filter_box = self._build_filters()
+        lay.addWidget(self._filter_box)
+
+        # 文献网格 / 列表
+        self._grid_host = QWidget()
+        self._grid_host.setObjectName("BookGrid")
+        self._grid = QGridLayout(self._grid_host)
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(16)
-        self._grid.setVerticalSpacing(16)
-        lay.addWidget(grid_host)
+        self._grid.setHorizontalSpacing(14)
+        self._grid.setVerticalSpacing(14)
+        lay.addWidget(self._grid_host)
+
         self._empty = self._build_empty()
         lay.addWidget(self._empty)
-        lay.addSpacing(18)
+
         lay.addWidget(self._build_quiet_import())
-        lay.addWidget(self._build_footer())
         lay.addStretch(1)
         return scroll
-
-    def _build_greeting(self) -> QWidget:
-        self._greeting = QWidget()
-        greet = QHBoxLayout(self._greeting)
-        greet.setContentsMargins(0, 0, 0, 0)
-        left = QVBoxLayout()
-        left.setSpacing(0)
-        left.addWidget(_label("LUMEN PURE · LOCAL ACADEMIC STUDIO", "Eyebrow"))
-        left.addSpacing(8)
-        self._title = _label("", "GreetingTitle")
-        self._title.setTextFormat(Qt.TextFormat.RichText)
-        self._title.setWordWrap(True)
-        left.addWidget(self._title)
-        left.addSpacing(6)
-        sub = _label(
-            "轻装上阵的学术文献阅读台 · 划词精译、要点导读与伴随笔记井然有序。", "GreetingBody"
-        )
-        sub.setWordWrap(True)
-        left.addWidget(sub)
-        greet.addLayout(left, 1)
-        self._aside = QWidget()
-        aside = QVBoxLayout(self._aside)
-        aside.setContentsMargins(0, 0, 0, 2)
-        aside.setSpacing(6)
-        aside.addStretch(1)
-        self._sun = QLabel()
-        aside.addWidget(self._sun, alignment=Qt.AlignmentFlag.AlignRight)
-        aside.addWidget(_label("专注阅读 · 本地存储", "GreetingAside"))
-        greet.addWidget(self._aside, alignment=Qt.AlignmentFlag.AlignBottom)
-        return self._greeting
-
-    def _build_library_heading(self) -> QWidget:
-        box = QWidget()
-        lay = QHBoxLayout(box)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(15)
-        left = QVBoxLayout()
-        left.setSpacing(8)
-        h2 = QHBoxLayout()
-        h2.setSpacing(10)
-        self.heading = _label("我的文献库", "LibraryHeading")
-        self.heading_count = _label("00", "LibraryCount")
-        h2.addWidget(self.heading)
-        h2.addWidget(self.heading_count)
-        h2.addStretch(1)
-        left.addLayout(h2)
-        self.heading_desc = _label("每一份文档，都是一个新的思考起点。", "LibraryDesc")
-        self.heading_desc.setWordWrap(True)
-        left.addWidget(self.heading_desc)
-        lay.addLayout(left, 1)
-
-        tools = QHBoxLayout()
-        tools.setSpacing(12)
-        search_box = QFrame()
-        search_box.setObjectName("LibrarySearch")
-        sb = QHBoxLayout(search_box)
-        sb.setContentsMargins(10, 0, 10, 0)
-        sb.setSpacing(8)
-        self._search_icon = QLabel()
-        self.search = QLineEdit()
-        self.search.setObjectName("LibrarySearchInput")
-        self.search.setPlaceholderText("搜索文档…")
-        self.search.setAccessibleName("搜索文档")
-        self.search.setClearButtonEnabled(True)
-        self.search.setFixedWidth(140)
-        self.search.textChanged.connect(lambda _t: self._rebuild())
-        self._kbd = _label("Ctrl K", "Kbd")
-        sb.addWidget(self._search_icon)
-        sb.addWidget(self.search, 1)
-        sb.addWidget(self._kbd)
-        search_box.setFixedHeight(34)
-        tools.addWidget(search_box)
-        self.sort = QComboBox()
-        self.sort.setObjectName("LibrarySort")
-        self.sort.setAccessibleName("文档排序")
-        self.sort.addItems(list(SORTS))
-        self.sort.currentIndexChanged.connect(lambda _i: self._rebuild())
-        tools.addWidget(self.sort)
-        toggle = QFrame()
-        toggle.setObjectName("ViewToggle")
-        tl = QHBoxLayout(toggle)
-        tl.setContentsMargins(3, 3, 3, 3)
-        tl.setSpacing(2)
-        self._view_group = QButtonGroup(self)
-        self.view_buttons: dict[str, QToolButton] = {}
-        for mode, tip in (("grid", "网格视图"), ("list", "列表视图")):
-            btn = QToolButton()
-            btn.setObjectName("ViewToggleButton")
-            btn.setCheckable(True)
-            btn.setToolTip(tip)
-            btn.setAccessibleName(tip)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setIconSize(QSize(16, 16))
-            btn.clicked.connect(lambda _c=False, m=mode: self.set_view_mode(m, notify=True))
-            self._view_group.addButton(btn)
-            self.view_buttons[mode] = btn
-            tl.addWidget(btn)
-        self.view_buttons["grid"].setChecked(True)
-        tools.addWidget(toggle)
-        lay.addLayout(tools)
-        return box
 
     def _build_filters(self) -> QWidget:
         box = QWidget()
         self._filter_lay = QHBoxLayout(box)
         self._filter_lay.setContentsMargins(0, 0, 0, 0)
-        self._filter_lay.setSpacing(5)
+        self._filter_lay.setSpacing(6)
         self._filter_lay.addStretch(1)
-        self._hint = _label("为专注而整理", "LibraryHint")
-        self._filter_lay.addWidget(self._hint)
+        box.setVisible(False)
         return box
 
     def _build_empty(self) -> QWidget:
-        box = QWidget()
+        box = QFrame()
         box.setObjectName("LibraryEmpty")
         lay = QVBoxLayout(box)
-        lay.setContentsMargins(40, 40, 40, 40)
+        lay.setContentsMargins(40, 56, 40, 56)
         lay.setSpacing(0)
         self._empty_icon = QLabel()
+        self._empty_icon.setFixedSize(44, 44)
+        self._empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_icon.setObjectName("EmptyIconBadge")
         lay.addWidget(self._empty_icon, alignment=Qt.AlignmentFlag.AlignHCenter)
-        lay.addSpacing(12)
-        self.empty_title = _label("这里还没有文档", "EmptyTitle")
-        lay.addWidget(self.empty_title, alignment=Qt.AlignmentFlag.AlignHCenter)
-        lay.addSpacing(12)
-        self.empty_body = _label("试试其他关键词或分类，新的灵感也许就在下一页。", "EmptyBody")
+        lay.addSpacing(14)
+        self.empty_title = _label("文献库还是空的", "EmptyTitle")
+        self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.empty_title)
+        lay.addSpacing(6)
+        self.empty_body = _label(
+            "导入 PDF / EPUB 或直接将文件拖入窗口，阅读进度与批注自动保存在本地。", "EmptyBody"
+        )
         self.empty_body.setWordWrap(True)
-        self.empty_body.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.empty_body.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.empty_body)
-        lay.addSpacing(15)
-        self.empty_button = QPushButton("查看全部文档")
+        lay.addSpacing(18)
+        self.empty_button = QPushButton("导入文献")
         self.empty_button.setObjectName("EmptyAction")
         self.empty_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.empty_button.clicked.connect(self._on_empty_action)
@@ -1592,53 +1344,35 @@ class LibraryHome(QWidget):
         self.quiet_import = QPushButton()
         self.quiet_import.setObjectName("QuietImport")
         self.quiet_import.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.quiet_import.setAccessibleName("导入 PDF")
+        self.quiet_import.setAccessibleName("导入文献")
         self.quiet_import.setProperty("dragging", "false")
-        self.quiet_import.setMinimumHeight(52)
+        self.quiet_import.setFixedHeight(40)
         qi = QHBoxLayout(self.quiet_import)
         qi.setContentsMargins(16, 0, 16, 0)
-        qi.setSpacing(9)
+        qi.setSpacing(6)
         self._quiet_icon = QLabel()
-        main = _label("为你的下一次灵感，留一个位置", "QuietImportText")
-        cta = _label("导入 PDF", "QuietImportCta")
-        self._quiet_hint = _label("或拖放文件至窗口", "QuietImportMuted")
-        _passthrough(self._quiet_icon, main, cta, self._quiet_hint)
+        self._quiet_icon.setFixedSize(14, 14)
+        cta = _label("导入文献", "QuietImportCta")
+        self._quiet_hint = _label("或直接将 PDF / EPUB 拖入窗口", "QuietImportMuted")
+        _passthrough(self._quiet_icon, cta, self._quiet_hint)
         qi.addStretch(1)
         qi.addWidget(self._quiet_icon)
-        qi.addWidget(main)
-        qi.addSpacing(12)
         qi.addWidget(cta)
         qi.addWidget(self._quiet_hint)
         qi.addStretch(1)
         self.quiet_import.clicked.connect(self.openRequested.emit)
         return self.quiet_import
 
-    def _build_footer(self) -> QWidget:
-        box = QWidget()
-        box.setObjectName("StudioFooter")
-        lay = QHBoxLayout(box)
-        lay.setContentsMargins(0, 24, 0, 22)
-        lay.setSpacing(9)
-        lay.addWidget(_label("l.", "FooterMark"))
-        lay.addWidget(_label("专注阅读，安静思考。", "FooterText"))
-        lay.addStretch(1)
-        self._footer_right = QWidget()
-        right = QHBoxLayout(self._footer_right)
-        right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(9)
-        right.addWidget(_label("本地优先", "FooterText"))
-        right.addWidget(_label("·", "FooterDot"))
-        right.addWidget(_label("为好奇心而设计", "FooterText"))
-        right.addSpacing(15)
-        self.about_button = QPushButton("关于 Lumen")
-        self.about_button.setObjectName("FooterLink")
-        self.about_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.about_button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.about_button.setIconSize(QSize(12, 12))
-        self.about_button.clicked.connect(self.aboutRequested.emit)
-        right.addWidget(self.about_button)
-        lay.addWidget(self._footer_right)
-        return box
+    # ---------------------------------------------------------------- 事件过滤（搜索框焦点环）
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.search and event.type() in (
+            QEvent.Type.FocusIn,
+            QEvent.Type.FocusOut,
+        ):
+            focused = event.type() == QEvent.Type.FocusIn
+            self._search_box.setProperty("focused", "true" if focused else "false")
+            _repolish(self._search_box)
+        return bool(super().eventFilter(watched, event))
 
     # ---------------------------------------------------------------- 公共接口
     def set_entries(self, entries: list[LibraryEntry]) -> None:
@@ -1657,11 +1391,11 @@ class LibraryHome(QWidget):
         return list(self._entries)
 
     def entry_paths(self) -> list[str]:
-        """当前（过滤后）网格里显示的文档路径。"""
+        """当前（过滤后）显示的文档路径。"""
         return [card.entry.path for card in self._cards]
 
     def folders(self) -> list[str]:
-        """按文档数排序的文件夹（合集与筛选标签用）。"""
+        """按文档数排序的文件夹列表。"""
         return [name for name, _n in Counter(e.folder for e in self._entries).most_common()]
 
     def set_section(self, section: str) -> None:
@@ -1682,6 +1416,7 @@ class LibraryHome(QWidget):
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
+        self._sync_kbd_visibility()
         self.set_section(SECTIONS[0][0])
 
     def set_view_mode(self, mode: str, *, notify: bool = False) -> None:
@@ -1690,19 +1425,20 @@ class LibraryHome(QWidget):
         changed = mode != self.view_mode
         self.view_mode = mode
         self.view_buttons[mode].setChecked(True)
+        self._refresh_view_icons()
         if changed:
             self._rebuild()
             if notify:
                 self.viewModeChanged.emit(mode)
 
     def set_can_return(self, can: bool, tip: str = "", *, label: str = "返回阅读") -> None:
-        """有打开的标签页时在顶栏显示「返回阅读」。"""
+        """后台有打开的标签页时在顶栏显示「返回阅读」。"""
         self.return_button.setText(label)
         self.return_button.setVisible(can)
         self.return_button.setToolTip(tip or "回到正在阅读的文档")
 
     def set_recovery_notice(self, labels: Sequence[str]) -> None:
-        """显示「崩溃前未保存的修改」提示；``labels`` 是文档名（为空则隐藏）。"""
+        """显示「崩溃前未保存的修改」提示；``labels`` 为空则隐藏。"""
         if not labels:
             self.hide_recovery_notice()
             return
@@ -1722,33 +1458,40 @@ class LibraryHome(QWidget):
         return bool(self._recovery_banner.isVisibleTo(self))
 
     def set_dragging(self, dragging: bool) -> None:
-        """拖入文件时高亮「留一个位置」导入区。"""
-        self.quiet_import.setProperty("dragging", "true" if dragging else "false")
+        """拖入文件时高亮导入区与空态框。"""
+        val = "true" if dragging else "false"
+        self.quiet_import.setProperty("dragging", val)
+        self._empty.setProperty("dragging", val)
         _repolish(self.quiet_import)
+        _repolish(self._empty)
 
     def focus_search(self) -> None:
         self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.selectAll()
-        self.scroll_area.ensureWidgetVisible(self.search, 20, 20)
 
     def animate_in(self) -> None:
-        """进入首页时各区块依次自下淡入（设计稿 a-fade-up，间隔 70ms）。"""
-        widgets: list[QWidget] = [self._greeting, self.continue_card, self.insight_card]
-        widgets += self._cards[:8]
+        """进入首页时仅作轻量短促淡入，克制不晃眼。"""
+        widgets: list[QWidget] = [self.continue_card, *self._cards[:6]]
         for i, w in enumerate(widgets):
             if w.isVisibleTo(self):
-                motion.fade_up(w, delay=min(i, 7) * 70)
+                motion.fade_up(w, delay=min(i, 5) * 45)
 
     # ---------------------------------------------------------------- 内部：数据 → 视图
+    def _on_search_changed(self, _text: str) -> None:
+        self._sync_kbd_visibility()
+        self._rebuild()
+
+    def _sync_kbd_visibility(self) -> None:
+        self._kbd.setVisible(self.width_class in ("xl", "lg") and not self.search.text())
+
     def _rebuild_collections(self) -> None:
         for item in self._collections:
             item.setParent(None)
             item.deleteLater()
         self._collections.clear()
-        folders = self.folders()[:_MAX_COLLECTIONS]
-        self._col_count.setText(f"{len(folders):02d}")
-        for i, name in enumerate(folders):
-            item = _CollectionItem(name, _COLLECTION_DOTS[i % len(_COLLECTION_DOTS)])
+        counts = Counter(e.folder for e in self._entries)
+        for i, (name, n) in enumerate(counts.most_common(_MAX_COLLECTIONS)):
+            item = _CollectionItem(name, _COLLECTION_DOTS[i % len(_COLLECTION_DOTS)], n)
             item.clicked.connect(lambda _c=False, f=name: self._on_collection(f))
             self._col_lay.addWidget(item)
             self._collections.append(item)
@@ -1759,15 +1502,18 @@ class LibraryHome(QWidget):
             chip.setParent(None)
             chip.deleteLater()
         self._chips.clear()
-        for i, name in enumerate([ALL_FOLDERS, *self.folders()[:_MAX_FILTER_CHIPS]]):
-            chip = QPushButton(f"{name}  {len(self._entries)}" if name == ALL_FOLDERS else name)
+        folders = self.folders()[:_MAX_FILTER_CHIPS]
+        for i, name in enumerate([ALL_FOLDERS, *folders]):
+            chip = QPushButton(f"{name} {len(self._entries)}" if name == ALL_FOLDERS else name)
             chip.setObjectName("FilterChip")
             chip.setCheckable(True)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setFixedHeight(28)
             chip.setProperty("folder", name)
             chip.clicked.connect(lambda _c=False, f=name: self.set_folder(f))
             self._filter_lay.insertWidget(i, chip)
             self._chips.append(chip)
+        self._filter_box.setVisible(len(folders) >= 2)
         self._sync_folder_buttons()
 
     def _sync_folder_buttons(self) -> None:
@@ -1777,21 +1523,34 @@ class LibraryHome(QWidget):
             item.setChecked(item.label == self.folder)
 
     def _rebuild(self) -> None:
+        query = self.search.text()
         entries = filter_entries(
             self._entries,
             section=self.section,
             folder=self.folder,
-            query=self.search.text(),
+            query=query,
             sort=self.sort.currentText(),
         )
-        self.crumb.setText(self.section)
-        self.heading.setText("我的文献库" if self.section == SECTIONS[0][0] else self.section)
-        self.heading_count.setText(f"{len(entries):02d}")
+        self.heading.setText(self.section)
+        self.heading_count.setText(str(len(entries)))
+
+        is_annot_sec = self.section == "含批注文档"
         self.heading_desc.setText(
-            "显示含 PDF 批注的文档；独立 Markdown 笔记请从阅读器的「工具 → 阅读笔记」打开。"
-            if self.section == "含批注文档"
-            else "每一份文档，都是一个新的思考起点。"
+            "显示含 PDF 批注的文档；独立 Markdown 笔记可在阅读器的「工作台 → 伴随笔记」打开。"
+            if is_annot_sec
+            else ""
         )
+        self.heading_desc.setVisible(is_annot_sec)
+
+        # 仅在默认未过滤「全部文档」且有文献时展示顶部上次阅读横条
+        unfiltered_home = (
+            bool(self._entries)
+            and self.section == SECTIONS[0][0]
+            and self.folder == ALL_FOLDERS
+            and not query.strip()
+        )
+        self.continue_card.setVisible(unfiltered_home)
+
         for card in self._cards:
             card.setParent(None)
             card.deleteLater()
@@ -1799,15 +1558,21 @@ class LibraryHome(QWidget):
         self._cards = []
         for entry in entries:
             card = _BookCard(entry, compact)
-            card.set_cover_height(self._cover_h)
             card.openRequested.connect(self.openRecentRequested.emit)
             card.favoriteToggled.connect(self.favoriteToggled.emit)
             self._cards.append(card)
         self._place_cards()
-        self._empty.setVisible(not entries)
+
+        has_entries = bool(entries)
+        self._grid_host.setVisible(has_entries)
+        self._empty.setVisible(not has_entries)
+        self.quiet_import.setVisible(bool(self._entries))
+
+        p = self._theme.palette
         if self._entries:
-            if self.section == "含批注文档":
-                filtered = bool(self.search.text().strip()) or self.folder != ALL_FOLDERS
+            self._empty_icon.setPixmap(render_pixmap("search", p.text_muted, 22))
+            if is_annot_sec:
+                filtered = bool(query.strip()) or self.folder != ALL_FOLDERS
                 self.empty_title.setText("没有匹配的批注文档" if filtered else "还没有含批注的文档")
                 self.empty_body.setText(
                     "这里只显示记录有 PDF 批注的文档，独立 Markdown 笔记不在此列表中。"
@@ -1815,29 +1580,36 @@ class LibraryHome(QWidget):
                 )
             else:
                 self.empty_title.setText("这里还没有文档")
-                self.empty_body.setText("试试其他关键词或分类，新的灵感也许就在下一页。")
+                self.empty_body.setText(
+                    "未找到符合当前筛选条件的文献，可清除关键词或返回全部文档。"
+                )
             self.empty_button.setText("查看全部文档")
         else:
+            self._empty_icon.setPixmap(render_pixmap("doc", p.accent_text, 22))
             self.empty_title.setText("文献库还是空的")
-            self.empty_body.setText("导入第一份 PDF，读过的文档会按时间整理在这里。")
+            self.empty_body.setText(
+                "导入 PDF / EPUB 或直接将文件拖入窗口，阅读进度与批注自动保存在本地。"
+            )
             self.empty_button.setText("导入 PDF")
 
     def _place_cards(self) -> None:
         while self._grid.count():
             self._grid.takeAt(0)
-        columns = 1 if self.view_mode == "list" else self._columns
+        compact = self.view_mode == "list"
+        columns = 1 if compact else self._columns
+        self._grid.setVerticalSpacing(8 if compact else (10 if self.width_class == "xs" else 14))
         for c in range(4):
             self._grid.setColumnStretch(c, 1 if c < columns else 0)
         for i, card in enumerate(self._cards):
             self._grid.addWidget(card, i // columns, i % columns)
 
-    # ---------------------------------------------------------------- 响应式
+    # ---------------------------------------------------------------- 响应式断点
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.apply_width(self.width())
 
     def apply_width(self, width: int) -> None:
-        """按窗口宽度切换设计稿的断点档位（xl ≥1550 / lg / md ≤1100 / sm ≤820 / xs ≤500）。"""
+        """按窗口宽度切换响应式断点（xl ≥1550 / lg >1100 / md >820 / sm >500 / xs ≤500）。"""
         if width >= 1550:
             cls = "xl"
         elif width > 1100:
@@ -1852,14 +1624,14 @@ class LibraryHome(QWidget):
             return
         self.width_class = cls
         narrow_nav = cls in ("sm", "xs")
-        self._nav.setFixedWidth({"xl": 228, "lg": 228, "md": 195}.get(cls, 68))
-        nav_margins = {"md": (12, 33, 12, 18), "sm": (10, 25, 10, 15), "xs": (10, 25, 10, 15)}
-        self._nav_lay.setContentsMargins(*nav_margins.get(cls, (20, 33, 20, 18)))
-        self._brand_lay.setContentsMargins(12 if cls in ("xl", "lg") else 0, 0, 0, 0)
+
+        self._nav.setFixedWidth({"xl": 212, "lg": 212, "md": 188}.get(cls, 64))
+        nav_margins = {"md": (10, 14, 10, 14), "sm": (8, 14, 8, 12), "xs": (8, 14, 8, 12)}
+        self._nav_lay.setContentsMargins(*nav_margins.get(cls, (14, 14, 14, 14)))
+        self._brand_lay.setContentsMargins(0 if narrow_nav else 8, 0, 0 if narrow_nav else 8, 0)
+
         for w in (
             self._brand_text,
-            self._ws_label,
-            self._ws_switch,
             self._lib_caption,
             self._nav_bottom,
             self._import_text,
@@ -1867,51 +1639,41 @@ class LibraryHome(QWidget):
         ):
             w.setVisible(not narrow_nav)
         self._compact_theme.setVisible(narrow_nav)
+
         if narrow_nav:
-            self.import_button.setFixedWidth(44)
+            self.import_button.setFixedWidth(40)
+            self._brand_btn.setFixedWidth(40)
         else:
             self.import_button.setMinimumWidth(0)
             self.import_button.setMaximumWidth(16777215)
             self.import_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        # 窄导航只剩图标按钮：居中；常规宽度铺满整行
+            self._brand_btn.setMinimumWidth(0)
+            self._brand_btn.setMaximumWidth(16777215)
+
         align = Qt.AlignmentFlag.AlignHCenter if narrow_nav else Qt.AlignmentFlag(0)
+        self._nav_lay.setAlignment(self._brand_btn, align)
         self._nav_lay.setAlignment(self.import_button, align)
         for item in self.nav_items.values():
             item.set_compact(narrow_nav)
             self._nav_lay.setAlignment(item, align)
         self._sync_nav_visibility()
 
-        pad = {"xl": 38, "lg": 36, "md": 24, "sm": 20}.get(cls, 15)
-        top = {"xl": 28, "lg": 24, "md": 20, "sm": 18}.get(cls, 16)
-        self._content_lay.setContentsMargins(pad, top, pad, 0)
-        bar_pad = {"md": 24, "sm": 20, "xs": 15}.get(cls, 36)
-        self._topbar_lay.setContentsMargins(bar_pad, 0, bar_pad, 0)
-        self._topbar.setFixedHeight(48 if cls == "xs" else 52)
-        self._local.setVisible(cls != "xs")
-        self._divider.setVisible(cls != "xs")
-        self._aside.setVisible(cls in ("xl", "lg"))
-        self._title.setProperty("size", cls)
-        _repolish(self._title)
+        pad = {"xl": 32, "lg": 28, "md": 22, "sm": 18}.get(cls, 14)
+        top = {"xl": 24, "lg": 20, "md": 18, "sm": 16}.get(cls, 14)
+        self._content_lay.setContentsMargins(pad, top, pad, 24)
+        self._topbar_lay.setContentsMargins(pad, 0, pad, 0)
+        self._topbar.setFixedHeight(50 if cls == "xs" else 56)
 
         self.continue_card.set_scale(cls)
-        self.insight_card.setVisible(not narrow_nav)
-        self.insight_card.set_compact(cls == "md")
-        self._featured.setSpacing({"xl": 24, "lg": 20}.get(cls, 15))
-        self._featured.setStretch(0, 160 if cls == "md" else 185)
-        self._kbd.setVisible(cls in ("xl", "lg"))
-        self.search.setFixedWidth({"xl": 140, "lg": 140, "md": 96, "sm": 120}.get(cls, 160))
+        self._sync_kbd_visibility()
+        self._search_box.setMaximumWidth({"xl": 290, "lg": 260, "md": 200, "sm": 170}.get(cls, 140))
         self.sort.setVisible(not narrow_nav)
-        self._hint.setVisible(cls != "xs")
         self._quiet_hint.setVisible(not narrow_nav)
-        self._footer_right.setVisible(not narrow_nav)
 
-        self._columns = 4 if cls in ("xl", "lg", "md") else 2
-        gap = {"xl": 18, "lg": 18}.get(cls, 12 if cls != "xs" else 10)
+        # 标准桌面（lg）采用舒展的 3 列卡片，超宽屏 4 列，中等/平板 2 列，极窄单列
+        self._columns = {"xl": 4, "lg": 3, "md": 2, "sm": 2}.get(cls, 1)
+        gap = {"xl": 16, "lg": 14, "md": 12, "sm": 12}.get(cls, 10)
         self._grid.setHorizontalSpacing(gap)
-        self._grid.setVerticalSpacing(gap)
-        self._cover_h = {"xl": 215, "lg": 177, "md": 160, "sm": 195}.get(cls, 145)
-        for card in self._cards:
-            card.set_cover_height(self._cover_h)
         self._place_cards()
 
     def _sync_nav_visibility(self) -> None:
@@ -1919,8 +1681,11 @@ class LibraryHome(QWidget):
         self._col_caption_box.setVisible(show)
         self._col_box.setVisible(show)
 
-    # ---------------------------------------------------------------- 槽
+    # ---------------------------------------------------------------- 槽与主题刷新
     def _on_collection(self, folder: str) -> None:
+        if self.section == SECTIONS[0][0] and self.folder == folder:
+            self.set_folder(ALL_FOLDERS)
+            return
         self.section = SECTIONS[0][0]
         self.nav_items[self.section].setChecked(True)
         self.set_folder(folder)
@@ -1937,33 +1702,38 @@ class LibraryHome(QWidget):
         else:
             self.openRequested.emit()
 
+    def _refresh_view_icons(self) -> None:
+        p = self._theme.palette
+        for mode, btn in self.view_buttons.items():
+            color = p.accent_text if btn.isChecked() else p.text_muted
+            btn.setIcon(QIcon(render_pixmap(mode, color, 15)))
+
     def _on_theme_changed(self) -> None:
         p = self._theme.palette
         mode_icon = "sun" if self._theme.is_dark else "moon"
         self._brand_text.setText(f'lumen<span style="color:{p.accent};">.</span>')
         self._brand_mark.update()
-        self._import_icon.setPixmap(render_pixmap("plus", p.on_accent, 16))
-        self._local.setText(f'<span style="color:{p.accent};">●</span>&nbsp;&nbsp;已在本地就绪')
-        self._title.setText(f'专注精读，<span style="color:{p.accent};">安静沉淀。</span>')
-        self._sun.setPixmap(render_pixmap("sun", p.accent, 18))
-        self._ws_chevron.setPixmap(render_pixmap("chevron_down", p.nav_text, 14))
-        self._privacy_icon.setPixmap(render_pixmap("eye", p.accent, 17))
-        self._profile_theme.setPixmap(render_pixmap(mode_icon, p.nav_text, 17))
-        self._compact_theme.setIcon(QIcon(render_pixmap(mode_icon, p.nav_text, 18)))
-        self._crumb_arrow.setPixmap(render_pixmap("forward", p.text_muted, 12))
-        self.theme_button.setIcon(QIcon(render_pixmap(mode_icon, p.icon, 16)))
+        self._import_icon.setPixmap(render_pixmap("plus", p.on_accent, 15))
+        self.profile.setIcon(QIcon(render_pixmap(mode_icon, p.nav_text, 15)))
+        self.profile.setText("浅色模式" if self._theme.is_dark else "深色模式")
+        self._compact_theme.setIcon(QIcon(render_pixmap(mode_icon, p.nav_text, 16)))
         self.return_button.setIcon(QIcon(render_pixmap("back", p.accent_text, 14)))
-        self._search_icon.setPixmap(render_pixmap("search", p.text_muted, 16))
-        for mode, btn in self.view_buttons.items():
-            btn.setIcon(QIcon(render_pixmap(mode, p.text, 16)))
-        self._quiet_icon.setPixmap(render_pixmap("plus", p.text_muted, 16))
-        self._empty_icon.setPixmap(render_pixmap("search", p.text_muted, 28))
-        self.about_button.setIcon(QIcon(render_pixmap("forward", p.text_muted, 12)))
+        self._search_icon.setPixmap(render_pixmap("search", p.text_muted, 15))
+        self._refresh_view_icons()
+        self._quiet_icon.setPixmap(render_pixmap("plus", p.accent_text, 14))
+        self._empty_icon.setPixmap(
+            render_pixmap(
+                "search" if self._entries else "doc",
+                p.text_muted if self._entries else p.accent_text,
+                22,
+            )
+        )
         for item in self.nav_items.values():
             item.refresh()
         for col in self._collections:
             col.refresh()
         if hasattr(self, "continue_card"):
             self.continue_card.refresh()
-        self.insight_card.refresh()
+        for card in self._cards:
+            card.update()
         self.update()
